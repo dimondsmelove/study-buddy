@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Study Buddy</title>
+    <link rel="stylesheet" href="./chat.css" />
+  </head>
+  <body>
+    <main id="app">
+      <!-- capture state: the crop + (Phase 2) the conversation -->
+      <section id="view-capture" hidden>
+        <figure id="crop-figure">
+          <img id="crop" alt="Selected region" />
+        </figure>
+        <div id="presets">
+          <button type="button" class="preset" data-preset="solve">Solve</button>
+          <button type="button" class="preset" data-preset="explain">Explain</button>
+          <button type="button" class="preset" data-preset="translate">Translate</button>
+        </div>
+        <div id="thread" aria-live="polite">
+          <p id="skeleton-note">
+            Phase 0 skeleton — the capture pipeline works end to end. AI answering
+            (Solve / Explain / Translate / free questions) lands in the next build.
+          </p>
+        </div>
+        <form id="ask-form" autocomplete="off">
+          <input id="ask-input" type="text" placeholder="Ask anything about this…" disabled />
+          <button id="ask-btn" type="submit" disabled>Ask</button>
+        </form>
+      </section>
+
+      <!-- permission state: per-site capture grant -->
+      <section id="view-permission" hidden>
+        <h1>Allow capture on this site</h1>
+        <p id="perm-text">Study Buddy needs your permission to capture this site.</p>
+        <button id="perm-btn" type="button">Allow for this site</button>
+      </section>
+
+      <!-- restricted state: nothing can unblock this -->
+      <section id="view-restricted" hidden>
+        <h1>Can’t capture this page</h1>
+        <p id="restricted-text"></p>
+      </section>
+
+      <!-- error state -->
+      <section id="view-error" hidden>
+        <h1>Something went wrong</h1>
+        <p id="error-text"></p>
+      </section>
+    </main>
+    <script type="module" src="./chat.ts"></script>
+  </body>
+</html>

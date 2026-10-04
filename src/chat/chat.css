@@ -1,0 +1,138 @@
+:root {
+  color-scheme: light;
+  --ink: #18181b;
+  --muted: #71717a;
+  --line: #e4e4e7;
+  --accent: #4f9cff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--ink);
+  background: #fff;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  gap: 10px;
+}
+
+section[hidden] {
+  display: none;
+}
+
+h1 {
+  font-size: 14px;
+  margin: 0;
+}
+
+#crop-figure {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 40%;
+  background: #fafafa;
+}
+
+#crop {
+  display: block;
+  max-width: 100%;
+}
+
+#presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.preset {
+  flex: 1;
+}
+
+#thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fafafa;
+  color: var(--muted);
+}
+
+#ask-form {
+  display: flex;
+  gap: 6px;
+}
+
+#ask-input {
+  flex: 1;
+  font: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+#ask-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+#ask-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+#view-permission,
+#view-restricted,
+#view-error {
+  justify-content: center;
+  align-items: flex-start;
+}
+
+#perm-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}

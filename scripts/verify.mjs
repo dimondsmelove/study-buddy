@@ -1,53 +1,176 @@
-// Automated runtime verification: load the built extension in real Chrome, open
-// the testbed page (which runs the production engine on a bundled test image),
-// and print its output. Proves ORT + ppu-paddle-ocr + bundled models + self-hosted
-// wasm actually run inside the MV3 extension origin.
+// Phase-0 smoke test: loads the built extension in Chromium and drives the full
+// capture flow:
+//   START_SELECTION → overlay injection → drag a region → captureVisibleTab →
+//   crop → chrome.storage.session → chat window host embedded in the page →
+//   the chat page renders the crop.
 //
-//   node scripts/verify.mjs
-//
+// Trigger note: the keyboard shortcut itself (keypress → onCommand) is browser
+// machinery that stays dormant in headless Chromium, so the flow is started
+// from an extension page with the same runtime message the chat window will
+// use for its "new selection" action. The shortcut's registration IS verified
+// (chrome.commands.getAll). Verify the physical keypress in a real browser.
 import { chromium } from 'playwright'
-import path from 'node:path'
-import { rmSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { cpSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { join, resolve } from 'node:path'
 
-const dist = path.resolve('dist')
-const profile = path.resolve('.pw-profile')
+const root = resolve(fileURLToPath(import.meta.url), '..')
+const dist = resolve(root, '..', 'dist')
+
+// Test build: a copy of dist with host_permissions added, so capture works
+// WITHOUT the activeTab grant that only a real toolbar click / shortcut press
+// provides (Playwright can't click the browser action; its evaluate() trigger
+// is not a user gesture). Production keeps activeTab-only; this only changes
+// HOW capture is authorized, not the capture/crop/chat code path.
+// (Solution inherited from OCR Buddy's verify-ux.mjs.)
+const distTest = resolve(root, '..', 'dist-test')
+rmSync(distTest, { recursive: true, force: true })
+cpSync(dist, distTest, { recursive: true })
+{
+  const mf = join(distTest, 'manifest.json')
+  const m = JSON.parse(readFileSync(mf, 'utf8'))
+  m.host_permissions = ['<all_urls>']
+  writeFileSync(mf, JSON.stringify(m, null, 2))
+}
+
+// Fresh profile each run: a reused persistent profile can restore a STALE
+// service worker from the code cache (an old build!) — which once sent this
+// very test in circles. Fresh dir = always the current dist/ code.
+const profile = join('/tmp/opencode', 'study-buddy-profile')
 rmSync(profile, { recursive: true, force: true })
 
-// Use Playwright's bundled Chromium (not channel:'chrome') — the system Chrome is
-// org-managed and policy blocks --load-extension. Must run HEADED: Playwright only
-// loads extensions reliably with a headed persistent context.
+let failures = 0
+const check = (ok, label) => {
+  console.log(`${ok ? '  ✓' : '  ✗'} ${label}`)
+  if (!ok) failures++
+}
+
+// A local page to capture (data: URLs are restricted; file:// needs a toggle).
+const pageHtml = `<!doctype html><meta charset="utf-8"><title>target</title>
+<body style="font:24px system-ui"><p style="padding:40px">homework text 12345</p></body>`
+const server = createServer((req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html' })
+  res.end(pageHtml)
+})
+await new Promise((r) => server.listen(0, '127.0.0.1', r))
+const url = `http://127.0.0.1:${server.address().port}/`
+
 const ctx = await chromium.launchPersistentContext(profile, {
-  headless: false,
-  args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`, '--no-first-run'],
+  // channel 'chromium' = the full build with the NEW headless, which loads
+  // extensions (the default "headless shell" does not).
+  channel: 'chromium',
+  args: [`--disable-extensions-except=${distTest}`, `--load-extension=${distTest}`],
 })
 
+const pageErrors = []
+ctx.on('page', (p) => p.on('pageerror', (err) => pageErrors.push(String(err))))
+
 try {
-  // Poll for the MV3 service worker (it may register lazily).
-  let sw = ctx.serviceWorkers()[0]
-  for (let i = 0; i < 20 && !sw; i++) {
-    await new Promise((r) => setTimeout(r, 1000))
-    sw = ctx.serviceWorkers()[0]
-    if (i % 3 === 0) console.log(`  waiting for SW… ${i}s (workers=${ctx.serviceWorkers().length})`)
-  }
-  if (!sw) throw new Error('no service worker — extension did not load')
-  const extId = new URL(sw.url()).host
-  console.log('extensionId =', extId)
+  let [sw] = ctx.serviceWorkers()
+  if (!sw) sw = await ctx.waitForEvent('serviceworker')
+  check(true, 'service worker started')
+
+  // The shortcut must be registered (its physical dispatch needs a real window).
+  const commands = await sw.evaluate(() => chrome.commands.getAll())
+  const shortcut = commands.find((c) => c.name === 'start-capture')?.shortcut
+  check(Boolean(shortcut), `start-capture command registered (${shortcut || 'MISSING'})`)
 
   const page = await ctx.newPage()
-  page.on('console', (m) => console.log('  [console]', m.type(), m.text()))
-  page.on('pageerror', (e) => console.log('  [pageerror]', e.message))
+  await page.goto(url)
+  await page.bringToFront()
 
-  await page.goto(`chrome-extension://${extId}/src/testbed/testbed.html`)
-  await page.waitForFunction(() => document.body.dataset.done, { timeout: 180000 })
+  // An extension page that triggers the same flow the chat window's
+  // "new selection" action will use. It must NOT be the active tab when the
+  // message is sent, or the SW would select on it instead of the target page.
+  // chrome-extension:// URLs have an opaque origin: URL.origin is the literal
+  // string "null" — so build the origin by hand.
+  const chatOrigin = (await sw.evaluate(() => chrome.runtime.getURL(''))).replace(/\/$/, '')
+  const trigger = await ctx.newPage()
+  await trigger.goto(`${chatOrigin}/src/chat/chat.html`)
+  await page.bringToFront()
+  await trigger.evaluate(() => chrome.runtime.sendMessage({ type: 'START_SELECTION' }))
 
-  const status = await page.evaluate(() => document.body.dataset.done)
-  const out = await page.$eval('#out', (el) => el.textContent)
-  console.log('\n=== TESTBED OUTPUT (status=' + status + ') ===')
-  console.log(out)
-  process.exitCode = status === 'ok' ? 0 : 1
-} catch (e) {
-  console.error('VERIFY FAILED:', e)
-  process.exitCode = 1
+  let overlayOk = true
+  try {
+    // DOM marker, not a window flag: content scripts run in an ISOLATED world,
+    // so window.__studyBuddyOverlay is invisible to the page's main world —
+    // but the overlay's DOM is shared.
+    await page.waitForSelector('[data-study-buddy="overlay"]', { timeout: 5000 })
+  } catch (err) {
+    overlayOk = false
+    // Diagnostic dump (kept for future failures): pages, session storage, and a
+    // manual replication of each injection step.
+    console.log('  DIAG pages:', ctx.pages().map((p) => p.url()))
+    console.log('  DIAG session:', JSON.stringify(await sw.evaluate(() => chrome.storage.session.get()).catch((e) => String(e))))
+    console.log('  DIAG manual:', JSON.stringify(
+      await sw
+        .evaluate(async () => {
+          const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+          const out = { activeTab: tab && { id: tab.id, url: tab.url } }
+          if (!tab?.id) return out
+          try {
+            await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/overlay.js'] })
+            out.inject = 'ok'
+          } catch (e) {
+            out.inject = String(e)
+          }
+          try {
+            await chrome.tabs.sendMessage(tab.id, { type: 'SHOW_OVERLAY' })
+            out.msg = 'ok'
+          } catch (e) {
+            out.msg = String(e)
+          }
+          return out
+        })
+        .catch((e) => String(e)),
+    ))
+  }
+  check(overlayOk, 'selection overlay appeared (START_SELECTION → injection)')
+
+  // Drag a 120x80 box at (60, 50).
+  await page.mouse.move(60, 50)
+  await page.mouse.down()
+  await page.mouse.move(180, 130, { steps: 5 })
+  await page.mouse.up()
+
+  // state 'attached': the host wrapper is 0×0 (the panel lives inside its
+  // closed shadow root) — "visible" waits would never pass.
+  await page.waitForSelector('[data-study-buddy="chat"]', { timeout: 5000, state: 'attached' })
+  check(true, 'chat window host embedded near the selection')
+
+  // The SW should have captured, cropped, and stored the region.
+  const capture = await sw.evaluate(async () => {
+    const all = await chrome.storage.session.get()
+    const key = Object.keys(all).find((k) => k.startsWith('capture.'))
+    if (!key) return { ok: false, why: JSON.stringify(Object.keys(all)) }
+    const { dataUrl } = all[key]
+    const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob())
+    return { ok: true, id: key.slice('capture.'.length), w: bitmap.width, h: bitmap.height }
+  })
+  check(capture.ok, `crop stored in session storage (${capture.why ?? `${capture.w}x${capture.h}px`})`)
+  check(
+    capture.ok && Math.abs(capture.w - 120) <= 2 && Math.abs(capture.h - 80) <= 2,
+    `crop size matches the selection (${capture.w}x${capture.h}, expected ~120x80)`,
+  )
+
+  // The chat page must render the crop when opened with this capture id.
+  const chat = await ctx.newPage()
+  await chat.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}`)
+  const imgLoaded = await chat.evaluate(async () => {
+    const img = document.getElementById('crop')
+    await img.decode().catch(() => {})
+    return img.naturalWidth > 0
+  })
+  check(imgLoaded, 'chat page renders the captured crop')
+  await chat.close()
+  await trigger.close()
+
+  check(pageErrors.length === 0, `no page errors${pageErrors.length ? `: ${pageErrors.join('; ')}` : ''}`)
 } finally {
   await ctx.close()
+  server.close()
 }
+
+console.log(failures === 0 ? '\nSMOKE OK' : `\nSMOKE FAILED (${failures})`)
+process.exit(failures === 0 ? 0 : 1)

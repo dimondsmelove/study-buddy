@@ -5,22 +5,35 @@
 // initial state arrives via URL params (?kind=capture&id=…); later states are
 // relayed in by the host via postMessage (no reload, the conversation survives).
 //
-// Phase 0 skeleton: renders the captured crop and the rare non-capture states.
+// Phase 0 skeleton: renders the captured crop and the rare non-capture states,
+// plus the connection-settings view (provider / endpoint / key / model).
 // AI answering (Solve / Explain / Translate / free questions) lands on top of
 // this in the next build.
 
 import type { ChatState, Rect, StoredCapture } from '../shared/messages'
 import { CAPTURE_PREFIX } from '../shared/messages'
+import type { Settings } from '../shared/settings'
+import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
 
 type Kind = 'capture' | 'permission' | 'restricted' | 'error'
 
 const view = (kind: Kind): HTMLElement => document.getElementById(`view-${kind}`)!
 const img = document.getElementById('crop') as HTMLImageElement
 
+// The last non-settings state we rendered. Settings is a modal detour: both
+// Back and a successful Save return to it, so an embedded capture conversation
+// survives the round trip.
+let current: ChatState = { kind: 'error', message: 'Opened without a state. Select a region on a page to begin.' }
+
 function apply(state: ChatState): void {
+  current = state
   for (const k of ['capture', 'permission', 'restricted', 'error'] as const) {
     view(k).hidden = k !== state.kind
   }
+  // Settings is a detour, not a state: every apply() — the host relaying a new
+  // state, or the user leaving settings — dismisses it, so the two can never
+  // end up stacked on screen.
+  document.getElementById('view-settings')!.hidden = true
   switch (state.kind) {
     case 'capture':
       void showCapture(state.imageId)
@@ -79,6 +92,98 @@ async function resolveActiveOrigin(): Promise<string> {
 function showText(id: string, text: string): void {
   document.getElementById(id)!.textContent = text
 }
+
+// ── Settings view ────────────────────────────────────────────────────────────
+// A modal detour from whatever ChatState is applied (see `current`): opened by
+// the ⚙ buttons, closed by Back / Save without touching the state machine.
+
+const el = (id: string): HTMLElement => document.getElementById(id)!
+const setMsg = (text: string): void => {
+  el('set-msg').textContent = text
+}
+
+function fillSettingsForm(s: Settings): void {
+  ;(el('set-provider') as HTMLSelectElement).value = s.provider
+  ;(el('set-base-url') as HTMLInputElement).value = s.baseUrl
+  ;(el('set-api-key') as HTMLInputElement).value = s.apiKey
+  ;(el('set-model') as HTMLInputElement).value = s.model
+  setMsg('') // a stale validation message must not survive a fresh open
+}
+
+function openSettings(): void {
+  void getSettings().then((s) => {
+    fillSettingsForm(s)
+    for (const k of ['capture', 'permission', 'restricted', 'error'] as const) view(k).hidden = true
+    el('view-settings').hidden = false
+  })
+}
+
+function restoreView(): void {
+  // current never holds 'settings' — apply() only records the four real kinds —
+  // so this always lands on the state that was up before the detour.
+  apply(current)
+}
+
+// Provider switching, kept deliberately simple: picking the preset repairs the
+// URL if it still shows the custom default (or was left empty — 'openrouter'
+// was just picked from a blank form); a user-typed URL is left alone. Custom
+// selects the text so it can be typed over in one go.
+(el('set-provider') as HTMLSelectElement).onchange = (e) => {
+  const urlInput = el('set-base-url') as HTMLInputElement
+  if ((e.target as HTMLSelectElement).value === 'openrouter') {
+    if (urlInput.value === '' || urlInput.value === DEFAULT_SETTINGS.baseUrl) {
+      urlInput.value = 'https://openrouter.ai/api/v1'
+    }
+  } else {
+    urlInput.focus()
+    urlInput.select()
+  }
+}
+
+// Show/hide the key without clearing the field; the glyph marks the next
+// action (👁 shown while masked = click to peek), not the current one.
+(el('set-key-toggle') as HTMLButtonElement).onclick = (e) => {
+  const key = el('set-api-key') as HTMLInputElement
+  const btn = e.currentTarget as HTMLButtonElement
+  const show = key.type === 'password'
+  key.type = show ? 'text' : 'password'
+  btn.textContent = show ? '🚫' : '👁'
+}
+
+el('set-save').onclick = () => {
+  const apiKey = (el('set-api-key') as HTMLInputElement).value.trim()
+  if (!apiKey) {
+    setMsg('Enter an API key.')
+    return
+  }
+  // The URL constructor accepts e.g. "https://x" and any scheme — an
+  // http(s) check is the actual gate, not mere parseability.
+  try {
+    const u = new URL((el('set-base-url') as HTMLInputElement).value.trim())
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('not http(s)')
+  } catch {
+    setMsg('Base URL must be a valid http(s) URL.')
+    return
+  }
+  const settings: Settings = {
+    provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
+    baseUrl: (el('set-base-url') as HTMLInputElement).value.trim(),
+    apiKey,
+    model: (el('set-model') as HTMLInputElement).value.trim(),
+  }
+  void setSettings(settings).then(() => {
+    restoreView()
+  })
+}
+
+el('set-back').onclick = () => restoreView()
+
+// Every settings access point: the ⚙ in the capture view plus the same button
+// on the rare views, so a user is never stuck without settings access.
+for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-goto-settings]')) {
+  btn.onclick = () => openSettings()
+}
+el('settings-btn').onclick = () => openSettings()
 
 // The host relays later states without reloading the iframe. Accept only our
 // own origin (the host posts with an explicit chrome-extension:// target).

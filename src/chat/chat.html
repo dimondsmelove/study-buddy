@@ -10,6 +10,9 @@
     <main id="app">
       <!-- capture state: the crop + (Phase 2) the conversation -->
       <section id="view-capture" hidden>
+        <div id="capture-top">
+          <button type="button" id="settings-btn" title="Settings" aria-label="Settings">⚙</button>
+        </div>
         <figure id="crop-figure">
           <img id="crop" alt="Selected region" />
         </figure>
@@ -35,18 +38,49 @@
         <h1>Allow capture on this site</h1>
         <p id="perm-text">Study Buddy needs your permission to capture this site.</p>
         <button id="perm-btn" type="button">Allow for this site</button>
+        <button type="button" class="ghost-settings" data-goto-settings>⚙ Settings…</button>
       </section>
 
       <!-- restricted state: nothing can unblock this -->
       <section id="view-restricted" hidden>
         <h1>Can’t capture this page</h1>
         <p id="restricted-text"></p>
+        <button type="button" class="ghost-settings" data-goto-settings>⚙ Settings…</button>
       </section>
 
       <!-- error state -->
       <section id="view-error" hidden>
         <h1>Something went wrong</h1>
         <p id="error-text"></p>
+        <button type="button" class="ghost-settings" data-goto-settings>⚙ Settings…</button>
+      </section>
+
+      <!-- settings state: AI connection (provider / endpoint / key / model) -->
+      <section id="view-settings" hidden>
+        <h1>Settings</h1>
+        <label for="set-provider">Provider</label>
+        <select id="set-provider">
+          <option value="openrouter">OpenRouter</option>
+          <option value="custom">Custom OpenAI-compatible</option>
+        </select>
+        <label for="set-base-url">Base URL</label>
+        <input id="set-base-url" type="url" autocomplete="off" spellcheck="false" />
+        <label for="set-api-key">API key</label>
+        <div class="key-row">
+          <input id="set-api-key" type="password" autocomplete="off" spellcheck="false" />
+          <button type="button" id="set-key-toggle" title="Show / hide key" aria-label="Show or hide the API key">👁</button>
+        </div>
+        <label for="set-model">Model</label>
+        <input id="set-model" type="text" placeholder="Vision model — picker lands next build" autocomplete="off" spellcheck="false" />
+        <p id="set-msg" role="status"></p>
+        <div id="set-actions">
+          <button type="button" id="set-back">Back</button>
+          <button type="button" id="set-save" class="primary">Save</button>
+        </div>
+        <p class="set-note">
+          The API key is stored only on this device (local extension storage) — never synced or sent anywhere except the model endpoint.
+          Get a key at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">openrouter.ai/settings/keys</a>.
+        </p>
       </section>
     </main>
     <script type="module" src="./chat.ts"></script>

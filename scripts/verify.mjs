@@ -166,6 +166,29 @@ try {
   await chat.close()
   await trigger.close()
 
+  // Settings round trip in a bare chat page (no params → the initial error
+  // view, whose ⚙ Settings… button is the exact rescue path a stuck user has).
+  const settings = await ctx.newPage()
+  await settings.goto(`${chatOrigin}/src/chat/chat.html`)
+  await settings.click('#view-error:not([hidden]) [data-goto-settings]')
+  await settings.waitForSelector('#view-settings:not([hidden])')
+  check(true, 'settings view opens from the error view')
+  await settings.fill('#set-api-key', 'sk-test-123')
+  await settings.click('#set-save')
+  // Back on the pre-settings view (the error one) means Save returned cleanly.
+  // state 'attached': an element WITH [hidden] can never be "visible" — the
+  // selector already encodes the hidden-ness we're waiting for.
+  await settings.waitForSelector('#view-settings[hidden]', { state: 'attached' })
+  const stored = (await settings.evaluate(() => chrome.storage.local.get())).settings
+  check(
+    stored && stored.provider === 'openrouter' &&
+      stored.baseUrl === 'https://openrouter.ai/api/v1' &&
+      stored.apiKey === 'sk-test-123' &&
+      stored.model === '',
+    `settings persisted to storage.local with OpenRouter defaults (${JSON.stringify(stored)})`,
+  )
+  await settings.close()
+
   check(pageErrors.length === 0, `no page errors${pageErrors.length ? `: ${pageErrors.join('; ')}` : ''}`)
 } finally {
   await ctx.close()

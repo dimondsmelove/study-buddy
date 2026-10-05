@@ -12,7 +12,8 @@ export interface Settings {
   provider: 'openrouter' | 'custom'
   baseUrl: string
   apiKey: string
-  /** Model id; empty = not chosen yet (a vision-model picker lands in the next task). */
+  /** Model id; empty = not chosen yet. The settings form offers the endpoint's
+   *  vision-model list (fetchVisionModels) but the field stays free-text. */
   model: string
 }
 

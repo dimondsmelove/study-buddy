@@ -5,20 +5,25 @@
 // initial state arrives via URL params (?kind=capture&id=…); later states are
 // relayed in by the host via postMessage (no reload, the conversation survives).
 //
-// Phase 0 skeleton: renders the captured crop and the rare non-capture states,
-// plus the connection-settings view (provider / endpoint / key / model).
-// AI answering (Solve / Explain / Translate / free questions) lands on top of
-// this in the next build.
+// Renders the captured crop and the rare non-capture states, plus the
+// connection-settings view (provider / endpoint / key / model). The crop is
+// sent to a vision model and the answer streams into the thread: Solve /
+// Explain / Translate presets and free-form questions.
 
+import type { ApiContent, ApiMessage } from '../shared/api'
+import { chatCompletion } from '../shared/api'
 import type { ChatState, Rect, StoredCapture } from '../shared/messages'
 import { CAPTURE_PREFIX } from '../shared/messages'
+import { fetchVisionModels } from '../shared/models'
 import type { Settings } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
 
 type Kind = 'capture' | 'permission' | 'restricted' | 'error'
 
 const view = (kind: Kind): HTMLElement => document.getElementById(`view-${kind}`)!
+const el = (id: string): HTMLElement => document.getElementById(id)!
 const img = document.getElementById('crop') as HTMLImageElement
+const thread = document.getElementById('thread') as HTMLElement
 
 // The last non-settings state we rendered. Settings is a modal detour: both
 // Back and a successful Save return to it, so an embedded capture conversation
@@ -57,7 +62,9 @@ async function showCapture(imageId: string): Promise<void> {
     apply({ kind: 'error', message: 'This capture has expired (browser restart?). Select the region again.' })
     return
   }
+  activeImage = stored.dataUrl
   img.src = stored.dataUrl
+  ensureHint()
 }
 
 function showPermission(origin: string): void {
@@ -93,11 +100,159 @@ function showText(id: string, text: string): void {
   document.getElementById(id)!.textContent = text
 }
 
+// ── AI answering ─────────────────────────────────────────────────────────────
+// The thread is a plain-text transcript held in memory, not persisted: the
+// host reuses this iframe across captures, so `history` is what keeps the
+// conversation's context. Each new capture swaps `activeImage` and the next
+// question carries the new crop; earlier images stay in `history` as part of
+// the model's context.
+
+// One voice for the model's role: concise tutor, grounded in the screenshot,
+// never inventing content that isn't there. Kept short — the preset prompts
+// below carry the task-specific instruction.
+const SYSTEM_PROMPT =
+  'You are Study Buddy, a concise and friendly tutor. The user shares a screenshot ' +
+  'of part of their screen and asks about what is visible. Solve or explain ' +
+  'exercises and translate text. Ground every answer in the image; if something ' +
+  'is unreadable or not present, say so instead of guessing.'
+
+// Preset button label → the instruction sent with the crop. English on purpose:
+// vision models follow it most reliably, regardless of the answer's language.
+const PRESET_PROMPTS: Record<string, string> = {
+  solve: 'Solve the exercise shown in the image. Give the final answer first, then a short step-by-step solution.',
+  explain: 'Explain what is shown in the image, step by step, as a patient tutor.',
+  translate: 'Translate all the text in the image into English, keeping the layout where it matters.',
+}
+
+// The crop currently on screen, as a data URL, attached to the next question.
+let activeImage: string | null = null
+// Conversation so far (user/assistant turns), sent on every request so the
+// model sees the full context. Images are kept in their turns.
+const history: ApiMessage[] = []
+// Non-null while a completion is streaming; its abort cancels the request.
+let inflight: AbortController | null = null
+
+function ensureHint(): void {
+  if (thread.children.length || thread.querySelector('.hint')) return
+  const hint = document.createElement('p')
+  hint.className = 'hint'
+  hint.textContent = 'Pick an action above, or ask a question about the selected region.'
+  thread.appendChild(hint)
+}
+
+function scrollThread(): void {
+  thread.scrollTop = thread.scrollHeight
+}
+
+/** Append one message bubble; returns its body so streaming can grow it. */
+function appendMessage(role: 'user' | 'assistant' | 'error', text: string): HTMLDivElement {
+  thread.querySelector('.hint')?.remove()
+  const wrap = document.createElement('div')
+  wrap.className = `msg ${role}`
+  const body = document.createElement('div')
+  body.className = 'msg-body'
+  body.textContent = text
+  wrap.appendChild(body)
+  thread.appendChild(wrap)
+  scrollThread()
+  return body
+}
+
+function setBusy(busy: boolean): void {
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy
+  ;(el('ask-input') as HTMLInputElement).disabled = busy
+  ;(el('ask-btn') as HTMLButtonElement).textContent = busy ? 'Stop' : 'Ask'
+}
+
+/** Settings must be usable before a request can go out; otherwise detour the
+ *  user to the settings form with a why. Returns null if a detour happened. */
+async function requireSettings(): Promise<Settings | null> {
+  const settings = await getSettings()
+  if (settings.apiKey && settings.model) return settings
+  openSettings('Add an API key and choose a model, then Save.')
+  return null
+}
+
+/** One question: append the user turn (with the current crop), stream the
+ *  answer into a live bubble, and record it in `history` on success. */
+async function send(prompt: string): Promise<void> {
+  const text = prompt.trim()
+  if (!text || inflight) return
+  const settings = await requireSettings()
+  if (!settings) return
+
+  const content: ApiContent = [{ type: 'text', text }]
+  if (activeImage) content.push({ type: 'image_url', image_url: { url: activeImage } })
+  history.push({ role: 'user', content })
+  appendMessage('user', text)
+
+  const reply = appendMessage('assistant', '…')
+  const controller = new AbortController()
+  inflight = controller
+  setBusy(true)
+  let acc = ''
+  try {
+    await chatCompletion({
+      settings,
+      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
+      signal: controller.signal,
+      onDelta: (delta) => {
+        acc += delta
+        reply.textContent = acc
+        scrollThread()
+      },
+    })
+    if (acc) history.push({ role: 'assistant', content: acc })
+    else reply.textContent = '(the model returned an empty reply)'
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (message === 'Cancelled.') {
+      // The user pressed Stop — not a failure. Keep whatever streamed as a
+      // normal turn; a stop before the first delta leaves the question open.
+      if (acc) history.push({ role: 'assistant', content: acc })
+      else {
+        history.pop()
+        reply.textContent = '(stopped)'
+      }
+    } else {
+      // A failed turn is dropped from history so the next attempt re-sends
+      // cleanly; the error bubble stays as the visible record. A partial
+      // stream is kept above the message — it may still be useful.
+      history.pop()
+      reply.parentElement?.classList.add('error')
+      reply.textContent = acc ? `${acc}\n\n[${message}]` : message
+    }
+  } finally {
+    inflight = null
+    setBusy(false)
+    scrollThread()
+  }
+}
+
+for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
+  btn.addEventListener('click', () => {
+    const prompt = PRESET_PROMPTS[btn.dataset.preset ?? '']
+    if (prompt) void send(prompt)
+  })
+}
+
+;(el('ask-form') as HTMLFormElement).addEventListener('submit', (e) => {
+  e.preventDefault()
+  // While a request is in flight the same button doubles as Stop.
+  if (inflight) {
+    inflight.abort()
+    return
+  }
+  const input = el('ask-input') as HTMLInputElement
+  const question = input.value
+  input.value = ''
+  void send(question)
+})
+
 // ── Settings view ────────────────────────────────────────────────────────────
 // A modal detour from whatever ChatState is applied (see `current`): opened by
 // the ⚙ buttons, closed by Back / Save without touching the state machine.
 
-const el = (id: string): HTMLElement => document.getElementById(id)!
 const setMsg = (text: string): void => {
   el('set-msg').textContent = text
 }
@@ -108,11 +263,23 @@ function fillSettingsForm(s: Settings): void {
   ;(el('set-api-key') as HTMLInputElement).value = s.apiKey
   ;(el('set-model') as HTMLInputElement).value = s.model
   setMsg('') // a stale validation message must not survive a fresh open
+  modelNote('')
 }
 
-function openSettings(): void {
+/** Status line under the model field (load progress / result), separate from
+ *  the red Save-validation message so the two can't overwrite each other. */
+function modelNote(text: string, isError = false): void {
+  const note = el('set-model-note')
+  note.textContent = text
+  note.classList.toggle('err', isError)
+}
+
+function openSettings(message = ''): void {
   void getSettings().then((s) => {
     fillSettingsForm(s)
+    // After fillSettingsForm clears any stale message, show the caller's why
+    // (e.g. the AI-answering gate that sent the user here).
+    setMsg(message)
     for (const k of ['capture', 'permission', 'restricted', 'error'] as const) view(k).hidden = true
     el('view-settings').hidden = false
   })
@@ -148,6 +315,49 @@ function restoreView(): void {
   const show = key.type === 'password'
   key.type = show ? 'text' : 'password'
   btn.textContent = show ? '🚫' : '👁'
+}
+
+// Populate the model datalist from the endpoint's /models. The field stays
+// free-text, so a model missing from the list can still be typed by hand; the
+// datalist only saves spelling. fetchVisionModels needs the CURRENT form's
+// base URL and key — not the saved ones — so the list matches what's typed.
+;(el('set-load-models') as HTMLButtonElement).onclick = async () => {
+  const apiKey = (el('set-api-key') as HTMLInputElement).value.trim()
+  if (!apiKey) {
+    modelNote('Enter an API key first.', true)
+    return
+  }
+  const settings: Settings = {
+    provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
+    baseUrl: (el('set-base-url') as HTMLInputElement).value.trim(),
+    apiKey,
+    model: (el('set-model') as HTMLInputElement).value.trim(),
+  }
+  const btn = el('set-load-models') as HTMLButtonElement
+  btn.disabled = true
+  modelNote('Loading…')
+  try {
+    const { models, filtered } = await fetchVisionModels(settings)
+    const list = el('model-options') as HTMLDataListElement
+    list.replaceChildren(
+      ...models.map((m) => {
+        const opt = document.createElement('option')
+        opt.value = m.id
+        opt.label = m.name
+        return opt
+      }),
+    )
+    modelNote(
+      filtered
+        ? `Loaded ${models.length} vision models. Pick one, or type an id.`
+        : `Loaded ${models.length} models — this endpoint doesn't report which are vision-capable, so the list isn't filtered.`,
+    )
+    setMsg('')
+  } catch (err) {
+    modelNote(err instanceof Error ? err.message : String(err), true)
+  } finally {
+    btn.disabled = false
+  }
 }
 
 el('set-save').onclick = () => {

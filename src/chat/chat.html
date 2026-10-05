@@ -8,7 +8,7 @@
   </head>
   <body>
     <main id="app">
-      <!-- capture state: the crop + (Phase 2) the conversation -->
+      <!-- capture state: the crop + the conversation about it -->
       <section id="view-capture" hidden>
         <div id="capture-top">
           <button type="button" id="settings-btn" title="Settings" aria-label="Settings">⚙</button>
@@ -21,15 +21,10 @@
           <button type="button" class="preset" data-preset="explain">Explain</button>
           <button type="button" class="preset" data-preset="translate">Translate</button>
         </div>
-        <div id="thread" aria-live="polite">
-          <p id="skeleton-note">
-            Phase 0 skeleton — the capture pipeline works end to end. AI answering
-            (Solve / Explain / Translate / free questions) lands in the next build.
-          </p>
-        </div>
+        <div id="thread" aria-live="polite"></div>
         <form id="ask-form" autocomplete="off">
-          <input id="ask-input" type="text" placeholder="Ask anything about this…" disabled />
-          <button id="ask-btn" type="submit" disabled>Ask</button>
+          <input id="ask-input" type="text" placeholder="Ask anything about this…" />
+          <button id="ask-btn" type="submit">Ask</button>
         </form>
       </section>
 
@@ -71,7 +66,12 @@
           <button type="button" id="set-key-toggle" title="Show / hide key" aria-label="Show or hide the API key">👁</button>
         </div>
         <label for="set-model">Model</label>
-        <input id="set-model" type="text" placeholder="Vision model — picker lands next build" autocomplete="off" spellcheck="false" />
+        <div class="model-row">
+          <input id="set-model" type="text" placeholder="e.g. qwen/qwen3.7-flash" autocomplete="off" spellcheck="false" list="model-options" />
+          <button type="button" id="set-load-models" title="Load the endpoint's vision-model list">↻</button>
+        </div>
+        <datalist id="model-options"></datalist>
+        <p id="set-model-note" class="set-note"></p>
         <p id="set-msg" role="status"></p>
         <div id="set-actions">
           <button type="button" id="set-back">Back</button>

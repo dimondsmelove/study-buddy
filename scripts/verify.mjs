@@ -49,12 +49,34 @@ const check = (ok, label) => {
 // A local page to capture (data: URLs are restricted; file:// needs a toggle).
 const pageHtml = `<!doctype html><meta charset="utf-8"><title>target</title>
 <body style="font:24px system-ui"><p style="padding:40px">homework text 12345</p></body>`
+
+// The same server doubles as a mock OpenAI-compatible endpoint for the AI
+// test below: /v1/chat/completions streams two SSE deltas, and the request
+// body is kept so the test can assert the crop actually went out as an image.
+let lastAiRequest = null
 const server = createServer((req, res) => {
+  if (req.url?.includes('/chat/completions')) {
+    let body = ''
+    req.on('data', (chunk) => (body += chunk))
+    req.on('end', () => {
+      try {
+        lastAiRequest = JSON.parse(body)
+      } catch {
+        lastAiRequest = null
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n')
+      res.write('data: {"choices":[{"delta":{"content":" world"}}]}\n\n')
+      res.end('data: [DONE]\n\n')
+    })
+    return
+  }
   res.writeHead(200, { 'content-type': 'text/html' })
   res.end(pageHtml)
 })
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
-const url = `http://127.0.0.1:${server.address().port}/`
+const origin = `http://127.0.0.1:${server.address().port}`
+const url = `${origin}/`
 
 const ctx = await chromium.launchPersistentContext(profile, {
   // channel 'chromium' = the full build with the NEW headless, which loads
@@ -188,6 +210,38 @@ try {
     `settings persisted to storage.local with OpenRouter defaults (${JSON.stringify(stored)})`,
   )
   await settings.close()
+
+  // AI answering: point settings at the mock endpoint and send the captured
+  // crop through the Solve preset. The reply must stream into the thread, and
+  // the request must carry the crop as an image_url.
+  await sw.evaluate(
+    async (s) => chrome.storage.local.set({ settings: s }),
+    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', model: 'mock-vision' },
+  )
+  const ai = await ctx.newPage()
+  await ai.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}`)
+  // Wait until the stored crop is decoded — i.e. `activeImage` is set — or the
+  // preset click could race the storage read and send a caption-less question.
+  await ai.waitForFunction(() => {
+    const i = document.getElementById('crop')
+    return !!i?.src && i.naturalWidth > 0
+  })
+  await ai.click('.preset[data-preset="solve"]')
+  const reply = await ai
+    .waitForFunction(() => {
+      const body = document.querySelector('.msg.assistant .msg-body')
+      return body && body.textContent === 'Hello world' ? 'Hello world' : false
+    }, { timeout: 5000 })
+    .then((h) => h.jsonValue())
+    .catch(() => null)
+  check(reply === 'Hello world', `assistant reply streamed into the thread (${reply ?? 'no reply'})`)
+  const firstUser = lastAiRequest?.messages?.find((m) => m.role === 'user')
+  const sentImage =
+    Array.isArray(firstUser?.content) &&
+    firstUser.content.some((p) => p?.type === 'image_url' && typeof p.image_url?.url === 'string' && p.image_url.url.startsWith('data:image/png'))
+  check(sentImage, 'request carried the crop as an image_url data URL')
+  check(lastAiRequest?.model === 'mock-vision', `request used the configured model (${lastAiRequest?.model ?? 'MISSING'})`)
+  await ai.close()
 
   check(pageErrors.length === 0, `no page errors${pageErrors.length ? `: ${pageErrors.join('; ')}` : ''}`)
 } finally {

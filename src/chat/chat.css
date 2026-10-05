@@ -111,7 +111,52 @@ button:disabled {
   border-radius: 8px;
   padding: 10px;
   background: #fafafa;
+}
+
+#thread .hint {
+  margin: 0;
   color: var(--muted);
+}
+
+/* Message bubbles: user right / accent, assistant left / white, errors red. */
+.msg {
+  display: flex;
+  margin-bottom: 8px;
+}
+
+.msg:last-child {
+  margin-bottom: 0;
+}
+
+.msg-body {
+  max-width: 100%;
+  padding: 6px 9px;
+  border-radius: 8px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg.user {
+  justify-content: flex-end;
+}
+
+.msg.user .msg-body {
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: 2px;
+}
+
+.msg.assistant .msg-body {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 2px;
+}
+
+.msg.error .msg-body {
+  background: #fef3f2;
+  border-color: #fda29b;
+  color: #b42318;
 }
 
 #ask-form {
@@ -187,18 +232,25 @@ button:disabled {
   outline-offset: -1px;
 }
 
-.key-row {
+.key-row,
+.model-row {
   display: flex;
   gap: 6px;
 }
 
-.key-row input {
+.key-row input,
+.model-row input {
   flex: 1;
   min-width: 0;
 }
 
-#set-key-toggle {
-  /* fixed width so the 👁→🚫 swap doesn't shift the layout */
+#set-model-note.err {
+  color: #b42318;
+}
+
+#set-key-toggle,
+#set-load-models {
+  /* fixed width so label/icon swaps don't shift the layout */
   width: 32px;
   padding: 5px 0;
 }

@@ -280,22 +280,42 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-key-toggle
 // every token. DOMPurify guards the HTML; KaTeX runs with trust:false.
 
 function renderAnswer(node: HTMLElement, text: string): void {
-  // Models sometimes emit TeX delimiters \( \) / \[ \] instead of $ / $$.
-  // marked strips the backslash as a Markdown escape BEFORE KaTeX runs, which
-  // destroys those delimiters and leaves literal ( ) [ ] in the answer — so
-  // normalize to $ / $$ first.
-  const normalized = text
+  // 1) Models sometimes emit TeX delimiters \( \) / \[ \] instead of $ / $$.
+  //    marked strips the backslash as a Markdown escape BEFORE KaTeX runs,
+  //    which destroys those delimiters — normalize to $ / $$ first.
+  let src = text
     .replace(/\\\[/g, '\n$$\n')
     .replace(/\\\]/g, '\n$$\n')
     .replace(/\\\(/g, '$')
     .replace(/\\\)/g, '$')
-  const html = marked.parse(normalized, { gfm: true, breaks: true }) as string
+
+  // 2) With breaks:true, marked turns newlines inside a $$...$$ block into
+  //    <br>, splitting the text nodes KaTeX auto-render matches on — multi-line
+  //    display math then renders as raw LaTeX. Protect every math span with a
+  //    placeholder, parse Markdown, restore afterwards.
+  const mathSpans: string[] = []
+  src = src.replace(/\$\$[\s\S]+?\$\$|\$[^$\n]+?\$/g, (m) => {
+    // A lone backslash before a newline is a broken line break (e.g. rows of
+    // \begin{cases}); make it a proper \\ so KaTeX renders the rows.
+    mathSpans.push(m.replace(/(?<!\\)\\\n/g, '\\\\\n'))
+    return `SBMATH${mathSpans.length - 1}SB`
+  })
+
+  const html = marked.parse(src, { gfm: true, breaks: true }) as string
   node.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
+
+  // Restore the math spans as TEXT: they survived sanitize untouched; putting
+  // them back via innerHTML would let stray < or & be parsed as markup.
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+  const textNodes: Text[] = []
+  while (walker.nextNode()) textNodes.push(walker.currentNode as Text)
+  for (const tn of textNodes) {
+    if (!tn.data.includes('SBMATH')) continue
+    tn.data = tn.data.replace(/SBMATH(\d+)SB/g, (_, i) => mathSpans[Number(i)])
+  }
   renderMathInElement(node, {
     delimiters: [
       { left: '$$', right: '$$', display: true },
-      { left: '\\[', right: '\\]', display: true },
-      { left: '\\(', right: '\\)', display: false },
       { left: '$', right: '$', display: false },
     ],
     throwOnError: false,
@@ -388,7 +408,7 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
   actions.appendChild(copy)
 
   const simpler = iconButton('simpler', t(uiLang, 'msg.simpler'))
-  simpler.onclick = () => void send(simplerPrompt(promptCtx()), 'simpler')
+  simpler.onclick = () => void send(simplerPrompt(promptCtx()), 'simpler', t(uiLang, 'msg.simpler'))
   actions.appendChild(simpler)
 
   if (canRegenerate) {
@@ -483,7 +503,10 @@ async function streamReply(): Promise<void> {
   }
 }
 
-async function send(prompt: string, kind: TurnKind = 'ask'): Promise<void> {
+/** Stream a turn. `prompt` goes to the model; the bubble shows `display`
+ *  instead — task buttons send a full template the user never needs to see
+ *  (like ChatGPT's custom instructions), while free questions show as typed. */
+async function send(prompt: string, kind: TurnKind = 'ask', display?: string): Promise<void> {
   const text = prompt.trim()
   if (!text || inflight) return
   currentTurn = kind
@@ -492,7 +515,7 @@ async function send(prompt: string, kind: TurnKind = 'ask'): Promise<void> {
   const content: ApiContent = [{ type: 'text', text }]
   if (activeImage) content.push({ type: 'image_url', image_url: { url: activeImage } })
   history.push({ role: 'user', content })
-  addMessage('user', text)
+  addMessage('user', display ?? text)
   await streamReply()
 }
 
@@ -511,7 +534,8 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   btn.addEventListener('click', () => {
     const task = btn.dataset.preset as TaskId | undefined
     if (!task) return
-    void send(taskPrompt(task, promptCtx()), task)
+    // The bubble shows the button label; the full template goes to the model.
+    void send(taskPrompt(task, promptCtx()), task, t(uiLang, `preset.${task}`))
   })
 }
 

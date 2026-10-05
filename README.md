@@ -7,13 +7,16 @@ Select a region (icon or `Ctrl+Shift+Y`) → the chat window appears next to you
 selection → pick a task or ask your own question. The answer streams in beside
 the page, in your language.
 
-**Status: MVP.** Region selection → screenshot → crop → chat window, first-run
-onboarding (bring your own OpenRouter key, tested live), interface + answer
-language settings (English / Russian), task-shaped answers (Solve / Quiz /
-Explain / Translate / Summarize + free-form Ask), per-answer copy / explain
-simpler / retry, and an automatic model fallback all work. The answering model
-is fixed to DeepSeek (see `src/shared/ai.ts`) — not user-selectable yet. Store
-copy, privacy policy, and screenshots live in `store/`.
+**Status: MVP.** Region selection → screenshot → crop → chat window,
+interface + answer language settings (English / Russian), task-shaped answers
+(Solve / Quiz / Explain / Translate / Summarize + free-form Ask), Markdown +
+LaTeX rendering, per-answer copy / explain simpler / retry, and an automatic
+model fallback all work. There is **no onboarding**: a store build bakes an API
+key so it works on install (see `src/shared/config.ts`). All model calls go
+through the `Gateway` seam (`src/shared/gateway.ts`) — currently a direct
+provider, later your hosted proxy for subscriptions. The answering model is
+fixed to DeepSeek (`src/shared/ai.ts`). Store copy, privacy policy, and
+screenshots live in `store/`.
 
 Manual use:
 
@@ -49,7 +52,8 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 ```
 npm install
 npm run dev        # Vite + CRXJS with HMR
-npm run build      # production build → dist/
+npm run build      # production build → dist/ (set SB_DEFAULT_API_KEY to bake a key)
+# store build:  SB_DEFAULT_API_KEY=sk-or-... npm run build
 npm run typecheck
 npm run verify     # smoke test: load dist/ in Chromium, select, capture, chat,
                    # AI answer (mock SSE endpoint) — no API key needed

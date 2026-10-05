@@ -19,8 +19,8 @@ conflicts before submitting):
 
 Pick one:
 
-1. `Select any question on screen, get a step-by-step answer in your language. Your own key, no account.`
-2. `Snip a question, get it solved step by step — math, quizzes, code, translation. Your key, no account.`
+1. `Select any question on screen, get a step-by-step answer in your language. No account, works instantly.`
+2. `Snip a question, get it solved step by step — math, quizzes, code, translation. No account, no setup.`
 
 ## Detailed description
 
@@ -42,10 +42,10 @@ beside your selection — without switching tabs or copy-pasting into a chat.
 **Your language.** Answers follow the language you write in; the interface and
 the preset actions can be set to English or Russian.
 
-**Your key, your privacy.** Bring your own OpenRouter API key. It is stored
-only on your device and sent only to the model endpoint you choose. There is no
-Study Buddy account, no server, and no analytics. Only the region you select is
-ever sent — the rest of the page never leaves your browser.
+**Works on install. Private by design.** No account, no setup, no analytics —
+add it and start selecting. Only the region you select is ever sent, directly
+from your browser to the model provider; the rest of the page never leaves your
+browser. (Advanced users can point it at their own key.)
 
 **Works where you study.** Canvas, Blackboard, Moodle, Google Classroom, PDFs
 opened in the browser, image-based questions — anywhere you can see it, you can
@@ -59,12 +59,10 @@ stop your study session.
 **How to start**
 
 1. Add the extension and pin it.
-2. Paste your OpenRouter API key (a link to get one is right there).
-3. Press **Ctrl+Shift+Y** (or click the icon), drag a box around a question.
-4. Pick an action — or type your own question.
+2. Press **Ctrl+Shift+Y** (or click the icon), drag a box around a question.
+3. Pick an action — or type your own question.
 
-Free to use with your own API key — you pay only your model provider for what
-you ask.
+No account and no key to configure: it works the moment it is installed.
 
 ## Category & metadata
 

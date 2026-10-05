@@ -127,16 +127,7 @@ async function compose(id, name, bgPage, panelPage) {
   console.log('wrote', name)
 }
 
-// 1. Onboarding (Russian, no key).
-await setSettings({ provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', uiLanguage: 'ru', answerLanguage: 'ru' })
-{
-  const p = await panelShot()
-  await p.goto(`${origin}/src/chat/chat.html`)
-  await p.waitForSelector('#view-welcome:not([hidden])')
-  await compose('onboarding', '1-onboarding.png', PAGES.math, p)
-}
-
-// Key set, English UI from here on.
+// The store build ships a baked key — no onboarding. English UI here.
 await setSettings({ provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'sk-demo', uiLanguage: 'en', answerLanguage: 'en' })
 
 async function capturePanel(id, cropHtml) {
@@ -148,38 +139,38 @@ async function capturePanel(id, cropHtml) {
   return p
 }
 
-// 2. Solve.
+// 1. Solve.
 {
   const p = await capturePanel('math', '<h2>Problem 3</h2><p>A train travels 240 km in 3 h, then 180 km in 2 h. What is its average speed?</p>')
   await injectConversation(p, 'Solve the problem shown in the image.',
     '1) Answer: 84 km/h\n\n2) Steps:\n• Distance = 240 + 180 = 420 km\n• Time = 3 + 2 = 5 h\n• Speed = 420 ÷ 5\n\n3) Check: 84 × 5 = 420 ✓')
-  await compose('solve', '2-solve.png', PAGES.math, p)
+  await compose('solve', '1-solve.png', PAGES.math, p)
 }
 
-// 3. Quiz.
+// 2. Quiz.
 {
   const p = await capturePanel('quiz', '<h2>Which process do plants use to make food?</h2><p>A) Respiration   B) Photosynthesis   C) Digestion   D) Fermentation</p>')
   await injectConversation(p, 'This is a multiple-choice question.',
     '1) Correct option: B) Photosynthesis\n\n2) Why: plants use sunlight, water and CO₂ to make glucose — that is making food.\n\n3) Why others are wrong:\n• A) Respiration releases energy from food, it does not make it.\n• C) Digestion breaks food down.\n• D) Fermentation converts sugars anaerobically.')
-  await compose('quiz', '3-quiz.png', PAGES.quiz, p)
+  await compose('quiz', '2-quiz.png', PAGES.quiz, p)
 }
 
-// 4. Translate.
+// 3. Translate.
 {
   const p = await capturePanel('ru', '<h2>Отрывок</h2><p>Вода кипит при ста градусах Цельсия на уровне моря, но в горах температура кипения ниже.</p>')
   await injectConversation(p, 'Translate all the text in the image into English.',
     'Water boils at one hundred degrees Celsius at sea level, but in the mountains the boiling point is lower because of the reduced atmospheric pressure.')
-  await compose('translate', '4-translate.png', PAGES.ru, p)
+  await compose('translate', '3-translate.png', PAGES.ru, p)
 }
 
-// 5. Settings (languages).
+// 4. Settings (languages).
 {
   const p = await panelShot()
   await p.goto(`${origin}/src/chat/chat.html?kind=error&message=Select%20a%20region%20to%20begin.`)
   await p.waitForSelector('#view-error:not([hidden])')
   await p.click('#view-error:not([hidden]) [data-goto-settings]')
   await p.waitForSelector('#view-settings:not([hidden])')
-  await compose('settings', '5-settings.png', PAGES.math, p)
+  await compose('settings', '4-settings.png', PAGES.math, p)
 }
 
 console.log(`Screenshots written to ${out}`)

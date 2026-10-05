@@ -5,13 +5,21 @@
 // initial state arrives via URL params (?kind=capture&id=…); later states are
 // relayed in by the host via postMessage (no reload, the conversation survives).
 //
-// Views: onboarding (no key yet), capture (crop + task buttons + thread),
-// the rare permission/restricted/error states, and a settings detour. The crop
-// is sent to a vision model and the answer streams into the thread.
+// Views: capture (crop + task buttons + thread), the rare permission /
+// restricted / error states, and a settings detour. There is no onboarding:
+// the store build ships a baked key, so the extension works on install. The
+// crop goes through the Gateway (src/shared/gateway.ts) and the answer streams
+// into the thread, rendered as Markdown + LaTeX.
+
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+import renderMathInElement from 'katex/contrib/auto-render'
+import 'katex/dist/katex.min.css'
 
 import type { ApiContent, ApiMessage } from '../shared/api'
-import { pingConnection } from '../shared/api'
-import { askWithFallback, modelLabel } from '../shared/ai'
+import { modelLabel } from '../shared/ai'
+import { DEFAULT_API_KEY, DEFAULT_BASE_URL } from '../shared/config'
+import { createGateway } from '../shared/gateway'
 import type { ChatState, Rect, StoredCapture } from '../shared/messages'
 import { CAPTURE_PREFIX } from '../shared/messages'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
@@ -19,8 +27,8 @@ import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, PROMPT_LANGUAGE_NAMES, browserLang, resolveUiLang, t } from '../shared/i18n'
 
-type Kind = 'welcome' | 'capture' | 'permission' | 'restricted' | 'error'
-const KINDS: Kind[] = ['welcome', 'capture', 'permission', 'restricted', 'error']
+type Kind = 'capture' | 'permission' | 'restricted' | 'error'
+const KINDS: Kind[] = ['capture', 'permission', 'restricted', 'error']
 
 const el = (id: string): HTMLElement => document.getElementById(id)!
 const img = document.getElementById('crop') as HTMLImageElement
@@ -29,12 +37,8 @@ const thread = document.getElementById('thread') as HTMLElement
 let uiLang: UiLang = 'en'
 let settingsCache: Settings = { ...DEFAULT_SETTINGS }
 
-// Last real state rendered; settings is a detour on top of it and onboarding
-// replaces it until a key exists.
+// Last real state rendered; settings is a detour on top of it.
 let current: ChatState = { kind: 'error', message: '' }
-// The state to restore once onboarding finishes (e.g. the capture that was
-// waiting when the user had no key yet).
-let pendingState: ChatState | null = null
 
 // ── i18n ─────────────────────────────────────────────────────────────────────
 
@@ -68,12 +72,9 @@ function answerLangOptions(): HTMLOptionElement[] {
   )
 }
 
-/** Rebuild every language select (welcome + settings), keeping the value. */
 function fillLanguageSelects(): void {
   for (const [id, make] of [
-    ['welcome-ui-lang', uiLangOptions],
     ['set-ui-lang', uiLangOptions],
-    ['welcome-ans-lang', answerLangOptions],
     ['set-ans-lang', answerLangOptions],
   ] as const) {
     const sel = el(id) as HTMLSelectElement
@@ -91,13 +92,21 @@ async function loadSettings(): Promise<Settings> {
   return settingsCache
 }
 
-/** Persist a language change immediately so the UI re-renders in place. */
 async function updateSettings(next: Settings): Promise<void> {
   settingsCache = next
   uiLang = resolveUiLang(next.uiLanguage, browserLang())
   applyI18n()
   fillLanguageSelects()
   await setSettings(next)
+}
+
+/** Settings with the baked defaults filled in: a shipped build always has a key. */
+function effectiveSettings(): Settings {
+  return {
+    ...settingsCache,
+    baseUrl: settingsCache.baseUrl || DEFAULT_BASE_URL,
+    apiKey: settingsCache.apiKey || DEFAULT_API_KEY,
+  }
 }
 
 // ── views ────────────────────────────────────────────────────────────────────
@@ -109,7 +118,6 @@ function show(kind: Kind | 'settings'): void {
 
 function apply(state: ChatState): void {
   current = state
-  pendingState = null
   show(state.kind)
   switch (state.kind) {
     case 'capture':
@@ -177,72 +185,6 @@ function showText(id: string, text: string): void {
   document.getElementById(id)!.textContent = text
 }
 
-// ── onboarding ───────────────────────────────────────────────────────────────
-
-function setWelcomeMsg(text: string, isError = false): void {
-  const p = el('welcome-msg')
-  p.textContent = text
-  p.classList.toggle('err', isError)
-}
-
-function showWelcome(state: ChatState | null, message = ''): void {
-  pendingState = state
-  ;(el('welcome-key') as HTMLInputElement).value = settingsCache.apiKey
-  ;(el('welcome-ui-lang') as HTMLSelectElement).value = settingsCache.uiLanguage
-  ;(el('welcome-ans-lang') as HTMLSelectElement).value = settingsCache.answerLanguage
-  setWelcomeMsg(message)
-  show('welcome')
-}
-
-function readWelcomeForm(): { apiKey: string; uiLanguage: UiLanguage; answerLanguage: AnswerLanguage } {
-  return {
-    apiKey: (el('welcome-key') as HTMLInputElement).value.trim(),
-    uiLanguage: (el('welcome-ui-lang') as HTMLSelectElement).value as UiLanguage,
-    answerLanguage: (el('welcome-ans-lang') as HTMLSelectElement).value as AnswerLanguage,
-  }
-}
-
-;(el('welcome-test') as HTMLButtonElement).onclick = async () => {
-  const { apiKey, uiLanguage, answerLanguage } = readWelcomeForm()
-  if (!apiKey) {
-    setWelcomeMsg(t(uiLang, 'welcome.needKey'), true)
-    return
-  }
-  const btn = el('welcome-test') as HTMLButtonElement
-  btn.disabled = true
-  setWelcomeMsg(t(uiLang, 'welcome.testing'))
-  try {
-    await pingConnection({ ...settingsCache, apiKey, uiLanguage, answerLanguage })
-    setWelcomeMsg(t(uiLang, 'welcome.ok'))
-  } catch (err) {
-    setWelcomeMsg(err instanceof Error ? err.message : String(err), true)
-  } finally {
-    btn.disabled = false
-  }
-}
-
-;(el('welcome-start') as HTMLButtonElement).onclick = async () => {
-  const { apiKey, uiLanguage, answerLanguage } = readWelcomeForm()
-  if (!apiKey) {
-    setWelcomeMsg(t(uiLang, 'welcome.needKey'), true)
-    return
-  }
-  await updateSettings({ ...settingsCache, apiKey, uiLanguage, answerLanguage })
-  const pending = pendingState
-  pendingState = null
-  apply(pending ?? { kind: 'error', message: t(uiLang, 'state.noState') })
-}
-
-// One handler for every show/hide key button.
-for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-key-toggle]')) {
-  btn.onclick = () => {
-    const input = el(btn.dataset.keyToggle!) as HTMLInputElement
-    const showKey = input.type === 'password'
-    input.type = showKey ? 'text' : 'password'
-    btn.textContent = showKey ? '🚫' : '👁'
-  }
-}
-
 // ── settings view ────────────────────────────────────────────────────────────
 
 function setMsg(text: string): void {
@@ -265,7 +207,6 @@ function openSettings(message = ''): void {
 }
 
 function restoreView(): void {
-  // current never holds 'settings'/'welcome', so this lands on the real state.
   apply(current)
 }
 
@@ -284,24 +225,22 @@ function restoreView(): void {
 }
 
 ;(el('set-save') as HTMLButtonElement).onclick = async () => {
-  const apiKey = (el('set-api-key') as HTMLInputElement).value.trim()
-  if (!apiKey) {
-    setMsg(t(uiLang, 'err.enterKey'))
-    return
-  }
+  const baseUrlInput = (el('set-base-url') as HTMLInputElement).value.trim()
   // The URL constructor accepts e.g. "https://x" and any scheme — an http(s)
-  // check is the actual gate, not mere parseability.
-  try {
-    const u = new URL((el('set-base-url') as HTMLInputElement).value.trim())
-    if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('not http(s)')
-  } catch {
-    setMsg(t(uiLang, 'err.badUrl'))
-    return
+  // check is the actual gate, not mere parseability. Empty = use the default.
+  if (baseUrlInput) {
+    try {
+      const u = new URL(baseUrlInput)
+      if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('not http(s)')
+    } catch {
+      setMsg(t(uiLang, 'err.badUrl'))
+      return
+    }
   }
   await updateSettings({
     provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
-    baseUrl: (el('set-base-url') as HTMLInputElement).value.trim(),
-    apiKey,
+    baseUrl: baseUrlInput,
+    apiKey: (el('set-api-key') as HTMLInputElement).value.trim(),
     uiLanguage: (el('set-ui-lang') as HTMLSelectElement).value as UiLanguage,
     answerLanguage: (el('set-ans-lang') as HTMLSelectElement).value as AnswerLanguage,
   })
@@ -315,17 +254,44 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-goto-setti
 }
 ;(el('settings-btn') as HTMLButtonElement).onclick = () => openSettings()
 
+// One handler for every show/hide key button.
+for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-key-toggle]')) {
+  btn.onclick = () => {
+    const input = el(btn.dataset.keyToggle!) as HTMLInputElement
+    const showKey = input.type === 'password'
+    input.type = showKey ? 'text' : 'password'
+    btn.textContent = showKey ? '🚫' : '👁'
+  }
+}
+
 // ── capture actions ──────────────────────────────────────────────────────────
 
 ;(el('new-selection-btn') as HTMLButtonElement).onclick = () => {
   void chrome.runtime.sendMessage({ type: 'START_SELECTION' }).catch(() => {})
 }
 
+// ── answer rendering ─────────────────────────────────────────────────────────
+// Answers are Markdown with LaTeX. Render once the stream ends; during the
+// stream the bubble shows plain text (cheap), so KaTeX never re-typesets on
+// every token. DOMPurify guards the HTML; KaTeX runs with trust:false.
+
+function renderAnswer(node: HTMLElement, text: string): void {
+  const html = marked.parse(text, { gfm: true, breaks: true }) as string
+  node.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
+  renderMathInElement(node, {
+    delimiters: [
+      { left: '$$', right: '$$', display: true },
+      { left: '\\[', right: '\\]', display: true },
+      { left: '\\(', right: '\\)', display: false },
+      { left: '$', right: '$', display: false },
+    ],
+    throwOnError: false,
+  })
+}
+
 // ── AI answering ─────────────────────────────────────────────────────────────
-// The thread is a plain-text transcript held in memory, not persisted: the
-// host reuses this iframe across captures, so `history` is what keeps the
-// conversation's context. Each new capture swaps `activeImage` and the next
-// question carries the new crop.
+// The thread is held in memory, not persisted: the host reuses this iframe
+// across captures, so `history` keeps the conversation's context.
 
 let activeImage: string | null = null
 const history: ApiMessage[] = []
@@ -343,7 +309,8 @@ function systemPrompt(): string {
     'You are Study Buddy, a concise and friendly tutor. The user shares a screenshot ' +
     'of part of their screen and asks about what is visible. Solve or explain ' +
     'exercises and translate text. Ground every answer in the image; if something ' +
-    'is unreadable or not present, say so instead of guessing.'
+    'is unreadable or not present, say so instead of guessing. ' +
+    'Format answers in Markdown; use LaTeX for math ($...$ inline, $$...$$ display).'
   const lang =
     settingsCache.answerLanguage !== 'auto'
       ? `Language: always answer in ${targetLanguageName()}, unless the user explicitly asks for another language.`
@@ -381,6 +348,8 @@ function presetPrompts(): Record<string, string> {
 interface Msg {
   wrap: HTMLDivElement
   body: HTMLDivElement
+  /** Plain text of the answer (for clipboard), independent of the rendered HTML. */
+  raw: string
 }
 
 function ensureHint(): void {
@@ -405,7 +374,7 @@ function addMessage(role: 'user' | 'assistant' | 'error' | 'note', text: string)
   wrap.appendChild(body)
   thread.appendChild(wrap)
   scrollThread()
-  return { wrap, body }
+  return { wrap, body, raw: text }
 }
 
 function addActions(msg: Msg, canRegenerate: boolean): void {
@@ -417,7 +386,7 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
   copy.textContent = t(uiLang, 'msg.copy')
   copy.onclick = async () => {
     try {
-      await navigator.clipboard.writeText(msg.body.textContent ?? '')
+      await navigator.clipboard.writeText(msg.raw)
     } catch {
       return // clipboard blocked; leave the label alone
     }
@@ -458,9 +427,12 @@ function setBusy(busy: boolean): void {
   ;(el('ask-btn') as HTMLButtonElement).textContent = t(uiLang, busy ? 'ask.stop' : 'ask.button')
 }
 
+/** With a baked key this always succeeds; the settings detour is the dev-only
+ *  path when a build carries no key and none was entered. */
 async function requireSettings(): Promise<Settings | null> {
-  if (settingsCache.apiKey) return settingsCache
-  showWelcome(current, t(uiLang, 'err.needKey'))
+  const settings = effectiveSettings()
+  if (settings.apiKey) return settings
+  openSettings(t(uiLang, 'err.needKey'))
   return null
 }
 
@@ -472,13 +444,13 @@ async function streamReply(): Promise<void> {
   setBusy(true)
   let acc = ''
   try {
-    await askWithFallback({
-      settings: settingsCache,
+    await createGateway(settingsCache).ask({
       messages: [{ role: 'system', content: systemPrompt() }, ...history],
       signal: controller.signal,
       onDelta: (delta) => {
         acc += delta
-        reply.body.textContent = acc
+        reply.raw = acc
+        reply.body.textContent = acc // plain while streaming; rendered on finish
         scrollThread()
       },
       onFallback: (from, to, err) => {
@@ -492,6 +464,7 @@ async function streamReply(): Promise<void> {
     })
     if (acc) {
       history.push({ role: 'assistant', content: acc })
+      renderAnswer(reply.body, acc)
       clearRetryButtons()
       addActions(reply, true)
     } else {
@@ -500,9 +473,10 @@ async function streamReply(): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (message === 'Cancelled.') {
-      // User pressed Stop — keep the partial answer as a normal turn.
+      // User pressed Stop — keep the partial answer as a normal turn (rendered).
       if (acc) {
         history.push({ role: 'assistant', content: acc })
+        renderAnswer(reply.body, acc)
         clearRetryButtons()
         addActions(reply, true)
       } else {
@@ -594,12 +568,7 @@ function stateFromLocation(): ChatState | null {
 
 async function boot(): Promise<void> {
   await loadSettings()
-  const initial = stateFromLocation()
-  if (!settingsCache.apiKey) {
-    showWelcome(initial)
-    return
-  }
-  apply(initial ?? { kind: 'error', message: t(uiLang, 'state.noState') })
+  apply(stateFromLocation() ?? { kind: 'error', message: t(uiLang, 'state.noState') })
 }
 
 void boot()

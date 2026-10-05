@@ -10,29 +10,31 @@ device and what does not. It is short because the extension collects nothing.
 
 - We run **no servers** and have **no accounts**.
 - We collect **no analytics, no telemetry, and no personal data**.
-- Your API key and settings are stored **only on your device**.
+- There is nothing to configure: the extension ships ready to use.
 - The **only** thing sent anywhere is the screenshot region you explicitly
-  select, and it goes **directly to the AI endpoint you configured** (by
-  default, OpenRouter). Nothing passes through us.
+  select, and it goes **directly from your browser to the AI provider** (by
+  default, OpenRouter). Nothing passes through us and we never see it.
 
 ## What is stored, and where
 
 | Data | Where | Lifetime |
 |---|---|---|
-| API key, endpoint URL, language settings | `chrome.storage.local` on your device | until you clear it / remove the extension |
+| Language settings (and, if you optionally set one, your own endpoint/key) | `chrome.storage.local` on your device | until you clear it / remove the extension |
 | The cropped screenshot of your selection | `chrome.storage.session` (RAM-backed) | until the browser session ends; at most the last 8 captures are kept |
 
-The API key is stored locally on purpose — it is never synchronized to a cloud
+If you use the built-in key, no key is stored on your device. If you override it
+with your own, that key is stored locally and never synchronized to a cloud
 account.
 
 ## What is sent, and to whom
 
 When you ask a question, the extension sends **the cropped image of the region
-you selected**, your question, and a short system instruction **directly to the
-AI endpoint configured in Settings** (by default `https://openrouter.ai/api/v1`).
-That request is subject to the privacy policy of the provider you chose
-(e.g. OpenRouter and the model vendor behind the chosen model). Study Buddy
-does not proxy, log, or copy this request.
+you selected**, your question, and a short system instruction **directly from
+your browser to the AI endpoint** (by default `https://openrouter.ai/api/v1`).
+The request is authenticated with an access key managed by the developer (or
+your own key, if you set one). It is subject to the privacy policy of that
+provider (e.g. OpenRouter and the model vendor behind the chosen model). Study
+Buddy does not proxy, log, or copy this request.
 
 No other page content is read or transmitted. The extension does not scan pages
 in the background; the selection overlay is injected only when you start a

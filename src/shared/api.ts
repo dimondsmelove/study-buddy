@@ -107,18 +107,6 @@ export async function apiHttpError(res: Response): Promise<ApiError> {
   }
 }
 
-/** Cheap connectivity/credential check: GET /models with the key. Used by the
- *  onboarding "Test key" button so a bad key is caught before the first ask. */
-export async function pingConnection(settings: Settings): Promise<void> {
-  let res: Response
-  try {
-    res = await fetch(`${settings.baseUrl}/models`, { headers: authHeaders(settings) })
-  } catch (err) {
-    throw apiNetworkError(err, settings.baseUrl)
-  }
-  if (!res.ok) throw await apiHttpError(res)
-}
-
 /** fetch() rejects with:
  *  - TypeError  → the request never happened (offline, DNS, CORS block) —
  *                 from the user's seat that is "the URL can't be reached";

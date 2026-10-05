@@ -205,26 +205,24 @@ try {
   await chat.close()
   await trigger.close()
 
-  // Onboarding: with no key a first run must show the welcome screen, and
-  // saving a key must land on the app (here: the no-state error view, whose
-  // ⚙ Settings… button is the rescue path a stuck user has). Clearing storage
-  // gives the true first-run state.
+  // Settings round trip: no onboarding any more — a bare chat page with no key
+  // and no params shows the no-state error view, whose ⚙ Settings… button is
+  // the rescue path, and Save persists. Clearing storage gives the clean state.
   await sw.evaluate(() => chrome.storage.local.remove('settings'))
-  const onboard = await ctx.newPage()
-  await onboard.goto(`${chatOrigin}/src/chat/chat.html`)
-  await onboard.waitForSelector('#view-welcome:not([hidden])')
-  check(true, 'first run shows onboarding')
-  await onboard.fill('#welcome-key', 'sk-test-123')
-  await onboard.click('#welcome-start')
-  await onboard.waitForSelector('#view-error:not([hidden])')
-  await onboard.click('#view-error:not([hidden]) [data-goto-settings]')
-  await onboard.waitForSelector('#view-settings:not([hidden])')
-  check(true, 'settings view opens after onboarding')
-  await onboard.click('#set-save')
+  const settings = await ctx.newPage()
+  await settings.goto(`${chatOrigin}/src/chat/chat.html`)
+  await settings.waitForSelector('#view-error:not([hidden])')
+  check(true, 'bare chat page shows the no-state error view')
+  await settings.click('#view-error:not([hidden]) [data-goto-settings]')
+  await settings.waitForSelector('#view-settings:not([hidden])')
+  check(true, 'settings view opens from the error view')
+  await settings.click('.advanced summary') // advanced block is collapsed
+  await settings.fill('#set-api-key', 'sk-test-123')
+  await settings.click('#set-save')
   // state 'attached': an element WITH [hidden] can never be "visible" — the
   // selector already encodes the hidden-ness we're waiting for.
-  await onboard.waitForSelector('#view-settings[hidden]', { state: 'attached' })
-  const stored = (await onboard.evaluate(() => chrome.storage.local.get())).settings
+  await settings.waitForSelector('#view-settings[hidden]', { state: 'attached' })
+  const stored = (await settings.evaluate(() => chrome.storage.local.get())).settings
   check(
     stored && stored.provider === 'openrouter' &&
       stored.baseUrl === 'https://openrouter.ai/api/v1' &&
@@ -234,7 +232,7 @@ try {
       !('model' in stored),
     `settings persisted with languages and no model (${JSON.stringify(stored)})`,
   )
-  await onboard.close()
+  await settings.close()
 
   // AI answering: point settings at the mock endpoint and send the captured
   // crop through the Solve preset. The reply must stream into the thread, and
@@ -261,8 +259,10 @@ try {
     p
       .waitForFunction(
         () => {
+          // The bubble is rendered as Markdown, so marked's trailing newline is
+          // expected — compare on the trimmed text.
           const body = document.querySelector('.msg.assistant .msg-body')
-          return body && body.textContent === 'Hello world' ? 'Hello world' : false
+          return body && body.textContent?.trim() === 'Hello world' ? 'Hello world' : false
         },
         { timeout: 5000 },
       )

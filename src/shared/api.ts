@@ -11,6 +11,48 @@
 
 import type { Settings } from './settings'
 
+/** Error kinds a caller can branch on without parsing prose. */
+export type ApiErrorKind =
+  | 'auth'
+  | 'credits'
+  | 'rate'
+  | 'http'
+  | 'network'
+  | 'interrupted'
+  | 'aborted'
+  | 'response'
+
+/** Every failure from this module is an ApiError. `message` is written for the
+ *  user; `kind`/`status` exist so the model-fallback layer (ai.ts) can decide
+ *  whether retrying against another model could possibly help. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly kind: ApiErrorKind,
+    readonly status?: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+/** True when the SAME request against a different model could plausibly
+ *  succeed: the model/provider is unavailable, not our key or credits. */
+export function isRetryable(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false
+  switch (err.kind) {
+    case 'network':
+    case 'rate':
+    case 'interrupted':
+    case 'response':
+      return true
+    case 'http':
+      return err.status === 404 || (err.status ?? 0) >= 500
+    default:
+      return false // auth, credits, aborted — another model cannot fix these
+  }
+}
+
 /** OpenAI-compatible message part / message. */
 export type ApiContent =
   | string
@@ -23,6 +65,8 @@ export interface ApiMessage {
 
 export interface ChatCompletionOpts {
   settings: Settings
+  /** Model id for THIS request; the caller owns the fallback chain (ai.ts). */
+  model: string
   messages: ApiMessage[]
   /** Aborts the request (fetch signal). */
   signal?: AbortSignal
@@ -36,8 +80,9 @@ export function authHeaders(settings: Settings): Record<string, string> {
 }
 
 /** Human error for a non-ok response. Exported because models.ts must phrase
- *  endpoint failures exactly the same — one voice for every API error. */
-export async function apiHttpError(res: Response): Promise<Error> {
+ *  endpoint failures exactly the same — one voice for every API error. The
+ *  kind/status ride along for the fallback layer without changing the prose. */
+export async function apiHttpError(res: Response): Promise<ApiError> {
   // The standard error envelope is { error: { message } }; anything else
   // (an HTML error page, an empty body) simply carries no detail to append.
   let detail = ''
@@ -50,10 +95,15 @@ export async function apiHttpError(res: Response): Promise<Error> {
   }
   const say = (lead: string): string => (detail ? `${lead} (${detail})` : lead)
   switch (res.status) {
-    case 401: return new Error(say('Invalid API key.'))
-    case 402: return new Error(say('Insufficient credits on this account.'))
-    case 429: return new Error(say('Rate limited — try again shortly.'))
-    default: return new Error(`The API returned HTTP ${res.status}: ${detail || res.statusText || 'unknown reason'}`)
+    case 401: return new ApiError(say('Invalid API key.'), 'auth', 401)
+    case 402: return new ApiError(say('Insufficient credits on this account.'), 'credits', 402)
+    case 429: return new ApiError(say('Rate limited — try again shortly.'), 'rate', 429)
+    default:
+      return new ApiError(
+        `The API returned HTTP ${res.status}: ${detail || res.statusText || 'unknown reason'}`,
+        'http',
+        res.status,
+      )
   }
 }
 
@@ -62,9 +112,9 @@ export async function apiHttpError(res: Response): Promise<Error> {
  *                 from the user's seat that is "the URL can't be reached";
  *  - AbortError → the caller cancelled; rethrown as a plain Error marked
  *                 'Cancelled.' so callers can branch on the message. */
-export function apiNetworkError(err: unknown, baseUrl: string): Error {
-  if (isAbort(err)) return new Error('Cancelled.')
-  return new Error(`Could not reach ${baseUrl} (network blocked or wrong URL).`)
+export function apiNetworkError(err: unknown, baseUrl: string): ApiError {
+  if (isAbort(err)) return new ApiError('Cancelled.', 'aborted')
+  return new ApiError(`Could not reach ${baseUrl} (network blocked or wrong URL).`, 'network')
 }
 
 // Aborts surface as a DOMException named 'AbortError'; a DOMException IS an
@@ -76,10 +126,10 @@ function isAbort(err: unknown): boolean {
 /** One chat completion. Returns the full text. Throws Error with a HUMAN
  *  message (never a raw HTTP line) on failure. */
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<string> {
-  const { settings, messages, signal, onDelta } = opts
+  const { settings, model, messages, signal, onDelta } = opts
   // A user error, thrown BEFORE any network call: a request without a model
   // id can only fail, so it must not even be attempted.
-  if (!settings.model) throw new Error('Choose a model first.')
+  if (!model) throw new ApiError('Choose a model first.', 'response')
 
   let res: Response
   try {
@@ -88,7 +138,7 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<string> 
       // X-Title is OpenRouter's attribution header — required there, harmless
       // elsewhere (servers without OpenRouter semantics ignore unknown headers).
       headers: { ...authHeaders(settings), 'Content-Type': 'application/json', 'X-Title': 'Study Buddy' },
-      body: JSON.stringify({ model: settings.model, messages, stream: true }),
+      body: JSON.stringify({ model, messages, stream: true }),
       signal,
     })
   } catch (err) {
@@ -110,7 +160,7 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<string> 
 // ever use single-line `data:` payloads, so newline-splitting is all the SSE
 // machinery needed here (no multi-line events, no `event:`/`id:` fields).
 async function streamSSE(res: Response, onDelta?: (delta: string) => void): Promise<string> {
-  if (!res.body) throw new Error('The API returned an empty stream.')
+  if (!res.body) throw new ApiError('The API returned an empty stream.', 'response')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -131,10 +181,10 @@ async function streamSSE(res: Response, onDelta?: (delta: string) => void): Prom
     buffer += decoder.decode()
     text += sseDelta(buffer, onDelta)
   } catch (err) {
-    if (isAbort(err)) throw new Error('Cancelled.')
+    if (isAbort(err)) throw new ApiError('Cancelled.', 'aborted')
     // A connection that breaks mid-stream is neither "could not reach" (the
     // request went out) nor a raw TypeError worth showing.
-    throw new Error('The API connection was interrupted.')
+    throw new ApiError('The API connection was interrupted.', 'interrupted')
   } finally {
     // Release the socket even on early throws — an abandoned reader keeps the
     // connection open until GC; cancel() never has a useful throw here.
@@ -175,11 +225,11 @@ async function wholeJson(res: Response, onDelta?: (delta: string) => void): Prom
   try {
     body = await res.json()
   } catch (err) {
-    if (isAbort(err)) throw new Error('Cancelled.')
-    throw new Error('The API response was not valid JSON.')
+    if (isAbort(err)) throw new ApiError('Cancelled.', 'aborted')
+    throw new ApiError('The API response was not valid JSON.', 'response')
   }
   const text = flattenContent(body?.choices?.[0]?.message?.content)
-  if (text === null) throw new Error('The API response had no message content.')
+  if (text === null) throw new ApiError('The API response had no message content.', 'response')
   onDelta?.(text)
   return text
 }

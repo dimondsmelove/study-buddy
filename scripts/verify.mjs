@@ -51,9 +51,11 @@ const pageHtml = `<!doctype html><meta charset="utf-8"><title>target</title>
 <body style="font:24px system-ui"><p style="padding:40px">homework text 12345</p></body>`
 
 // The same server doubles as a mock OpenAI-compatible endpoint for the AI
-// test below: /v1/chat/completions streams two SSE deltas, and the request
+// tests below: /v1/chat/completions streams two SSE deltas, and the request
 // body is kept so the test can assert the crop actually went out as an image.
+// `failModel` makes that one model answer 503, to exercise the fallback chain.
 let lastAiRequest = null
+let failModel = null
 const server = createServer((req, res) => {
   if (req.url?.includes('/chat/completions')) {
     let body = ''
@@ -63,6 +65,11 @@ const server = createServer((req, res) => {
         lastAiRequest = JSON.parse(body)
       } catch {
         lastAiRequest = null
+      }
+      if (failModel && lastAiRequest?.model === failModel) {
+        res.writeHead(503, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: { message: 'model unavailable' } }))
+        return
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n')
@@ -206,42 +213,66 @@ try {
     stored && stored.provider === 'openrouter' &&
       stored.baseUrl === 'https://openrouter.ai/api/v1' &&
       stored.apiKey === 'sk-test-123' &&
-      stored.model === '',
+      !('model' in stored),
     `settings persisted to storage.local with OpenRouter defaults (${JSON.stringify(stored)})`,
   )
   await settings.close()
 
   // AI answering: point settings at the mock endpoint and send the captured
   // crop through the Solve preset. The reply must stream into the thread, and
-  // the request must carry the crop as an image_url.
+  // the request must carry the crop as an image_url. The model is fixed by the
+  // app's chain (settings.model no longer exists).
+  const PRIMARY = 'deepseek/deepseek-v4-flash-vision-exp'
+  const FALLBACK = 'google/gemini-2.5-flash-lite'
   await sw.evaluate(
     async (s) => chrome.storage.local.set({ settings: s }),
-    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', model: 'mock-vision' },
+    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123' },
   )
-  const ai = await ctx.newPage()
-  await ai.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}`)
   // Wait until the stored crop is decoded — i.e. `activeImage` is set — or the
   // preset click could race the storage read and send a caption-less question.
-  await ai.waitForFunction(() => {
-    const i = document.getElementById('crop')
-    return !!i?.src && i.naturalWidth > 0
-  })
+  const openCapture = async () => {
+    const p = await ctx.newPage()
+    await p.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}`)
+    await p.waitForFunction(() => {
+      const i = document.getElementById('crop')
+      return !!i?.src && i.naturalWidth > 0
+    })
+    return p
+  }
+  const waitReply = (p) =>
+    p
+      .waitForFunction(
+        () => {
+          const body = document.querySelector('.msg.assistant .msg-body')
+          return body && body.textContent === 'Hello world' ? 'Hello world' : false
+        },
+        { timeout: 5000 },
+      )
+      .then((h) => h.jsonValue())
+      .catch(() => null)
+
+  const ai = await openCapture()
   await ai.click('.preset[data-preset="solve"]')
-  const reply = await ai
-    .waitForFunction(() => {
-      const body = document.querySelector('.msg.assistant .msg-body')
-      return body && body.textContent === 'Hello world' ? 'Hello world' : false
-    }, { timeout: 5000 })
-    .then((h) => h.jsonValue())
-    .catch(() => null)
+  const reply = await waitReply(ai)
   check(reply === 'Hello world', `assistant reply streamed into the thread (${reply ?? 'no reply'})`)
   const firstUser = lastAiRequest?.messages?.find((m) => m.role === 'user')
   const sentImage =
     Array.isArray(firstUser?.content) &&
     firstUser.content.some((p) => p?.type === 'image_url' && typeof p.image_url?.url === 'string' && p.image_url.url.startsWith('data:image/png'))
   check(sentImage, 'request carried the crop as an image_url data URL')
-  check(lastAiRequest?.model === 'mock-vision', `request used the configured model (${lastAiRequest?.model ?? 'MISSING'})`)
+  check(lastAiRequest?.model === PRIMARY, `request used the fixed primary model (${lastAiRequest?.model ?? 'MISSING'})`)
   await ai.close()
+
+  // Fallback: make the primary answer 503; the next model must take over and
+  // the thread must note the switch.
+  failModel = PRIMARY
+  const fb = await openCapture()
+  await fb.click('.preset[data-preset="solve"]')
+  const fbReply = await waitReply(fb)
+  check(fbReply === 'Hello world', `fallback model answered (${fbReply ?? 'no reply'})`)
+  check(lastAiRequest?.model === FALLBACK, `fallback used the next model (${lastAiRequest?.model ?? 'MISSING'})`)
+  check(await fb.evaluate(() => !!document.querySelector('.msg.note')), 'fallback notice shown in the thread')
+  await fb.close()
 
   check(pageErrors.length === 0, `no page errors${pageErrors.length ? `: ${pageErrors.join('; ')}` : ''}`)
 } finally {

@@ -159,6 +159,18 @@ button:disabled {
   color: #b42318;
 }
 
+/* Fallback notice: quiet, centered, clearly not part of the conversation. */
+.msg.note {
+  justify-content: center;
+}
+
+.msg.note .msg-body {
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
 #ask-form {
   display: flex;
   gap: 6px;
@@ -232,25 +244,18 @@ button:disabled {
   outline-offset: -1px;
 }
 
-.key-row,
-.model-row {
+.key-row {
   display: flex;
   gap: 6px;
 }
 
-.key-row input,
-.model-row input {
+.key-row input {
   flex: 1;
   min-width: 0;
 }
 
-#set-model-note.err {
-  color: #b42318;
-}
-
-#set-key-toggle,
-#set-load-models {
-  /* fixed width so label/icon swaps don't shift the layout */
+#set-key-toggle {
+  /* fixed width so the 👁→🚫 swap doesn't shift the layout */
   width: 32px;
   padding: 5px 0;
 }

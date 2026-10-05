@@ -8,9 +8,10 @@ step-by-step explanation, a translation, or just "what is this?" for any picture
 
 **Status: capture pipeline + AI answering work end to end.** Region selection →
 screenshot → crop → chat window, connection settings (provider / base URL /
-API key / model, with the endpoint's vision-model list loaded by the ↻ button),
-and streaming answers (Solve / Explain / Translate presets plus free-form
-questions) all function.
+API key), and streaming answers (Solve / Explain / Translate presets plus
+free-form questions) all function. The answering model is fixed to DeepSeek
+(see `src/shared/ai.ts`) with an automatic fallback chain — not user-selectable
+yet. Answers follow the question's language; presets use the browser language.
 
 ## Architecture
 
@@ -44,7 +45,7 @@ npm run verify     # smoke test: load dist/ in Chromium, select, capture, chat,
                    # AI answer (mock SSE endpoint) — no API key needed
 
 # manual test in a ready browser (key pre-seeded, demo page opens):
-npm run playtest               # or: npm run playtest -- <model-id>
+npm run playtest
 #   the OpenRouter key is read from ~/.config/study-buddy/credentials.json
 #   (or OPENROUTER_API_KEY); it is never written into the repo
 

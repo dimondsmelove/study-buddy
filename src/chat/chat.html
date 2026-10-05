@@ -65,13 +65,8 @@
           <input id="set-api-key" type="password" autocomplete="off" spellcheck="false" />
           <button type="button" id="set-key-toggle" title="Show / hide key" aria-label="Show or hide the API key">👁</button>
         </div>
-        <label for="set-model">Model</label>
-        <div class="model-row">
-          <input id="set-model" type="text" placeholder="e.g. qwen/qwen3.7-flash" autocomplete="off" spellcheck="false" list="model-options" />
-          <button type="button" id="set-load-models" title="Load the endpoint's vision-model list">↻</button>
-        </div>
-        <datalist id="model-options"></datalist>
-        <p id="set-model-note" class="set-note"></p>
+        <label>Model</label>
+        <p class="set-note" id="set-model-info">DeepSeek (vision), with an automatic fallback if it’s unavailable.</p>
         <p id="set-msg" role="status"></p>
         <div id="set-actions">
           <button type="button" id="set-back">Back</button>

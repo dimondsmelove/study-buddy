@@ -1,20 +1,20 @@
-// AI connection settings — provider preset, endpoint, API key, model.
+// AI connection settings — provider preset, endpoint, API key.
 //
 // The whole Settings object lives under a single chrome.storage.local key.
 // local (not sync) is deliberate: the API key is stored only on this device —
 // sync storage would push it to the user's cloud account. Reads are merged
 // over DEFAULT_SETTINGS field by field, so a partially written or older shape
-// still yields a complete typed Settings (unknown future fields are dropped;
-// nothing needs them yet).
+// still yields a complete typed Settings (unknown future fields, including the
+// old `model` field, are dropped).
+//
+// The model is NOT here: it is fixed by the fallback chain in ai.ts, so the
+// user never picks one. `model` used to live here and is deliberately ignored.
 
 export interface Settings {
   /** 'openrouter' = the default preset; 'custom' = any OpenAI-compatible endpoint. */
   provider: 'openrouter' | 'custom'
   baseUrl: string
   apiKey: string
-  /** Model id; empty = not chosen yet. The settings form offers the endpoint's
-   *  vision-model list (fetchVisionModels) but the field stays free-text. */
-  model: string
 }
 
 export const SETTINGS_KEY = 'settings'
@@ -23,7 +23,6 @@ export const DEFAULT_SETTINGS: Settings = {
   provider: 'openrouter',
   baseUrl: 'https://openrouter.ai/api/v1',
   apiKey: '',
-  model: '',
 }
 
 /** Read settings merged over defaults (forward-compatible with new fields). */
@@ -38,7 +37,6 @@ export async function getSettings(): Promise<Settings> {
       provider: stored.provider === 'custom' ? 'custom' : 'openrouter',
       baseUrl: stored.baseUrl ?? DEFAULT_SETTINGS.baseUrl,
       apiKey: stored.apiKey ?? DEFAULT_SETTINGS.apiKey,
-      model: stored.model ?? DEFAULT_SETTINGS.model,
     }
   } catch {
     // Storage can fail (quota, transient API errors); failing open to the

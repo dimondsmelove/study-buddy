@@ -11,10 +11,9 @@
 // Explain / Translate presets and free-form questions.
 
 import type { ApiContent, ApiMessage } from '../shared/api'
-import { chatCompletion } from '../shared/api'
+import { askWithFallback, modelLabel } from '../shared/ai'
 import type { ChatState, Rect, StoredCapture } from '../shared/messages'
 import { CAPTURE_PREFIX } from '../shared/messages'
-import { fetchVisionModels } from '../shared/models'
 import type { Settings } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
 
@@ -107,21 +106,50 @@ function showText(id: string, text: string): void {
 // question carries the new crop; earlier images stay in `history` as part of
 // the model's context.
 
-// One voice for the model's role: concise tutor, grounded in the screenshot,
-// never inventing content that isn't there. Kept short — the preset prompts
-// below carry the task-specific instruction.
-const SYSTEM_PROMPT =
-  'You are Study Buddy, a concise and friendly tutor. The user shares a screenshot ' +
-  'of part of their screen and asks about what is visible. Solve or explain ' +
-  'exercises and translate text. Ground every answer in the image; if something ' +
-  'is unreadable or not present, say so instead of guessing.'
+// Answer-language rules, told to the model in the system prompt:
+//  - a typed question is answered in the language it is written in;
+//  - a preset button carries no prose of its own, so it uses the browser UI
+//    language (a Russian UI keeps Solve/Explain answers Russian).
+// The instruction is spelled out rather than left implicit because the presets
+// themselves are English text, which otherwise pulls the answer into English.
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English', ru: 'Russian', uk: 'Ukrainian', be: 'Belarusian', kk: 'Kazakh',
+  de: 'German', fr: 'French', es: 'Spanish', it: 'Italian', pt: 'Portuguese',
+  nl: 'Dutch', pl: 'Polish', cs: 'Czech', sv: 'Swedish', tr: 'Turkish',
+  zh: 'Chinese', ja: 'Japanese', ko: 'Korean', ar: 'Arabic', hi: 'Hindi', he: 'Hebrew',
+}
 
-// Preset button label → the instruction sent with the crop. English on purpose:
-// vision models follow it most reliably, regardless of the answer's language.
-const PRESET_PROMPTS: Record<string, string> = {
-  solve: 'Solve the exercise shown in the image. Give the final answer first, then a short step-by-step solution.',
-  explain: 'Explain what is shown in the image, step by step, as a patient tutor.',
-  translate: 'Translate all the text in the image into English, keeping the layout where it matters.',
+function uiLanguage(): string {
+  const tag = (chrome.i18n?.getUILanguage?.() || navigator.language || 'en').toLowerCase()
+  const base = tag.split('-')[0]
+  return LANGUAGE_NAMES[base] ?? tag
+}
+
+// One voice for the model's role: concise tutor, grounded in the screenshot,
+// never inventing content that isn't there. A typed question overrides the UI
+// language, and an explicit "answer in / translate into X" wins over both.
+function systemPrompt(): string {
+  return (
+    'You are Study Buddy, a concise and friendly tutor. The user shares a screenshot ' +
+    'of part of their screen and asks about what is visible. Solve or explain ' +
+    'exercises and translate text. Ground every answer in the image; if something ' +
+    'is unreadable or not present, say so instead of guessing.\n\n' +
+    `Language: answer in the language the user writes in. When the request is one of ` +
+    `the app's fixed actions with no prose of its own, answer in ${uiLanguage()}. ` +
+    'If the user explicitly asks to answer in, or translate into, a particular ' +
+    'language, follow that request instead.'
+  )
+}
+
+// Preset instruction, with the target language spelled out: the preset text is
+// English, so without this the model tends to answer in English.
+function presetPrompts(): Record<string, string> {
+  const lang = uiLanguage()
+  return {
+    solve: `Solve the exercise shown in the image. Give the final answer first, then a short step-by-step solution. Answer in ${lang}.`,
+    explain: `Explain what is shown in the image, step by step, as a patient tutor. Answer in ${lang}.`,
+    translate: `Translate all the text in the image into ${lang}. If it is already ${lang}, translate it into English instead. Keep the layout where it matters.`,
+  }
 }
 
 // The crop currently on screen, as a data URL, attached to the next question.
@@ -145,7 +173,7 @@ function scrollThread(): void {
 }
 
 /** Append one message bubble; returns its body so streaming can grow it. */
-function appendMessage(role: 'user' | 'assistant' | 'error', text: string): HTMLDivElement {
+function appendMessage(role: 'user' | 'assistant' | 'error' | 'note', text: string): HTMLDivElement {
   thread.querySelector('.hint')?.remove()
   const wrap = document.createElement('div')
   wrap.className = `msg ${role}`
@@ -168,8 +196,8 @@ function setBusy(busy: boolean): void {
  *  user to the settings form with a why. Returns null if a detour happened. */
 async function requireSettings(): Promise<Settings | null> {
   const settings = await getSettings()
-  if (settings.apiKey && settings.model) return settings
-  openSettings('Add an API key and choose a model, then Save.')
+  if (settings.apiKey) return settings
+  openSettings('Add an API key, then Save.')
   return null
 }
 
@@ -192,13 +220,21 @@ async function send(prompt: string): Promise<void> {
   setBusy(true)
   let acc = ''
   try {
-    await chatCompletion({
+    await askWithFallback({
       settings,
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
+      messages: [{ role: 'system', content: systemPrompt() }, ...history],
       signal: controller.signal,
       onDelta: (delta) => {
         acc += delta
         reply.textContent = acc
+        scrollThread()
+      },
+      // A fallback only fires before any text streamed, so the empty reply
+      // bubble is safe to keep; the note goes ABOVE it, where it reads as an
+      // event that happened before the answer.
+      onFallback: (from, to, err) => {
+        const note = appendMessage('note', `${modelLabel(from)} is unavailable (${err.message}) — switched to ${modelLabel(to)}.`)
+        thread.insertBefore(note.parentElement!, reply.parentElement!)
         scrollThread()
       },
     })
@@ -229,9 +265,11 @@ async function send(prompt: string): Promise<void> {
   }
 }
 
+// Resolved once: the UI language doesn't change mid-session.
+const PRESETS = presetPrompts()
 for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   btn.addEventListener('click', () => {
-    const prompt = PRESET_PROMPTS[btn.dataset.preset ?? '']
+    const prompt = PRESETS[btn.dataset.preset ?? '']
     if (prompt) void send(prompt)
   })
 }
@@ -261,17 +299,7 @@ function fillSettingsForm(s: Settings): void {
   ;(el('set-provider') as HTMLSelectElement).value = s.provider
   ;(el('set-base-url') as HTMLInputElement).value = s.baseUrl
   ;(el('set-api-key') as HTMLInputElement).value = s.apiKey
-  ;(el('set-model') as HTMLInputElement).value = s.model
   setMsg('') // a stale validation message must not survive a fresh open
-  modelNote('')
-}
-
-/** Status line under the model field (load progress / result), separate from
- *  the red Save-validation message so the two can't overwrite each other. */
-function modelNote(text: string, isError = false): void {
-  const note = el('set-model-note')
-  note.textContent = text
-  note.classList.toggle('err', isError)
 }
 
 function openSettings(message = ''): void {
@@ -317,49 +345,6 @@ function restoreView(): void {
   btn.textContent = show ? '🚫' : '👁'
 }
 
-// Populate the model datalist from the endpoint's /models. The field stays
-// free-text, so a model missing from the list can still be typed by hand; the
-// datalist only saves spelling. fetchVisionModels needs the CURRENT form's
-// base URL and key — not the saved ones — so the list matches what's typed.
-;(el('set-load-models') as HTMLButtonElement).onclick = async () => {
-  const apiKey = (el('set-api-key') as HTMLInputElement).value.trim()
-  if (!apiKey) {
-    modelNote('Enter an API key first.', true)
-    return
-  }
-  const settings: Settings = {
-    provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
-    baseUrl: (el('set-base-url') as HTMLInputElement).value.trim(),
-    apiKey,
-    model: (el('set-model') as HTMLInputElement).value.trim(),
-  }
-  const btn = el('set-load-models') as HTMLButtonElement
-  btn.disabled = true
-  modelNote('Loading…')
-  try {
-    const { models, filtered } = await fetchVisionModels(settings)
-    const list = el('model-options') as HTMLDataListElement
-    list.replaceChildren(
-      ...models.map((m) => {
-        const opt = document.createElement('option')
-        opt.value = m.id
-        opt.label = m.name
-        return opt
-      }),
-    )
-    modelNote(
-      filtered
-        ? `Loaded ${models.length} vision models. Pick one, or type an id.`
-        : `Loaded ${models.length} models — this endpoint doesn't report which are vision-capable, so the list isn't filtered.`,
-    )
-    setMsg('')
-  } catch (err) {
-    modelNote(err instanceof Error ? err.message : String(err), true)
-  } finally {
-    btn.disabled = false
-  }
-}
-
 el('set-save').onclick = () => {
   const apiKey = (el('set-api-key') as HTMLInputElement).value.trim()
   if (!apiKey) {
@@ -379,7 +364,6 @@ el('set-save').onclick = () => {
     provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
     baseUrl: (el('set-base-url') as HTMLInputElement).value.trim(),
     apiKey,
-    model: (el('set-model') as HTMLInputElement).value.trim(),
   }
   void setSettings(settings).then(() => {
     restoreView()

@@ -30,7 +30,6 @@ function creds() {
 }
 
 const { apiKey, baseUrl } = creds()
-const model = process.argv.slice(2).find((a) => a.includes('/')) ?? 'deepseek/deepseek-v4-flash-vision-exp'
 
 // Test build: dist + host_permissions, so capture is authorized without the
 // activeTab gesture Playwright can't produce (a real user click still grants
@@ -112,7 +111,6 @@ await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), {
   provider: 'openrouter',
   baseUrl,
   apiKey,
-  model,
 })
 
 const page = await ctx.newPage()
@@ -120,11 +118,10 @@ await page.goto(url)
 await page.bringToFront()
 
 console.log(`\nStudy Buddy test browser is up.`)
-console.log(`  model:    ${model}`)
+console.log(`  model:    DeepSeek (auto-fallback to Gemini / GPT-5 Nano)`)
 console.log(`  endpoint: ${baseUrl}`)
 console.log(`  demo:     ${url}`)
 console.log(`\nSelect a region with Ctrl+Shift+Y, choose Solve/Explain/Translate or ask.`)
-console.log(`Switch model: ⚙ in the chat window → ↻ to load the list → pick → Save.`)
 console.log(`Close the browser window to exit.\n`)
 
 await new Promise((resolve) => ctx.on('close', resolve))

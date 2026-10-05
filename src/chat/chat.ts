@@ -280,7 +280,16 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-key-toggle
 // every token. DOMPurify guards the HTML; KaTeX runs with trust:false.
 
 function renderAnswer(node: HTMLElement, text: string): void {
-  const html = marked.parse(text, { gfm: true, breaks: true }) as string
+  // Models sometimes emit TeX delimiters \( \) / \[ \] instead of $ / $$.
+  // marked strips the backslash as a Markdown escape BEFORE KaTeX runs, which
+  // destroys those delimiters and leaves literal ( ) [ ] in the answer — so
+  // normalize to $ / $$ first.
+  const normalized = text
+    .replace(/\\\[/g, '\n$$\n')
+    .replace(/\\\]/g, '\n$$\n')
+    .replace(/\\\(/g, '$')
+    .replace(/\\\)/g, '$')
+  const html = marked.parse(normalized, { gfm: true, breaks: true }) as string
   node.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
   renderMathInElement(node, {
     delimiters: [

@@ -105,6 +105,16 @@ try {
   const shortcut = commands.find((c) => c.name === 'start-capture')?.shortcut
   check(Boolean(shortcut), `start-capture command registered (${shortcut || 'MISSING'})`)
 
+  // Seed a key so the chat pages used by the capture-flow tests don't detour
+  // into onboarding; the onboarding path itself is tested later on clean storage.
+  await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), {
+    provider: 'openrouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    apiKey: 'sk-test-123',
+    uiLanguage: 'auto',
+    answerLanguage: 'auto',
+  })
+
   const page = await ctx.newPage()
   await page.goto(url)
   await page.bringToFront()
@@ -195,28 +205,36 @@ try {
   await chat.close()
   await trigger.close()
 
-  // Settings round trip in a bare chat page (no params → the initial error
-  // view, whose ⚙ Settings… button is the exact rescue path a stuck user has).
-  const settings = await ctx.newPage()
-  await settings.goto(`${chatOrigin}/src/chat/chat.html`)
-  await settings.click('#view-error:not([hidden]) [data-goto-settings]')
-  await settings.waitForSelector('#view-settings:not([hidden])')
-  check(true, 'settings view opens from the error view')
-  await settings.fill('#set-api-key', 'sk-test-123')
-  await settings.click('#set-save')
-  // Back on the pre-settings view (the error one) means Save returned cleanly.
+  // Onboarding: with no key a first run must show the welcome screen, and
+  // saving a key must land on the app (here: the no-state error view, whose
+  // ⚙ Settings… button is the rescue path a stuck user has). Clearing storage
+  // gives the true first-run state.
+  await sw.evaluate(() => chrome.storage.local.remove('settings'))
+  const onboard = await ctx.newPage()
+  await onboard.goto(`${chatOrigin}/src/chat/chat.html`)
+  await onboard.waitForSelector('#view-welcome:not([hidden])')
+  check(true, 'first run shows onboarding')
+  await onboard.fill('#welcome-key', 'sk-test-123')
+  await onboard.click('#welcome-start')
+  await onboard.waitForSelector('#view-error:not([hidden])')
+  await onboard.click('#view-error:not([hidden]) [data-goto-settings]')
+  await onboard.waitForSelector('#view-settings:not([hidden])')
+  check(true, 'settings view opens after onboarding')
+  await onboard.click('#set-save')
   // state 'attached': an element WITH [hidden] can never be "visible" — the
   // selector already encodes the hidden-ness we're waiting for.
-  await settings.waitForSelector('#view-settings[hidden]', { state: 'attached' })
-  const stored = (await settings.evaluate(() => chrome.storage.local.get())).settings
+  await onboard.waitForSelector('#view-settings[hidden]', { state: 'attached' })
+  const stored = (await onboard.evaluate(() => chrome.storage.local.get())).settings
   check(
     stored && stored.provider === 'openrouter' &&
       stored.baseUrl === 'https://openrouter.ai/api/v1' &&
       stored.apiKey === 'sk-test-123' &&
+      stored.uiLanguage === 'auto' &&
+      stored.answerLanguage === 'auto' &&
       !('model' in stored),
-    `settings persisted to storage.local with OpenRouter defaults (${JSON.stringify(stored)})`,
+    `settings persisted with languages and no model (${JSON.stringify(stored)})`,
   )
-  await settings.close()
+  await onboard.close()
 
   // AI answering: point settings at the mock endpoint and send the captured
   // crop through the Solve preset. The reply must stream into the thread, and

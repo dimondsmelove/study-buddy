@@ -55,11 +55,11 @@ h1 {
   background: #fafafa;
 }
 
-/* The small row above the crop: right-aligned ⚙ only (Task 2 puts the AI
-   actions on the crop itself in a later build). */
+/* The small row above the crop: "New selection" on the left, ⚙ on the right. */
 #capture-top {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
 }
 
 #settings-btn {
@@ -67,6 +67,19 @@ h1 {
   border: none;
   background: none;
   font-size: 14px;
+}
+
+/* Quiet, borderless button for secondary actions. */
+.ghost {
+  border: none;
+  background: none;
+  color: var(--muted);
+  padding: 3px 4px;
+}
+
+.ghost:hover {
+  border: none;
+  color: var(--accent);
 }
 
 #crop {
@@ -171,6 +184,31 @@ button:disabled {
   text-align: center;
 }
 
+/* Per-answer actions: copy / explain simpler / retry. */
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.msg.user .msg-actions {
+  justify-content: flex-end;
+}
+
+.msg-actions button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.msg-actions button:hover {
+  color: var(--accent);
+  background: #f4f4f5;
+}
+
 #ask-form {
   display: flex;
   gap: 6px;
@@ -267,16 +305,38 @@ button:disabled {
   min-height: 1.2em;
 }
 
-#set-actions {
+#welcome-msg {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 1.2em;
+}
+
+#welcome-msg.err {
+  color: #b42318;
+}
+
+#set-actions,
+#welcome-actions {
   display: flex;
   gap: 6px;
 }
 
-#set-actions .primary {
+#set-actions .primary,
+#welcome-actions .primary {
   flex: 1;
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+/* Welcome is a first impression: give it a little breathing room. */
+#view-welcome {
+  justify-content: center;
+}
+
+#view-welcome h1 {
+  font-size: 16px;
 }
 
 .set-note {

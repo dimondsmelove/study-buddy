@@ -8,73 +8,104 @@
   </head>
   <body>
     <main id="app">
+      <!-- onboarding: shown on first run, before any API key is saved -->
+      <section id="view-welcome" hidden>
+        <h1 data-i18n="welcome.title">Welcome to Study Buddy</h1>
+        <p data-i18n="welcome.pitch"></p>
+        <label for="welcome-key" data-i18n="welcome.keyLabel"></label>
+        <div class="key-row">
+          <input id="welcome-key" type="password" autocomplete="off" spellcheck="false" />
+          <button type="button" class="key-toggle" data-key-toggle="welcome-key" title="Show / hide key">👁</button>
+        </div>
+        <label for="welcome-ui-lang" data-i18n="settings.uiLanguage"></label>
+        <select id="welcome-ui-lang"></select>
+        <label for="welcome-ans-lang" data-i18n="settings.answerLanguage"></label>
+        <select id="welcome-ans-lang"></select>
+        <p id="welcome-msg" role="status"></p>
+        <div id="welcome-actions">
+          <button type="button" id="welcome-test" data-i18n="welcome.test"></button>
+          <button type="button" id="welcome-start" class="primary" data-i18n="welcome.start"></button>
+        </div>
+        <p class="set-note">
+          <span data-i18n="settings.keyNote"></span>
+          <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer" data-i18n="welcome.getKey"></a>
+        </p>
+      </section>
+
       <!-- capture state: the crop + the conversation about it -->
       <section id="view-capture" hidden>
         <div id="capture-top">
-          <button type="button" id="settings-btn" title="Settings" aria-label="Settings">⚙</button>
+          <button type="button" id="new-selection-btn" class="ghost" data-i18n="capture.newSelection"></button>
+          <button type="button" id="settings-btn" title="Settings" aria-label="Settings" data-i18n-title="capture.settings">⚙</button>
         </div>
         <figure id="crop-figure">
           <img id="crop" alt="Selected region" />
         </figure>
         <div id="presets">
-          <button type="button" class="preset" data-preset="solve">Solve</button>
-          <button type="button" class="preset" data-preset="explain">Explain</button>
-          <button type="button" class="preset" data-preset="translate">Translate</button>
+          <button type="button" class="preset" data-preset="solve" data-i18n="preset.solve"></button>
+          <button type="button" class="preset" data-preset="quiz" data-i18n="preset.quiz"></button>
+          <button type="button" class="preset" data-preset="explain" data-i18n="preset.explain"></button>
+          <button type="button" class="preset" data-preset="translate" data-i18n="preset.translate"></button>
+          <button type="button" class="preset" data-preset="summarize" data-i18n="preset.summarize"></button>
         </div>
         <div id="thread" aria-live="polite"></div>
         <form id="ask-form" autocomplete="off">
-          <input id="ask-input" type="text" placeholder="Ask anything about this…" />
-          <button id="ask-btn" type="submit">Ask</button>
+          <input id="ask-input" type="text" data-i18n-placeholder="ask.placeholder" />
+          <button id="ask-btn" type="submit" data-i18n="ask.button"></button>
         </form>
       </section>
 
       <!-- permission state: per-site capture grant -->
       <section id="view-permission" hidden>
-        <h1>Allow capture on this site</h1>
-        <p id="perm-text">Study Buddy needs your permission to capture this site.</p>
-        <button id="perm-btn" type="button">Allow for this site</button>
-        <button type="button" class="ghost-settings" data-goto-settings>⚙ Settings…</button>
+        <h1 data-i18n="state.permissionTitle"></h1>
+        <p id="perm-text"></p>
+        <button id="perm-btn" type="button" class="primary" data-i18n="state.allow"></button>
+        <button type="button" class="ghost-settings" data-goto-settings data-i18n="state.settingsLink"></button>
       </section>
 
       <!-- restricted state: nothing can unblock this -->
       <section id="view-restricted" hidden>
-        <h1>Can’t capture this page</h1>
+        <h1 data-i18n="state.restrictedTitle"></h1>
         <p id="restricted-text"></p>
-        <button type="button" class="ghost-settings" data-goto-settings>⚙ Settings…</button>
+        <button type="button" class="ghost-settings" data-goto-settings data-i18n="state.settingsLink"></button>
       </section>
 
       <!-- error state -->
       <section id="view-error" hidden>
-        <h1>Something went wrong</h1>
+        <h1 data-i18n="state.errorTitle"></h1>
         <p id="error-text"></p>
-        <button type="button" class="ghost-settings" data-goto-settings>⚙ Settings…</button>
+        <button type="button" class="ghost-settings" data-goto-settings data-i18n="state.settingsLink"></button>
       </section>
 
-      <!-- settings state: AI connection (provider / endpoint / key / model) -->
+      <!-- settings: AI connection + languages -->
       <section id="view-settings" hidden>
-        <h1>Settings</h1>
-        <label for="set-provider">Provider</label>
+        <h1 data-i18n="settings.title"></h1>
+        <label for="set-ui-lang" data-i18n="settings.uiLanguage"></label>
+        <select id="set-ui-lang"></select>
+        <label for="set-ans-lang" data-i18n="settings.answerLanguage"></label>
+        <select id="set-ans-lang"></select>
+        <label for="set-provider" data-i18n="settings.provider"></label>
         <select id="set-provider">
           <option value="openrouter">OpenRouter</option>
           <option value="custom">Custom OpenAI-compatible</option>
         </select>
-        <label for="set-base-url">Base URL</label>
+        <label for="set-base-url" data-i18n="settings.baseUrl"></label>
         <input id="set-base-url" type="url" autocomplete="off" spellcheck="false" />
-        <label for="set-api-key">API key</label>
+        <label for="set-api-key" data-i18n="settings.apiKey"></label>
         <div class="key-row">
           <input id="set-api-key" type="password" autocomplete="off" spellcheck="false" />
-          <button type="button" id="set-key-toggle" title="Show / hide key" aria-label="Show or hide the API key">👁</button>
+          <button type="button" class="key-toggle" data-key-toggle="set-api-key" title="Show / hide key">👁</button>
         </div>
-        <label>Model</label>
-        <p class="set-note" id="set-model-info">DeepSeek (vision), with an automatic fallback if it’s unavailable.</p>
+        <label data-i18n="settings.model"></label>
+        <p class="set-note" data-i18n="settings.modelInfo"></p>
         <p id="set-msg" role="status"></p>
         <div id="set-actions">
-          <button type="button" id="set-back">Back</button>
-          <button type="button" id="set-save" class="primary">Save</button>
+          <button type="button" id="set-back" data-i18n="settings.back"></button>
+          <button type="button" id="set-save" class="primary" data-i18n="settings.save"></button>
         </div>
         <p class="set-note">
-          The API key is stored only on this device (local extension storage) — never synced or sent anywhere except the model endpoint.
-          Get a key at <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer">openrouter.ai/settings/keys</a>.
+          <span data-i18n="settings.keyNote"></span>
+          <a href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer" data-i18n="settings.getKey"></a>
         </p>
       </section>
     </main>

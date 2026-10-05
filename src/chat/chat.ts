@@ -372,7 +372,8 @@ function presetPrompts(): Record<string, string> {
       `Write in ${lang}.`,
     translate:
       `Translate all the text in the image into ${lang}. If it is already in ${lang}, ` +
-      'translate it into English instead. Keep the layout where it matters.',
+      'translate it into English instead. Output the translation only — do not restate ' +
+      'the original text.',
     summarize: `Summarize what is shown in 3-5 key points.\nWrite in ${lang}.`,
   }
 }

@@ -60,31 +60,29 @@ const DEMO = `<!doctype html><meta charset="utf-8"><title>Study Buddy — demo</
 </style>
 <header>Study Buddy demo — dragging a region here helps test. <b>Ctrl+Shift+Y</b> (or the toolbar icon) to select. ⚙ in the chat window to switch model, then click ↻ to load the list.</header>
 <main>
- <section class="card"><h2>Math (English)</h2>
+ <section class="card"><h2>Math → Solve</h2>
    <p>Problem 3. A train travels 240 km in 3 hours, then 180 km in 2 hours.</p>
    <p>What is its average speed for the whole journey?</p></section>
- <section class="card"><h2>Русский текст</h2>
+ <section class="card"><h2>Quiz → Quiz</h2>
+   <p>Which process do plants use to make food?</p>
+   <p>A) Respiration&nbsp;&nbsp; B) Photosynthesis&nbsp;&nbsp; C) Digestion&nbsp;&nbsp; D) Fermentation</p></section>
+ <section class="card"><h2>Code → Explain</h2>
+   <pre><code>const nums = [1, 2, 3]
+let sum = 0
+for (let i = 0; i &lt;= nums.length; i++) {
+  sum += nums[i]
+}
+console.log(sum) // expected 6</code></pre></section>
+ <section class="card"><h2>Русский текст → Translate</h2>
    <p>Осенью лес становится особенно красивым. Листья клёнов и берёз окрашиваются
    в золотой и багряный цвета, а воздух наполняется запахом грибов и влажной земли.</p></section>
- <section class="card"><h2>Deutscher Text</h2>
+ <section class="card"><h2>Deutscher Text → Translate</h2>
    <p>Ein Fotoapparat ist ein Gerät, mit dem man Bilder aufnimmt. Das Licht fällt durch
    das Objektiv auf einen Sensor, der die Helligkeit in elektrische Signale umwandelt.</p></section>
- <section class="card"><h2>Table</h2>
-   <table><tr><th>City</th><th>Jan</th><th>Jul</th></tr>
-     <tr><td>Oslo</td><td>-4</td><td>17</td></tr>
-     <tr><td>Rome</td><td>8</td><td>25</td></tr>
-     <tr><td>Cairo</td><td>14</td><td>29</td></tr></table></section>
- <section class="card"><h2>Code</h2>
-   <pre><code>const once = (fn) =&gt; {
-  let called = false
-  return (...args) =&gt; {
-    if (called) return
-    called = true
-    return fn(...args)
-  }
-}</code></pre></section>
- <section class="card"><h2>Смешанная задача</h2>
-   <p>Переведи на русский и объясни: “The mitochondria is the powerhouse of the cell.”</p></section>
+ <section class="card"><h2>Article → Summarize</h2>
+   <p>Rewilding is a form of ecological restoration that aims to return land to a wilder
+   state, letting natural processes — and keystone species such as the Yellowstone wolf —
+   shape the ecosystem rather than freezing it at a chosen point.</p></section>
 </main>`
 
 const server = createServer((_req, res) => {

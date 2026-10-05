@@ -6,8 +6,11 @@ Select a region (icon or `Ctrl+Shift+Y`) → the chat window appears next to you
 selection → ask a question about what's on screen: get homework solved, a
 step-by-step explanation, a translation, or just "what is this?" for any picture.
 
-**Status: Phase 0 skeleton.** The capture pipeline (region selection →
-screenshot → crop → chat window) works end to end. AI answering lands next.
+**Status: capture pipeline + AI answering work end to end.** Region selection →
+screenshot → crop → chat window, connection settings (provider / base URL /
+API key / model, with the endpoint's vision-model list loaded by the ↻ button),
+and streaming answers (Solve / Explain / Translate presets plus free-form
+questions) all function.
 
 ## Architecture
 
@@ -37,9 +40,18 @@ npm install
 npm run dev        # Vite + CRXJS with HMR
 npm run build      # production build → dist/
 npm run typecheck
-npm run verify     # smoke test: load dist/ in Chromium, select, capture, chat
+npm run verify     # smoke test: load dist/ in Chromium, select, capture, chat,
+                   # AI answer (mock SSE endpoint) — no API key needed
 
-# load the unpacked extension:
+# manual test in a ready browser (key pre-seeded, demo page opens):
+npm run playtest               # or: npm run playtest -- <model-id>
+#   the OpenRouter key is read from ~/.config/study-buddy/credentials.json
+#   (or OPENROUTER_API_KEY); it is never written into the repo
+
+# compare answer quality across models on mixed tasks/languages:
+npm run compare                # or: node scripts/compare.mjs model-a model-b
+
+# load the unpacked extension in your own browser:
 #   chrome://extensions → Developer mode → Load unpacked → select dist/
 ```
 

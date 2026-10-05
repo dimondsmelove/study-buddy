@@ -9,7 +9,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "playtest": "npm run build && node scripts/playtest.mjs",
+    "compare": "node scripts/compare.mjs"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.7.1",

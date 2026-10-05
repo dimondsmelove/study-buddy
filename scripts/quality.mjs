@@ -100,12 +100,14 @@ let [sw] = ctx.serviceWorkers()
 if (!sw) sw = await ctx.waitForEvent('serviceworker')
 const origin = (await sw.evaluate(() => chrome.runtime.getURL(''))).replace(/\/$/, '')
 
+// Languages can be overridden for a run (e.g. the RU-template pass):
+//   SB_QUALITY_UI=ru SB_QUALITY_ANSWER=auto node scripts/quality.mjs
 await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), {
   provider: 'openrouter',
   baseUrl: 'https://openrouter.ai/api/v1',
   apiKey: KEY,
-  uiLanguage: 'en',
-  answerLanguage: 'auto',
+  uiLanguage: process.env.SB_QUALITY_UI ?? 'en',
+  answerLanguage: process.env.SB_QUALITY_ANSWER ?? 'auto',
 })
 
 const report = [`# Study Buddy — task quality (real API)`, `Date: ${new Date().toISOString()}`, '']

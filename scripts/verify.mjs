@@ -240,9 +240,11 @@ try {
   // app's chain (settings.model no longer exists).
   const PRIMARY = 'deepseek/deepseek-v4-flash-vision-exp'
   const FALLBACK = 'google/gemini-2.5-flash-lite'
+  // Pin uiLanguage 'en' so the prompt assertions below are deterministic
+  // regardless of the test machine's browser locale (auto would follow it).
   await sw.evaluate(
     async (s) => chrome.storage.local.set({ settings: s }),
-    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123' },
+    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto' },
   )
   // Wait until the stored crop is decoded — i.e. `activeImage` is set — or the
   // preset click could race the storage read and send a caption-less question.
@@ -300,6 +302,33 @@ try {
     `request carried solve params (t=${lastAiRequest?.temperature}, max_tokens=${lastAiRequest?.max_tokens})`,
   )
   await ai.close()
+
+  // RU dictionary: with uiLanguage 'ru' the NATIVE RU templates and system
+  // prompt must go out (answerLanguage auto + ru UI resolves to Russian).
+  await sw.evaluate(
+    async (s) => chrome.storage.local.set({ settings: s }),
+    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'ru', answerLanguage: 'auto' },
+  )
+  const aiRu = await openCapture()
+  await aiRu.click('.preset[data-preset="solve"]')
+  await waitReply(aiRu)
+  const ruUser = lastAiRequest?.messages?.find((m) => m.role === 'user')
+  const ruText = Array.isArray(ruUser?.content) ? ruUser.content[0]?.text : null
+  check(
+    typeof ruText === 'string' && ruText.startsWith('Реши задачу, показанную на изображении'),
+    `RU dictionary selected for ru UI (${String(ruText ?? '').slice(0, 30)}…)`,
+  )
+  const ruSys = lastAiRequest?.messages?.[0]
+  check(
+    ruSys?.role === 'system' && typeof ruSys.content === 'string' && ruSys.content.includes('# Опора на изображение'),
+    'RU system prompt sent for ru UI',
+  )
+  await aiRu.close()
+  // Back to EN for the fallback test below.
+  await sw.evaluate(
+    async (s) => chrome.storage.local.set({ settings: s }),
+    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto' },
+  )
 
   // Fallback: make the primary answer 503; the next model must take over and
   // the thread must note the switch.

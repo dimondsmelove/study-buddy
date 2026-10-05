@@ -12,8 +12,10 @@ export const taskPromptsEn: Record<'solve' | 'quiz' | 'explain' | 'translate' | 
       `Write in ${lang}.`,
   quiz:
     (lang) =>
-      'This is a multiple-choice question. Reply in this structure:\n' +
-      '1) Correct option: ...\n2) Why it is correct: ...\n3) Why each other option is wrong: ...\n' +
+      'The image shows a question with answer options.\n\n' +
+      'If the options are visible:\n' +
+      '1) Correct option: ...\n2) Why it is correct: ...\n3) Why each other option is wrong: briefly, per option.\n\n' +
+      'If no options are visible — solve the question as a regular problem and say that the options are not visible.\n\n' +
       `Write in ${lang}.`,
   explain:
     (lang) =>

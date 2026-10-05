@@ -5,8 +5,8 @@
 // the two coincide; the RU rewrite is a separate content slice).
 
 import type { AnswerLanguage } from '../settings'
-import { PROMPT_LANGUAGE_NAMES } from '../i18n'
-import { buildSystemPrompt } from './system'
+import { PROMPT_LANGUAGE_NAMES, RU_LANGUAGE_NAMES } from '../i18n'
+import { buildSystemPrompt, buildSystemPromptRu } from './system'
 import { simplerEn, taskPromptsEn } from './tasks.en'
 import { simplerRu, taskPromptsRu } from './tasks.ru'
 
@@ -30,21 +30,32 @@ export function targetLanguageName(ctx: PromptContext): string {
   return ctx.uiLang === 'ru' ? 'Russian' : 'English'
 }
 
+/** Russian name (nominative) for the same — used by the native RU templates. */
+function ruLanguageName(ctx: PromptContext): string {
+  if (ctx.answerLanguage !== 'auto') return RU_LANGUAGE_NAMES[ctx.answerLanguage]
+  return 'русский'
+}
+
 function isRussian(ctx: PromptContext): boolean {
   return ctx.answerLanguage === 'auto' ? ctx.uiLang === 'ru' : ctx.answerLanguage === 'ru'
 }
 
 export function systemPrompt(ctx: PromptContext): string {
-  return buildSystemPrompt(targetLanguageName(ctx), ctx.answerLanguage !== 'auto')
+  return isRussian(ctx)
+    ? buildSystemPromptRu(ruLanguageName(ctx), ctx.answerLanguage !== 'auto')
+    : buildSystemPrompt(targetLanguageName(ctx), ctx.answerLanguage !== 'auto')
 }
 
 export function taskPrompt(task: TaskId, ctx: PromptContext): string {
-  const dict = isRussian(ctx) ? taskPromptsRu : taskPromptsEn
-  return dict[task](targetLanguageName(ctx))
+  return isRussian(ctx)
+    ? taskPromptsRu[task](ruLanguageName(ctx))
+    : taskPromptsEn[task](targetLanguageName(ctx))
 }
 
 export function simplerPrompt(ctx: PromptContext): string {
-  return (isRussian(ctx) ? simplerRu : simplerEn)(targetLanguageName(ctx))
+  return isRussian(ctx)
+    ? simplerRu(ruLanguageName(ctx))
+    : simplerEn(targetLanguageName(ctx))
 }
 
 /** temperature / max_tokens per turn. Factual tasks run deterministic;

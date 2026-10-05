@@ -29,7 +29,7 @@ const EN: Dict = {
   'capture.settings': 'Settings',
   'capture.hint': 'Pick an action above, or ask a question about the selected region.',
   'preset.solve': 'Solve',
-  'preset.quiz': 'Quiz',
+  'preset.quiz': 'Multiple choice',
   'preset.explain': 'Explain',
   'preset.translate': 'Translate',
   'preset.summarize': 'Summarize',
@@ -79,7 +79,7 @@ const RU: Dict = {
   'capture.settings': 'Настройки',
   'capture.hint': 'Выберите действие выше или задайте вопрос о выделенной области.',
   'preset.solve': 'Решить',
-  'preset.quiz': 'Тест',
+  'preset.quiz': 'Выбор ответа',
   'preset.explain': 'Объяснить',
   'preset.translate': 'Перевести',
   'preset.summarize': 'Конспект',
@@ -167,4 +167,22 @@ export const PROMPT_LANGUAGE_NAMES: Record<Exclude<AnswerLanguage, 'auto'>, stri
   tr: 'Turkish',
   zh: 'Chinese',
   ja: 'Japanese',
+}
+
+/** Russian language names (nominative) for the RU prompt templates:
+ *  «Язык ответа: русский». Case-neutral on purpose — templates reference the
+ *  language as a label, never inflect it. */
+export const RU_LANGUAGE_NAMES: Record<Exclude<AnswerLanguage, 'auto'>, string> = {
+  en: 'английский',
+  ru: 'русский',
+  uk: 'украинский',
+  de: 'немецкий',
+  fr: 'французский',
+  es: 'испанский',
+  it: 'итальянский',
+  pt: 'португальский',
+  pl: 'польский',
+  tr: 'турецкий',
+  zh: 'китайский',
+  ja: 'японский',
 }

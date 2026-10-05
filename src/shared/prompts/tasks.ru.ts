@@ -1,38 +1,45 @@
-// Russian task templates — the reference dictionary.
-//
-// For now this mirrors the English templates verbatim: the i18n architecture
-// (pick dictionary by answer language) is what this slice delivers. Rewriting
-// the texts into native Russian with school conventions («Дано → Решение →
-// Ответ») is a dedicated content slice (BACKLOG §5.4, «Локализация промптов»).
+// Russian task templates — the reference dictionary (native RU, written for a
+// Russian-speaking student; school conventions: «Ответ → Решение → Проверка»,
+// structure as a default with skippable sections, adaptive multiple choice).
+// `lang` is the Russian language name in the nominative («русский»); templates
+// reference it as a label («Язык ответа: русский») to stay case-neutral.
 
 import type { TaskTemplate } from './tasks.en'
 
 export const taskPromptsRu: Record<'solve' | 'quiz' | 'explain' | 'translate' | 'summarize', TaskTemplate> = {
   solve:
     (lang) =>
-      'Solve the problem shown in the image. Reply in this exact structure:\n' +
-      '1) Answer: ...\n2) Steps: ...\n3) Check / common mistakes: ...\n' +
-      `Write in ${lang}.`,
+      'Реши задачу, показанную на изображении.\n\n' +
+      'Структура ответа — пропускай секции, которые не применимы:\n' +
+      '1) **Ответ:** …\n' +
+      '2) **Решение:** по шагам, с выкладками.\n' +
+      '3) **Проверка и частые ошибки:** …\n\n' +
+      `Язык ответа: ${lang}.`,
   quiz:
     (lang) =>
-      'This is a multiple-choice question. Reply in this structure:\n' +
-      '1) Correct option: ...\n2) Why it is correct: ...\n3) Why each other option is wrong: ...\n' +
-      `Write in ${lang}.`,
+      'На изображении задание с выбором ответа.\n\n' +
+      'Если варианты видны:\n' +
+      '1) **Правильный вариант:** …\n' +
+      '2) **Почему он верен:** …\n' +
+      '3) **Почему остальные не подходят:** кратко по каждому варианту.\n\n' +
+      'Если вариантов на изображении нет — реши задание как обычную задачу и скажи, что варианты не видны.\n\n' +
+      `Язык ответа: ${lang}.`,
   explain:
     (lang) =>
-      'Explain what is shown to a student. Reply in this structure:\n' +
-      '1) In one sentence: ...\n2) Step by step: ...\n3) Key terms: ...\n' +
-      `Write in ${lang}.`,
+      'Объясни показанное на изображении так, как объяснил бы ученику.\n' +
+      'Начни с сути в одном предложении, затем разбери по шагам; если есть ключевые термины — поясни их в конце. ' +
+      'Секции, которые не применимы, пропускай.\n\n' +
+      `Язык ответа: ${lang}.`,
   translate:
     (lang) =>
-      `Translate all the text in the image into ${lang}. If it is already in ${lang}, ` +
-      'translate it into English instead. Output the translation only — do not restate ' +
-      'the original text.',
-  summarize: (lang) => `Summarize what is shown in 3-5 key points.\nWrite in ${lang}.`,
+      `Переведи весь текст с изображения. Целевой язык: ${lang}. ` +
+      'Если текст уже на этом языке — переведи на английский. ' +
+      'Выведи только перевод, не пересказывай оригинал.',
+  summarize: (lang) => `Сжато передай суть показанного: 3–5 ключевых тезисов.\nЯзык ответа: ${lang}.`,
 }
 
 /** Per-answer "explain simpler" action (not a task button). */
 export const simplerRu: TaskTemplate =
   (lang) =>
-    'Explain your previous answer in simpler terms, more briefly, with a concrete example ' +
-    `if helpful. Write in ${lang}.`
+    'Объясни свой предыдущий ответ проще и короче, с конкретным примером, если он поможет. ' +
+    `Язык ответа: ${lang}.`

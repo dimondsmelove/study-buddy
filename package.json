@@ -12,6 +12,7 @@
     "verify": "node scripts/verify.mjs",
     "playtest": "npm run build && node scripts/playtest.mjs",
     "quality": "npm run build && node scripts/quality.mjs",
+    "screenshots": "npm run build && node scripts/screenshots.mjs",
     "compare": "node scripts/compare.mjs"
   },
   "devDependencies": {

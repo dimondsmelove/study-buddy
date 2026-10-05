@@ -1,19 +1,27 @@
 # Study Buddy
 
-Select any region of the screen and ask an AI about it — solve, explain, translate.
+Select any question on your screen and get a step-by-step answer in your
+language. Built for studying — solve, quiz, explain, translate, summarize.
 
 Select a region (icon or `Ctrl+Shift+Y`) → the chat window appears next to your
-selection → ask a question about what's on screen: get homework solved, a
-step-by-step explanation, a translation, or just "what is this?" for any picture.
+selection → pick a task or ask your own question. The answer streams in beside
+the page, in your language.
 
-**Status: capture pipeline + AI answering work end to end.** Region selection →
-screenshot → crop → chat window, connection settings (provider / base URL /
-API key), and streaming answers (Solve / Explain / Translate presets plus
-free-form questions) all function. The answering model is fixed to DeepSeek
-(see `src/shared/ai.ts`) with an automatic fallback chain — not user-selectable
-yet. Answers follow the question's language; presets use the browser language.
+**Status: MVP.** Region selection → screenshot → crop → chat window, first-run
+onboarding (bring your own OpenRouter key, tested live), interface + answer
+language settings (English / Russian), task-shaped answers (Solve / Quiz /
+Explain / Translate / Summarize + free-form Ask), per-answer copy / explain
+simpler / retry, and an automatic model fallback all work. The answering model
+is fixed to DeepSeek (see `src/shared/ai.ts`) — not user-selectable yet. Store
+copy, privacy policy, and screenshots live in `store/`.
 
-## Architecture
+Manual use:
+
+```
+Ctrl+Shift+Y  →  drag a box around a question  →  Solve / Quiz / …  →  read
+```
+
+## Architecture at a glance
 
 ```
 content overlay (drag-select a region)
@@ -33,6 +41,8 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   so there is no "read and change all your data" install warning.
 - The chat window lives in a **closed shadow root**, so page styles can't leak in
   and ours can't leak out.
+- The API key and settings live in `chrome.storage.local`; the transient crop
+  lives in RAM-only `chrome.storage.session`.
 
 ## Develop
 
@@ -49,12 +59,25 @@ npm run playtest
 #   the OpenRouter key is read from ~/.config/study-buddy/credentials.json
 #   (or OPENROUTER_API_KEY); it is never written into the repo
 
+# task quality: drive the real UI against the real API, one fixture per task:
+npm run quality
+
 # compare answer quality across models on mixed tasks/languages:
 npm run compare                # or: node scripts/compare.mjs model-a model-b
+
+# regenerate Chrome Web Store screenshots → store/screenshots/:
+npm run screenshots
 
 # load the unpacked extension in your own browser:
 #   chrome://extensions → Developer mode → Load unpacked → select dist/
 ```
+
+## Store
+
+Submission copy, permission justifications, and the privacy policy are in
+`store/` (`listing.md`, `privacy.md`); screenshots in `store/screenshots/`.
+The working name "Study Buddy" is likely taken — alternatives and a checklist
+are in `store/listing.md`.
 
 ## Provenance
 

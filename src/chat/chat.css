@@ -46,13 +46,53 @@ h1 {
   margin: 0;
 }
 
+/* The crop shows as a compact thumbnail so the conversation gets the space;
+   click (or ⌕) opens a lightbox with the full-size image. */
 #crop-figure {
   margin: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: auto;
-  max-height: 40%;
+  overflow: hidden;
+  max-height: 72px;
   background: #fafafa;
+  cursor: zoom-in;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#crop {
+  display: block;
+  max-width: 100%;
+  max-height: 70px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+/* Full-size view of the crop; click anywhere or press Esc to close. */
+#lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.88);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  padding: 4%;
+}
+
+#lightbox.open {
+  display: flex;
+}
+
+#lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
 }
 
 /* The small row above the crop: "New selection" on the left, ⚙ on the right. */

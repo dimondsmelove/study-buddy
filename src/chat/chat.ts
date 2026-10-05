@@ -32,6 +32,8 @@ const KINDS: Kind[] = ['capture', 'permission', 'restricted', 'error']
 
 const el = (id: string): HTMLElement => document.getElementById(id)!
 const img = document.getElementById('crop') as HTMLImageElement
+const lightbox = document.getElementById('lightbox') as HTMLDivElement
+const lightboxImg = lightbox.querySelector('img') as HTMLImageElement
 const thread = document.getElementById('thread') as HTMLElement
 
 let uiLang: UiLang = 'en'
@@ -144,6 +146,7 @@ async function showCapture(imageId: string): Promise<void> {
   }
   activeImage = stored.dataUrl
   img.src = stored.dataUrl
+  lightbox.classList.remove('open') // a fresh capture replaces the enlarged view
   ensureHint()
 }
 
@@ -554,6 +557,21 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   input.value = ''
   void send(question)
 })
+
+// The crop shows as a thumbnail; click it for the full-size lightbox.
+// Click anywhere on the lightbox or press Esc to close.
+{
+  const figure = document.getElementById('crop-figure') as HTMLElement
+  figure.addEventListener('click', () => {
+    if (!img.src) return
+    lightboxImg.src = img.src
+    lightbox.classList.add('open')
+  })
+  lightbox.addEventListener('click', () => lightbox.classList.remove('open'))
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') lightbox.classList.remove('open')
+  })
+}
 
 // The host relays later states without reloading the iframe. Accept only our
 // own origin (the host posts with an explicit chrome-extension:// target).

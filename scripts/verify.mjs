@@ -279,6 +279,26 @@ try {
     firstUser.content.some((p) => p?.type === 'image_url' && typeof p.image_url?.url === 'string' && p.image_url.url.startsWith('data:image/png'))
   check(sentImage, 'request carried the crop as an image_url data URL')
   check(lastAiRequest?.model === PRIMARY, `request used the fixed primary model (${lastAiRequest?.model ?? 'MISSING'})`)
+  // Prompt regression: the system prompt carries the grounding rules, the
+  // Solve template goes out verbatim, and the factual-task params are set
+  // (temperature 0 + max_tokens cutoff from src/shared/prompts).
+  const sysMsg = lastAiRequest?.messages?.[0]
+  check(
+    sysMsg?.role === 'system' &&
+      typeof sysMsg.content === 'string' &&
+      sysMsg.content.includes('# Grounding') &&
+      sysMsg.content.includes('Ground every answer in the image'),
+    'system prompt carries the grounding rules',
+  )
+  const solveText = Array.isArray(firstUser?.content) ? firstUser.content[0]?.text : null
+  check(
+    typeof solveText === 'string' && solveText.startsWith('Solve the problem shown in the image'),
+    `solve prompt sent as expected (${String(solveText ?? '').slice(0, 40)}…)`,
+  )
+  check(
+    lastAiRequest?.temperature === 0 && lastAiRequest?.max_tokens === 2048,
+    `request carried solve params (t=${lastAiRequest?.temperature}, max_tokens=${lastAiRequest?.max_tokens})`,
+  )
   await ai.close()
 
   // Fallback: make the primary answer 503; the next model must take over and

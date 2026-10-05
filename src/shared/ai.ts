@@ -33,6 +33,10 @@ export function modelLabel(id: string): string {
 export interface AskOpts {
   settings: Settings
   messages: ApiMessage[]
+  /** Sampling temperature (0 = deterministic; factual tasks). */
+  temperature?: number
+  /** Hard token cutoff for the answer (a cap, not a length target). */
+  maxTokens?: number
   /** Aborts the whole chain (fetch signal). */
   signal?: AbortSignal
   /** Each text delta from whichever model is currently answering. */
@@ -54,6 +58,8 @@ export async function askWithFallback(opts: AskOpts): Promise<string> {
         settings: opts.settings,
         model,
         messages: opts.messages,
+        temperature: opts.temperature,
+        maxTokens: opts.maxTokens,
         signal: opts.signal,
         onDelta: (delta) => {
           emitted = true

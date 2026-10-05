@@ -68,6 +68,10 @@ export interface ChatCompletionOpts {
   /** Model id for THIS request; the caller owns the fallback chain (ai.ts). */
   model: string
   messages: ApiMessage[]
+  /** Sampling temperature (0 = deterministic; factual tasks). */
+  temperature?: number
+  /** Hard token cutoff for the answer (a cap, not a length target). */
+  maxTokens?: number
   /** Aborts the request (fetch signal). */
   signal?: AbortSignal
   /** Streaming callback: each text delta as it arrives. */
@@ -126,7 +130,7 @@ function isAbort(err: unknown): boolean {
 /** One chat completion. Returns the full text. Throws Error with a HUMAN
  *  message (never a raw HTTP line) on failure. */
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<string> {
-  const { settings, model, messages, signal, onDelta } = opts
+  const { settings, model, messages, signal, onDelta, temperature, maxTokens } = opts
   // A user error, thrown BEFORE any network call: a request without a model
   // id can only fail, so it must not even be attempted.
   if (!model) throw new ApiError('Choose a model first.', 'response')
@@ -138,7 +142,15 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<string> 
       // X-Title is OpenRouter's attribution header — required there, harmless
       // elsewhere (servers without OpenRouter semantics ignore unknown headers).
       headers: { ...authHeaders(settings), 'Content-Type': 'application/json', 'X-Title': 'Study Buddy' },
-      body: JSON.stringify({ model, messages, stream: true }),
+      // temperature/max_tokens travel only when set: providers' defaults stay
+      // defaults otherwise (and some reject unknown/unsupported fields).
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: true,
+        ...(temperature !== undefined ? { temperature } : {}),
+        ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+      }),
       signal,
     })
   } catch (err) {

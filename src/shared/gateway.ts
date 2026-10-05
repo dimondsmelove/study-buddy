@@ -13,6 +13,10 @@ import type { Settings } from './settings'
 
 export interface AskRequest {
   messages: ApiMessage[]
+  /** Sampling temperature (0 = deterministic; factual tasks). */
+  temperature?: number
+  /** Hard token cutoff for the answer (a cap, not a length target). */
+  maxTokens?: number
   /** Aborts the whole request. */
   signal?: AbortSignal
   /** Each text delta as it streams in. */

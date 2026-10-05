@@ -25,7 +25,8 @@ import { CAPTURE_PREFIX } from '../shared/messages'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
-import { ANSWER_LANGUAGE_LABELS, PROMPT_LANGUAGE_NAMES, browserLang, resolveUiLang, t } from '../shared/i18n'
+import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
+import { simplerPrompt, systemPrompt, taskPrompt, turnParams, type TaskId, type TurnKind } from '../shared/prompts'
 
 type Kind = 'capture' | 'permission' | 'restricted' | 'error'
 const KINDS: Kind[] = ['capture', 'permission', 'restricted', 'error']
@@ -299,53 +300,12 @@ function renderAnswer(node: HTMLElement, text: string): void {
 let activeImage: string | null = null
 const history: ApiMessage[] = []
 let inflight: AbortController | null = null
+/** What started the current turn — drives per-turn temperature/max_tokens. */
+let currentTurn: TurnKind = 'ask'
 
-/** Language the model is told to answer in for app-generated prompts. */
-function targetLanguageName(): string {
-  const code = settingsCache.answerLanguage
-  if (code !== 'auto') return PROMPT_LANGUAGE_NAMES[code]
-  return uiLang === 'ru' ? 'Russian' : 'English'
-}
-
-function systemPrompt(): string {
-  const base =
-    'You are Study Buddy, a concise and friendly tutor. The user shares a screenshot ' +
-    'of part of their screen and asks about what is visible. Solve or explain ' +
-    'exercises and translate text. Ground every answer in the image; if something ' +
-    'is unreadable or not present, say so instead of guessing. ' +
-    'Format answers in Markdown; use LaTeX for math ($...$ inline, $$...$$ display).'
-  const lang =
-    settingsCache.answerLanguage !== 'auto'
-      ? `Language: always answer in ${targetLanguageName()}, unless the user explicitly asks for another language.`
-      : 'Language: answer in the language the user writes in. For the app\u2019s fixed ' +
-        `actions (which carry no prose of their own), answer in ${targetLanguageName()}. ` +
-        'If the user explicitly asks to answer in, or translate into, a particular language, follow that.'
-  return `${base}\n\n${lang}`
-}
-
-/** Task-shaped prompts: each button asks for a specific answer STRUCTURE, not a
- *  vague "ask AI". Composed per call so it always uses the current language. */
-function presetPrompts(): Record<string, string> {
-  const lang = targetLanguageName()
-  return {
-    solve:
-      'Solve the problem shown in the image. Reply in this exact structure:\n' +
-      '1) Answer: ...\n2) Steps: ...\n3) Check / common mistakes: ...\n' +
-      `Write in ${lang}.`,
-    quiz:
-      'This is a multiple-choice question. Reply in this structure:\n' +
-      '1) Correct option: ...\n2) Why it is correct: ...\n3) Why each other option is wrong: ...\n' +
-      `Write in ${lang}.`,
-    explain:
-      'Explain what is shown to a student. Reply in this structure:\n' +
-      '1) In one sentence: ...\n2) Step by step: ...\n3) Key terms: ...\n' +
-      `Write in ${lang}.`,
-    translate:
-      `Translate all the text in the image into ${lang}. If it is already in ${lang}, ` +
-      'translate it into English instead. Output the translation only — do not restate ' +
-      'the original text.',
-    summarize: `Summarize what is shown in 3-5 key points.\nWrite in ${lang}.`,
-  }
+/** Prompt context from the current settings (answer language + resolved UI). */
+function promptCtx() {
+  return { answerLanguage: settingsCache.answerLanguage, uiLang }
 }
 
 interface Msg {
@@ -419,11 +379,7 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
   actions.appendChild(copy)
 
   const simpler = iconButton('simpler', t(uiLang, 'msg.simpler'))
-  simpler.onclick = () =>
-    void send(
-      'Explain your previous answer in simpler terms, more briefly, with a concrete example if helpful. ' +
-        `Write in ${targetLanguageName()}.`,
-    )
+  simpler.onclick = () => void send(simplerPrompt(promptCtx()), 'simpler')
   actions.appendChild(simpler)
 
   if (canRegenerate) {
@@ -463,8 +419,11 @@ async function streamReply(): Promise<void> {
   setBusy(true)
   let acc = ''
   try {
+    const { temperature, maxTokens } = turnParams(currentTurn)
     await createGateway(settingsCache).ask({
-      messages: [{ role: 'system', content: systemPrompt() }, ...history],
+      messages: [{ role: 'system', content: systemPrompt(promptCtx()) }, ...history],
+      temperature,
+      maxTokens,
       signal: controller.signal,
       onDelta: (delta) => {
         acc += delta
@@ -515,9 +474,10 @@ async function streamReply(): Promise<void> {
   }
 }
 
-async function send(prompt: string): Promise<void> {
+async function send(prompt: string, kind: TurnKind = 'ask'): Promise<void> {
   const text = prompt.trim()
   if (!text || inflight) return
+  currentTurn = kind
   const settings = await requireSettings()
   if (!settings) return
   const content: ApiContent = [{ type: 'text', text }]
@@ -540,8 +500,9 @@ async function regenerate(): Promise<void> {
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   btn.addEventListener('click', () => {
-    const prompt = presetPrompts()[btn.dataset.preset ?? '']
-    if (prompt) void send(prompt)
+    const task = btn.dataset.preset as TaskId | undefined
+    if (!task) return
+    void send(taskPrompt(task, promptCtx()), task)
   })
 }
 

@@ -210,8 +210,8 @@ async function showChatWindow(tabId: number | undefined, state: ChatState): Prom
   await chrome.windows.create({
     url: `${chrome.runtime.getURL(CHAT_URL)}?${params}`,
     type: 'popup',
-    width: 420,
-    height: 560,
+    width: 480,
+    height: 640,
   })
 }
 

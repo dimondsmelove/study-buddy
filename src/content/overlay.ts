@@ -169,17 +169,30 @@ function showOverlay() {
 // --- chat window host ---------------------------------------------------------
 
 const BAR_H = 36
+const PANEL_MIN_W = 320
+const PANEL_MIN_H = 360
+const PANEL_SIZE_KEY = 'panel.size'
 
 let chatRoot: HTMLElement | undefined
 let chatPanel: HTMLDivElement | undefined
 let chatFrame: HTMLIFrameElement | undefined
 
+/** User-resized panel size, persisted across pages/sessions. Loaded async;
+ *  until it arrives (or if never resized) the defaults below apply. */
+let savedSize: { w: number; h: number } | null = null
+void chrome.storage.local.get(PANEL_SIZE_KEY).then((r) => {
+  const s = r[PANEL_SIZE_KEY]
+  if (s && typeof s.w === 'number' && typeof s.h === 'number') savedSize = s
+})
+
 function panelWidth(): number {
-  return Math.min(400, document.documentElement.clientWidth - 16)
+  const def = savedSize ? savedSize.w : 480
+  return Math.min(def, document.documentElement.clientWidth - 16)
 }
 
 function panelHeight(): number {
-  return Math.min(460, document.documentElement.clientHeight - 16)
+  const def = savedSize ? savedSize.h : 600
+  return Math.min(def, document.documentElement.clientHeight - 16)
 }
 
 function chatUrl(state: ChatState): string {
@@ -271,11 +284,27 @@ function showChat(state: ChatState): void {
   frame.style.cssText = 'flex:1;width:100%;border:0;display:block;background:#fff'
   frame.src = chatUrl(state)
 
+  // Bottom-right resize grip (subtle; matches the panel border color).
+  const grip = document.createElement('div')
+  grip.title = 'Resize'
+  grip.style.cssText = [
+    'position:absolute',
+    'right:0',
+    'bottom:0',
+    'width:14px',
+    'height:14px',
+    'cursor:nwse-resize',
+    'background:linear-gradient(135deg,transparent 0 6px,#a1a1aa 6px 7px,transparent 7px 9px,#a1a1aa 9px 10px,transparent 10px)',
+  ].join(';')
+  grip.addEventListener('pointerdown', (e) => e.stopPropagation()) // no drag from grip
+
   panel.appendChild(bar)
   panel.appendChild(frame)
+  panel.appendChild(grip)
   shadow.appendChild(panel)
   document.documentElement.appendChild(root)
   makeDraggable(panel, bar)
+  makeResizable(panel, grip)
 
   chatRoot = root
   chatPanel = panel
@@ -352,5 +381,39 @@ function makeDraggable(panel: HTMLDivElement, handle: HTMLDivElement): void {
     handle.addEventListener('pointermove', move)
     handle.addEventListener('pointerup', up)
     handle.addEventListener('pointercancel', up)
+  })
+}
+
+/** Bottom-right grip resize. Clamped to a minimum readable size and to the
+ *  viewport; the resulting size is persisted so the panel reopens as sized. */
+function makeResizable(panel: HTMLDivElement, grip: HTMLDivElement): void {
+  grip.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startW = panel.offsetWidth
+    const startH = panel.offsetHeight
+    grip.setPointerCapture(e.pointerId)
+    const move = (ev: PointerEvent) => {
+      const vw = document.documentElement.clientWidth
+      const vh = document.documentElement.clientHeight
+      const maxW = vw - (panel.getBoundingClientRect().left || 0) - 8
+      const maxH = vh - (panel.getBoundingClientRect().top || 0) - 8
+      const w = Math.round(Math.max(PANEL_MIN_W, Math.min(startW + ev.clientX - startX, maxW)))
+      const h = Math.round(Math.max(PANEL_MIN_H, Math.min(startH + ev.clientY - startY, maxH)))
+      panel.style.width = `${w}px`
+      panel.style.height = `${h}px`
+    }
+    const up = () => {
+      grip.removeEventListener('pointermove', move)
+      grip.removeEventListener('pointerup', up)
+      grip.removeEventListener('pointercancel', up)
+      savedSize = { w: panel.offsetWidth, h: panel.offsetHeight }
+      void chrome.storage.local.set({ [PANEL_SIZE_KEY]: savedSize })
+    }
+    grip.addEventListener('pointermove', move)
+    grip.addEventListener('pointerup', up)
+    grip.addEventListener('pointercancel', up)
   })
 }

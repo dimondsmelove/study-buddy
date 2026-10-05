@@ -377,27 +377,45 @@ function addMessage(role: 'user' | 'assistant' | 'error' | 'note', text: string)
   return { wrap, body, raw: text }
 }
 
+/** 16px stroke icons for the per-answer actions — text labels ate half the
+ *  panel width; icons + tooltips keep the thread readable. */
+const ACTION_ICONS = {
+  copy: '<rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.5"/><path d="M10.5 3.5h-6a1.5 1.5 0 0 0-1.5 1.5v6"/>',
+  copied: '<path d="M3.5 8.5 6.5 11.5 12.5 4.5"/>',
+  simpler: '<text x="1.5" y="12.5" font-size="10" stroke="none" fill="currentColor" font-family="system-ui,sans-serif">A</text><text x="9" y="12.5" font-size="8" stroke="none" fill="currentColor" font-family="system-ui,sans-serif">a</text>',
+  retry: '<path d="M13.5 8a5.5 5.5 0 1 1-1.7-4"/><path d="M13.5 1.5V4H11"/>',
+} as const
+
+function iconButton(icon: keyof typeof ACTION_ICONS, label: string): HTMLButtonElement {
+  const b = document.createElement('button')
+  b.type = 'button'
+  b.title = label
+  b.setAttribute('aria-label', label)
+  b.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS[icon]}</svg>`
+  return b
+}
+
 function addActions(msg: Msg, canRegenerate: boolean): void {
   const actions = document.createElement('div')
   actions.className = 'msg-actions'
 
-  const copy = document.createElement('button')
-  copy.type = 'button'
-  copy.textContent = t(uiLang, 'msg.copy')
+  const copy = iconButton('copy', t(uiLang, 'msg.copy'))
   copy.onclick = async () => {
     try {
       await navigator.clipboard.writeText(msg.raw)
     } catch {
-      return // clipboard blocked; leave the label alone
+      return // clipboard blocked; leave the icon alone
     }
-    copy.textContent = t(uiLang, 'msg.copied')
-    setTimeout(() => (copy.textContent = t(uiLang, 'msg.copy')), 1200)
+    copy.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS.copied}</svg>`
+    copy.title = t(uiLang, 'msg.copied')
+    setTimeout(() => {
+      copy.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS.copy}</svg>`
+      copy.title = t(uiLang, 'msg.copy')
+    }, 1200)
   }
   actions.appendChild(copy)
 
-  const simpler = document.createElement('button')
-  simpler.type = 'button'
-  simpler.textContent = t(uiLang, 'msg.simpler')
+  const simpler = iconButton('simpler', t(uiLang, 'msg.simpler'))
   simpler.onclick = () =>
     void send(
       'Explain your previous answer in simpler terms, more briefly, with a concrete example if helpful. ' +
@@ -406,10 +424,8 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
   actions.appendChild(simpler)
 
   if (canRegenerate) {
-    const retry = document.createElement('button')
-    retry.type = 'button'
+    const retry = iconButton('retry', t(uiLang, 'msg.retry'))
     retry.dataset.retry = '1'
-    retry.textContent = t(uiLang, 'msg.retry')
     retry.onclick = () => void regenerate()
     actions.appendChild(retry)
   }

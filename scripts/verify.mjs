@@ -457,6 +457,7 @@ try {
   const checked = await openCapture()
   await checked.setViewportSize({ width: 480, height: 660 })
   await checked.click('#check-btn')
+  check(await checked.locator('#ask-form').isHidden(), 'Check shows its multiline form without a second Ask composer')
   await checked.click('#check-submit')
   check(await checked.locator('#check-form').isVisible(), 'Check refuses an empty attempt and leaves the input visible')
   const attempt = '2(x+3)=10\n2x+3=10\nx=3.5'
@@ -475,6 +476,8 @@ try {
   check(requestCount === beforeCooldown, 'accepted start imposes the ten-second interval without a queued request')
   check(await checked.inputValue('#ask-input') === 'Too soon', 'a rejected start retains the typed question instead of silently clearing it')
   await checked.click('#history-btn')
+  await checked.locator('.history-row').filter({ hasText: '2(x+3)=10' }).waitFor()
+  await checked.waitForFunction(() => document.getElementById('storage-usage')?.textContent?.includes('MiB'))
   await checked.screenshot({ path: join(evidence, 'history.png') })
   const row = checked.locator('.history-row').filter({ hasText: '2(x+3)=10' })
   const download = checked.waitForEvent('download')

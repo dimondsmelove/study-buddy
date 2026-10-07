@@ -24,6 +24,10 @@ Manual use:
 Ctrl+Shift+Y  →  drag a box around a question  →  Solve / Quiz / …  →  read
 ```
 
+## Roadmap
+
+Ближайшие задачи и открытые продуктовые решения описаны в [`ToDo.md`](ToDo.md). [`BACKLOG.md`](BACKLOG.md) хранит историю реализации, заметки исследований и отложенные идеи.
+
 ## Architecture at a glance
 
 ```

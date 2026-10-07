@@ -1,18 +1,22 @@
 # Study Buddy
 
 Select any question on your screen and get a step-by-step answer in your
-language. Built for studying — solve, quiz, explain, translate, summarize.
+language. Built for studying — hint, check an attempt, solve, quiz, explain,
+translate, summarize.
 
-Select a region (icon or `Ctrl+Shift+Y`) → the chat window appears next to your
+Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
 selection → pick a task or ask your own question. The answer streams in beside
-the page, in your language.
+the page, in your language. The toolbar icon restores your selected/latest chat.
 
 **Status: MVP.** Region selection → screenshot → crop → chat window,
 interface + answer language settings (English / Russian), task-shaped answers
-(Solve / Quiz / Explain / Translate / Summarize + free-form Ask), Markdown +
+(Hint / Check / Solve / Quiz / Explain / Translate / Summarize + free-form Ask), Markdown +
 LaTeX rendering, per-answer copy / explain simpler / retry, and an automatic
-model fallback all work. There is **no onboarding**: a store build bakes an API
-key so it works on install (see `src/shared/config.ts`). All model calls go
+model fallback, local history/export/delete and minimize/reopen all work against
+local mock fixtures. Real tutor response quality has not been re-evaluated.
+This loop's acceptance build is **keyless** and uses BYOK for a real provider.
+Baking a shared key is technically possible but exposes it to clients and is
+not safe public distribution; TD-06 remains open. All model calls go
 through the `Gateway` seam (`src/shared/gateway.ts`) — currently a direct
 provider, later your hosted proxy for subscriptions. The answering model is
 fixed to DeepSeek (`src/shared/ai.ts`). Store copy, privacy policy, and
@@ -48,8 +52,23 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   so there is no "read and change all your data" install warning.
 - The chat window lives in a **closed shadow root**, so page styles can't leak in
   and ours can't leak out.
-- The API key and settings live in `chrome.storage.local`; the transient crop
-  lives in RAM-only `chrome.storage.session`.
+- The API key, settings and panel size live in `chrome.storage.local`. The last
+  eight transient crops live in `chrome.storage.session`; saved transcripts and
+  image Blobs live in extension-origin IndexedDB until explicit deletion.
+- History provides JSON export (including images) and confirmed deletion.
+  Shared images are kept until no remaining conversation references them.
+  Storage failure is visible; copy/export unsaved text before leaving the page.
+- Minimize keeps the iframe/stream alive. Close saves and cancels; navigation
+  or writer loss retains the latest committed partial as interrupted, without
+  automatic paid resume. One local generation is admitted across windows.
+- Provider context is at most 12 turns, 32,000 text characters and two images
+  of at most 4 MiB each. The current task/attempt/input are retained; oversized
+  required input is refused before network. Omitted/incomplete history stays
+  saved locally; no automatic summary is created.
+- The ten-second start interval is local UX only, not trusted abuse protection
+  or a unique-user guarantee. Regenerate is a new start; explicit availability
+  fallback before any output is part of the existing start.
+- Incognito is disabled. There is no cloud sync, telemetry or student profiling.
 
 ## Develop
 
@@ -59,8 +78,20 @@ npm run dev        # Vite + CRXJS with HMR
 npm run build      # production build → dist/ (set SB_DEFAULT_API_KEY to bake a key)
 # store build:  SB_DEFAULT_API_KEY=sk-or-... npm run build
 npm run typecheck
+npm run contracts          # settings + SSE/JSON/fallback fixtures, synthetic fetch
+npm run contracts:storage  # real IndexedDB, rollback/recovery/GC/context/rate
+npm run contracts:prompts  # EN/RU Hint/Check templates; no real model
 npm run verify     # smoke test: load dist/ in Chromium, select, capture, chat,
                    # AI answer (mock SSE endpoint) — no API key needed
+
+# safe local acceptance browser + gallery, no credentials or external model calls:
+SB_DEFAULT_API_KEY= npm run build
+npm run preview:local                  # headed isolated Chromium, localhost:4187
+npm run preview:local -- health
+npm run preview:local -- stop
+# -- start --headless is available for automated checks.
+# Each start has its own profile under review/preview; stop does not delete it.
+# review/loop contains the actual verify screenshots. Run verify to regenerate.
 
 # manual test in a ready browser (key pre-seeded, demo page opens):
 npm run playtest
@@ -79,6 +110,12 @@ npm run screenshots
 # load the unpacked extension in your own browser:
 #   chrome://extensions → Developer mode → Load unpacked → select dist/
 ```
+
+The legacy real-provider commands above were not run for this local acceptance.
+In particular, `quality` and `review` predate saved conversations and the start
+interval: their multi-fixture drivers need explicit conversation isolation and
+cooldown handling before their reports can be treated as fresh evidence.
+Store screenshots remain historical; the verified current UI is in `review/loop`.
 
 ## Store
 

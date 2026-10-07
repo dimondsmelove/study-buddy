@@ -1,5 +1,9 @@
 # Chrome Web Store listing (draft)
 
+> Local client wording reconciled on 2026-10-07; **not ready for submission**.
+> Public gateway/budget controls, support contact/privacy URL and real AI quality
+> remain open. Existing store screenshots predate the local-dialog UI.
+
 > Chrome Web Store copy limits: **name ≤ 45 chars**, **short description ≤ 132
 > chars**, detailed description ≤ 16 000 chars. Screenshots 1280×800 (in
 > `store/screenshots/`). Keep the short description inside the limit.
@@ -19,8 +23,8 @@ conflicts before submitting):
 
 Pick one:
 
-1. `Select any question on screen, get a step-by-step answer in your language. No account, works instantly.`
-2. `Snip a question, get it solved step by step — math, quizzes, code, translation. No account, no setup.`
+1. `Select a task, ask for a hint or check your attempt. Local saved chats, export, no account. Bring your own AI key.`
+2. `Snip a question and study it step by step: hints, checking, solving, translation. Local history. Your own AI key required.`
 
 ## Detailed description
 
@@ -33,6 +37,8 @@ beside your selection — without switching tabs or copy-pasting into a chat.
 **Built for studying, not just "asking AI".**
 
 - **Solve** — a worked answer: final result, the steps, and the common mistakes to watch for.
+- **Hint** — a prompt for one next step, rather than an immediate full solution.
+- **Check my attempt** — enter your multiline work and request the first substantive error plus a correcting hint.
 - **Quiz** — the correct option, why it's correct, and why the other options are wrong.
 - **Explain** — the gist in one sentence, then step by step, then the key terms.
 - **Translate** — turn any text in the selection into your language.
@@ -42,27 +48,30 @@ beside your selection — without switching tabs or copy-pasting into a chat.
 **Your language.** Answers follow the language you write in; the interface and
 the preset actions can be set to English or Russian.
 
-**Works on install. Private by design.** No account, no setup, no analytics —
-add it and start selecting. Only the region you select is ever sent, directly
-from your browser to the model provider; the rest of the page never leaves your
-browser. (Advanced users can point it at their own key.)
+**Local dialogs, no account or analytics.** Text and selected images are saved
+on the device until explicit deletion, with History/export/delete. Questions,
+attempts, instructions and bounded prior context are sent directly to your
+chosen provider. The local acceptance build requires your own key; a public
+shared-key release is not authorized or protected by the local UX interval.
 
-**Works where you study.** Canvas, Blackboard, Moodle, Google Classroom, PDFs
-opened in the browser, image-based questions — anywhere you can see it, you can
-select it. Chrome's own pages and the Web Store can't be captured by any
-extension.
+**Study alongside web content.** Select a region on a supported regular web
+page. Compatibility with individual learning platforms and PDF viewers has not
+been re-evaluated in this loop. Privileged pages cannot be captured.
 
-**Reliable by design.** A vision model answers by default, with an automatic
-fallback to a second model if it is unavailable, so a momentary outage doesn't
-stop your study session.
+**Visible response boundaries.** A vision model answers by default. Explicit
+availability failures before output can use another model. Length limits,
+interruption, cancellation and provider errors remain visible; ambiguous or
+partial failures do not silently restart a model operation.
 
 **How to start**
 
 1. Add the extension and pin it.
-2. Press **Ctrl+Shift+Y** (or click the icon), drag a box around a question.
+2. Press **Ctrl+Shift+Y**, drag a box around a question. The toolbar icon restores a chat.
 3. Pick an action — or type your own question.
 
-No account and no key to configure: it works the moment it is installed.
+Minimize keeps an answer running; Close saves and cancels. Saved history is
+separate from the bounded provider context. Model accuracy is not guaranteed;
+the new Hint/Check contracts have been verified with fixtures, not real AI.
 
 ## Category & metadata
 
@@ -83,7 +92,8 @@ No account and no key to configure: it works the moment it is installed.
 
 - `activeTab` — capture the visible tab only after the user asks for a selection.
 - `scripting` — inject the on-demand selection overlay (no declared content script).
-- `storage` — keep the API key (local) and the transient crop (session, RAM only).
+- `storage` — keep settings/key/panel size locally and transient crops in session;
+  saved transcripts and images use extension-origin IndexedDB.
 - optional `host_permissions <all_urls>` — requested per site only when a capture
   needs a tab the user didn't invoke on; the screenshot stays gated per origin.
 - `commands` — the `Ctrl+Shift+Y`/`Cmd+Shift+Y` shortcut to start a selection.

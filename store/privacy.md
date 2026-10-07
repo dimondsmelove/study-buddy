@@ -1,19 +1,23 @@
 # Study Buddy — Privacy Policy
 
-_Last updated: 2026-10-05_
+_Last updated: 2026-10-07 · draft; not a release/compliance certification_
 
 Study Buddy is a browser extension that lets you select a region of a web page
 and ask an AI model about it. This policy explains exactly what leaves your
-device and what does not. It is short because the extension collects nothing.
+device and what does not. Selected images and typed text can contain personal
+information; do not send material you are not authorized to share with your
+chosen provider.
 
 ## Summary
 
 - We run **no servers** and have **no accounts**.
-- We collect **no analytics, no telemetry, and no personal data**.
-- There is nothing to configure: the extension ships ready to use.
-- The **only** thing sent anywhere is the screenshot region you explicitly
-  select, and it goes **directly from your browser to the AI provider** (by
-  default, OpenRouter). Nothing passes through us and we never see it.
+- There is **no analytics or telemetry** in this client.
+- This local acceptance build has no built-in key; a real provider requires BYOK.
+- Selected images, typed questions/attempts, generated instructions and bounded
+  prior conversation text go **directly to your chosen AI endpoint**. Nothing
+  passes through a project-operated proxy in this version.
+- Saved dialogs/images stay on your device until you explicitly delete them.
+  Incognito use is disabled. No cloud sync or student profile is created.
 
 ## What is stored, and where
 
@@ -21,20 +25,39 @@ device and what does not. It is short because the extension collects nothing.
 |---|---|---|
 | Language settings (and, if you optionally set one, your own endpoint/key) | `chrome.storage.local` on your device | until you clear it / remove the extension |
 | The cropped screenshot of your selection | `chrome.storage.session` (RAM-backed) | until the browser session ends; at most the last 8 captures are kept |
+| Saved conversation text, generated replies/statuses and selected image Blobs | extension-origin IndexedDB on this device | until History → Delete, clearing extension data or removing the extension; browser storage can fail or be evicted |
+| Local generation timestamp and writer recovery metadata | IndexedDB | retained locally with the extension; not a user identity or telemetry |
 
-If you use the built-in key, no key is stored on your device. If you override it
-with your own, that key is stored locally and never synchronized to a cloud
-account.
+History offers JSON export including selected images, a storage usage display,
+and confirmed deletion. Images referenced by another conversation are kept.
+Exported files are independent copies; deleting a dialog does not remove them.
+Transient capture copies can remain until the session cache is pruned or the
+browser session ends. If storage fails, the latest visible answer may be
+unsaved: copy/export before closing or navigating.
+
+Your key is stored locally, never synchronized to a cloud account, and excluded
+from conversation exports. A key baked into another build is still present in
+that build and extractable; it is not protected server-side.
 
 ## What is sent, and to whom
 
 When you ask a question, the extension sends **the cropped image of the region
-you selected**, your question, and a short system instruction **directly from
+you selected**, your question/attempt, a bounded selection of past turns, and
+generated task/system instructions **directly from
 your browser to the AI endpoint** (by default `https://openrouter.ai/api/v1`).
-The request is authenticated with an access key managed by the developer (or
-your own key, if you set one). It is subject to the privacy policy of that
+The keyless acceptance build authenticates with your own key. It is subject to the privacy policy of that
 provider (e.g. OpenRouter and the model vendor behind the chosen model). Study
-Buddy does not proxy, log, or copy this request.
+Buddy does not proxy or transmit telemetry about this request. Source turns and
+replies are retained locally as described above. Provider retention is governed
+by that provider, not by local History → Delete.
+
+Requests include at most 12 turns, 32,000 text characters and two images of at
+most 4 MiB each; required oversized input is refused before transmission.
+Incomplete/superseded replies are not treated as complete context. Model
+fallback occurs only on explicit availability errors before any output; no
+automatic restart after ambiguous interruption. The client ten-second interval
+is UX, not a trusted spending/abuse control. Public shared-key release is blocked
+on TD-06 and budget/hosting decisions.
 
 No other page content is read or transmitted. The extension does not scan pages
 in the background; the selection overlay is injected only when you start a
@@ -45,7 +68,8 @@ capture, and the screenshot is taken only after you finish dragging a region.
 - **activeTab** — to capture the visible tab, only after you ask for a selection.
 - **scripting** — to inject the selection overlay on demand. There is no
   always-on content script.
-- **storage** — to keep your settings (local) and the transient crop (session).
+- **storage** — to keep your settings/panel size (local) and transient captures
+  (session); saved conversations use IndexedDB.
 - **optional host access (`<all_urls>`)** — requested per site, at runtime, only
   when a capture needs a tab you did not invoke on. It is never requested at
   install time.
@@ -57,8 +81,9 @@ instead of retrying.
 
 ## Children’s privacy
 
-The extension is a general-purpose study tool and is not directed at children
-under 13. It collects no data from anyone.
+Audience/age policy remains OPEN (D-11 in ToDo.md). This draft does not certify
+children's privacy compliance. Review the audience and provider handling before
+any public release; saved material and transmission follow the rules above.
 
 ## Changes
 

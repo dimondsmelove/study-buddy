@@ -7,7 +7,7 @@
 // billing — that implements this same interface. Because the chat UI only ever
 // calls `gateway.ask(...)`, that swap is a change in this file, not in the app.
 
-import type { ApiMessage } from './api'
+import type { ApiMessage, CompletionResult } from './api'
 import { askWithFallback } from './ai'
 import type { Settings } from './settings'
 
@@ -26,7 +26,7 @@ export interface AskRequest {
 }
 
 export interface Gateway {
-  ask(request: AskRequest): Promise<string>
+  ask(request: AskRequest): Promise<CompletionResult>
 }
 
 /** Direct-to-provider gateway (BYOK or a baked key). */

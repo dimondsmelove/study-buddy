@@ -6,8 +6,8 @@
 //
 // Every failure path throws an Error whose message is written for the user
 // (the chat UI renders it verbatim): no raw HTTP lines, no stack text. Known
-// statuses (bad key, no credits, rate limit) get a short human lead; the
-// endpoint's own error message is appended when present.
+// statuses (bad key, no credits, rate limit) get a short actionable message.
+// Provider details and URLs are untrusted and must never reach that message.
 
 import type { Settings } from './settings'
 
@@ -21,6 +21,14 @@ export type ApiErrorKind =
   | 'interrupted'
   | 'aborted'
   | 'response'
+  | 'provider'
+
+/** Transport completion is distinct from the text already shown by onDelta. */
+export interface CompletionResult {
+  text: string
+  status: 'complete' | 'truncated' | 'interrupted' | 'empty'
+  finishReason?: string
+}
 
 /** Every failure from this module is an ApiError. `message` is written for the
  *  user; `kind`/`status` exist so the model-fallback layer (ai.ts) can decide
@@ -41,15 +49,12 @@ export class ApiError extends Error {
 export function isRetryable(err: unknown): boolean {
   if (!(err instanceof ApiError)) return false
   switch (err.kind) {
-    case 'network':
     case 'rate':
-    case 'interrupted':
-    case 'response':
-      return true
+      return err.status === 429
     case 'http':
-      return err.status === 404 || (err.status ?? 0) >= 500
+      return err.status === 404 || ((err.status ?? 0) >= 500 && (err.status ?? 0) < 600)
     default:
-      return false // auth, credits, aborted — another model cannot fix these
+      return false // Ambiguous failures must not silently start another answer.
   }
 }
 
@@ -87,24 +92,16 @@ export function authHeaders(settings: Settings): Record<string, string> {
  *  endpoint failures exactly the same — one voice for every API error. The
  *  kind/status ride along for the fallback layer without changing the prose. */
 export async function apiHttpError(res: Response): Promise<ApiError> {
-  // The standard error envelope is { error: { message } }; anything else
-  // (an HTML error page, an empty body) simply carries no detail to append.
-  let detail = ''
-  try {
-    const body = (await res.json()) as { error?: { message?: unknown } } | null
-    const msg = body?.error?.message
-    if (typeof msg === 'string' && msg) detail = msg
-  } catch {
-    // Not JSON — the generic message below stands on its own.
-  }
-  const say = (lead: string): string => (detail ? `${lead} (${detail})` : lead)
+  // Do not read provider prose: it can echo credentials, request text or URLs.
   switch (res.status) {
-    case 401: return new ApiError(say('Invalid API key.'), 'auth', 401)
-    case 402: return new ApiError(say('Insufficient credits on this account.'), 'credits', 402)
-    case 429: return new ApiError(say('Rate limited — try again shortly.'), 'rate', 429)
+    case 401: return new ApiError('Invalid API key.', 'auth', 401)
+    case 402: return new ApiError('Insufficient credits on this account.', 'credits', 402)
+    case 403: return new ApiError('Access denied. Check this account’s API permissions.', 'auth', 403)
+    case 404: return new ApiError('The requested API endpoint or model is unavailable.', 'http', 404)
+    case 429: return new ApiError('Rate limited — try again shortly.', 'rate', 429)
     default:
       return new ApiError(
-        `The API returned HTTP ${res.status}: ${detail || res.statusText || 'unknown reason'}`,
+        `The API returned HTTP ${res.status}. Try again or check the endpoint settings.`,
         'http',
         res.status,
       )
@@ -114,11 +111,10 @@ export async function apiHttpError(res: Response): Promise<ApiError> {
 /** fetch() rejects with:
  *  - TypeError  → the request never happened (offline, DNS, CORS block) —
  *                 from the user's seat that is "the URL can't be reached";
- *  - AbortError → the caller cancelled; rethrown as a plain Error marked
- *                 'Cancelled.' so callers can branch on the message. */
-export function apiNetworkError(err: unknown, baseUrl: string): ApiError {
+ *  - AbortError → the caller cancelled; callers branch on kind 'aborted'. */
+export function apiNetworkError(err: unknown): ApiError {
   if (isAbort(err)) return new ApiError('Cancelled.', 'aborted')
-  return new ApiError(`Could not reach ${baseUrl} (network blocked or wrong URL).`, 'network')
+  return new ApiError('Could not reach the API. Check the connection and endpoint settings.', 'network')
 }
 
 // Aborts surface as a DOMException named 'AbortError'; a DOMException IS an
@@ -127,13 +123,14 @@ function isAbort(err: unknown): boolean {
   return (err instanceof Error || err instanceof DOMException) && err.name === 'AbortError'
 }
 
-/** One chat completion. Returns the full text. Throws Error with a HUMAN
- *  message (never a raw HTTP line) on failure. */
-export async function chatCompletion(opts: ChatCompletionOpts): Promise<string> {
+/** One completion, retaining text even when a stream ends without a terminal
+ *  event. Transport, cancellation and provider failures throw typed ApiError. */
+export async function chatCompletion(opts: ChatCompletionOpts): Promise<CompletionResult> {
   const { settings, model, messages, signal, onDelta, temperature, maxTokens } = opts
   // A user error, thrown BEFORE any network call: a request without a model
   // id can only fail, so it must not even be attempted.
   if (!model) throw new ApiError('Choose a model first.', 'response')
+  if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
 
   let res: Response
   try {
@@ -154,7 +151,8 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<string> 
       signal,
     })
   } catch (err) {
-    throw apiNetworkError(err, settings.baseUrl)
+    if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
+    throw apiNetworkError(err)
   }
   if (!res.ok) throw await apiHttpError(res)
 
@@ -162,38 +160,119 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<string> 
   // shapes: event-stream means a live stream, anything JSON-shaped means the
   // server ignored stream:true and answered in one piece.
   const contentType = res.headers.get('content-type') ?? ''
-  if (contentType.includes('text/event-stream')) return streamSSE(res, onDelta)
-  return wholeJson(res, onDelta)
+  if (contentType.toLowerCase().includes('text/event-stream')) return streamSSE(res, onDelta, signal)
+  return wholeJson(res, onDelta, signal)
 }
 
-// Consume an SSE body. Parsing is buffered by NEWLINE, never by chunk: a
-// chunk boundary is whatever the socket delivered — one chunk can hold
-// several `data:` lines, or cut one in half. OpenAI-compatible servers only
-// ever use single-line `data:` payloads, so newline-splitting is all the SSE
-// machinery needed here (no multi-line events, no `event:`/`id:` fields).
-async function streamSSE(res: Response, onDelta?: (delta: string) => void): Promise<string> {
+// SSE events are separated by blank lines. Buffer both UTF-8 and lines: a
+// socket chunk can split a character, CRLF, JSON value or multi-line event.
+async function streamSSE(
+  res: Response,
+  onDelta?: (delta: string) => void,
+  signal?: AbortSignal,
+): Promise<CompletionResult> {
   if (!res.body) throw new ApiError('The API returned an empty stream.', 'response')
   const reader = res.body.getReader()
-  const decoder = new TextDecoder()
+  const decoder = new TextDecoder('utf-8', { fatal: true })
   let buffer = ''
   let text = ''
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      let nl = buffer.indexOf('\n')
-      while (nl !== -1) {
-        text += sseDelta(buffer.slice(0, nl), onDelta)
-        buffer = buffer.slice(nl + 1)
-        nl = buffer.indexOf('\n')
+  let data: string[] = []
+  let event = ''
+  let done = false
+  let malformed = false
+  let finishReason: string | undefined
+
+  const dispatch = (): void => {
+    const payload = data.join('\n').trim()
+    const eventType = event
+    data = []
+    event = ''
+    if (eventType === 'error') throw providerError()
+    if (!payload) return
+    if (payload === '[DONE]') {
+      done = true
+      return
+    }
+    let body: CompletionBody | null
+    try {
+      body = JSON.parse(payload) as CompletionBody | null
+    } catch {
+      malformed = true
+      return
+    }
+    if (!body || typeof body !== 'object') {
+      malformed = true
+      return
+    }
+    if (body.error !== undefined && body.error !== null) throw providerError()
+    if (!Array.isArray(body.choices)) {
+      malformed = true
+      return
+    }
+    // Empty choices are permitted for the final usage-only event.
+    if (!body.choices.length) return
+    const choice = body.choices[0]
+    if (!choice || typeof choice !== 'object') {
+      malformed = true
+      return
+    }
+    if ((choice.delta !== undefined && (!choice.delta || typeof choice.delta !== 'object' || Array.isArray(choice.delta))) ||
+        (choice.delta === undefined && choice.finish_reason == null)) malformed = true
+    const delta = choice.delta?.content
+    if (delta !== undefined && delta !== null && typeof delta !== 'string') malformed = true
+    if (typeof delta === 'string' && delta) {
+      if (finishReason !== undefined) malformed = true
+      text += delta
+      onDelta?.(delta)
+    }
+    if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
+      if (typeof choice.finish_reason !== 'string') malformed = true
+      else {
+        finishReason = choice.finish_reason
+        if (finishReason === 'error' || finishReason === 'content_filter') throw providerError()
       }
     }
-    // A well-formed final line may arrive without its trailing newline.
+  }
+  const line = (value: string): void => {
+    if (!value) return dispatch()
+    if (value.startsWith(':')) return
+    const colon = value.indexOf(':')
+    const field = colon === -1 ? value : value.slice(0, colon)
+    let valueText = colon === -1 ? '' : value.slice(colon + 1)
+    if (valueText.startsWith(' ')) valueText = valueText.slice(1)
+    if (field === 'data') data.push(valueText)
+    if (field === 'event') event = valueText
+  }
+  const drain = (eof = false): void => {
+    while (!done) {
+      const nl = buffer.search(/[\r\n]/)
+      if (nl === -1 || (!eof && buffer[nl] === '\r' && nl === buffer.length - 1)) break
+      const width = buffer[nl] === '\r' && buffer[nl + 1] === '\n' ? 2 : 1
+      const value = buffer.slice(0, nl)
+      buffer = buffer.slice(nl + width)
+      line(value)
+    }
+    if (eof && !done) {
+      if (buffer) line(buffer)
+      buffer = ''
+      dispatch()
+    }
+  }
+  try {
+    while (!done) {
+      if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
+      const { done, value } = await reader.read()
+      if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      drain()
+    }
     buffer += decoder.decode()
-    text += sseDelta(buffer, onDelta)
+    drain(true)
+    if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
   } catch (err) {
-    if (isAbort(err)) throw new ApiError('Cancelled.', 'aborted')
+    if (err instanceof ApiError) throw err
+    if (isAbort(err) || signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
     // A connection that breaks mid-stream is neither "could not reach" (the
     // request went out) nor a raw TypeError worth showing.
     throw new ApiError('The API connection was interrupted.', 'interrupted')
@@ -202,48 +281,65 @@ async function streamSSE(res: Response, onDelta?: (delta: string) => void): Prom
     // connection open until GC; cancel() never has a useful throw here.
     void reader.cancel().catch(() => {})
   }
-  return text
+  return completionResult(text, finishReason, done, malformed)
 }
 
-// One already-newline-split SSE line → the text it carries. `data:` JSON
-// frames yield `choices[0].delta.content`; blank lines, `:`-comments and
-// unknown fields yield ''. `[DONE]` is the stream-end sentinel, not JSON. A
-// malformed frame is skipped, not fatal — one bad line must not kill a
-// completion that already streamed half its answer.
-function sseDelta(line: string, onDelta?: (delta: string) => void): string {
-  if (!line.startsWith('data:')) return ''
-  const payload = line.slice(5).trim()
-  if (!payload || payload === '[DONE]') return ''
-  try {
-    const evt = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: unknown } }> }
-    const delta = evt.choices?.[0]?.delta?.content
-    if (typeof delta === 'string' && delta) {
-      onDelta?.(delta)
-      return delta
-    }
-    // Absent / null content (role-only frames) contributes nothing.
-  } catch {
-    // Malformed frame — skipped above, the stream stays alive.
+interface CompletionBody {
+  error?: unknown
+  choices?: Array<{
+    delta?: { content?: unknown }
+    message?: { content?: unknown }
+    finish_reason?: unknown
+  }>
+}
+
+function providerError(): ApiError {
+  return new ApiError('The provider could not complete the response. Try again.', 'provider')
+}
+
+function completionResult(
+  text: string,
+  finishReason?: string,
+  done = false,
+  malformed = false,
+): CompletionResult {
+  let status: CompletionResult['status'] = 'interrupted'
+  if (!malformed) {
+    if (finishReason === 'length') status = 'truncated'
+    else if (finishReason === 'stop' || (done && finishReason === undefined)) status = text ? 'complete' : 'empty'
   }
-  return ''
+  return { text, status, ...(finishReason !== undefined ? { finishReason } : {}) }
 }
 
 // Fallback for a server that ignored stream:true and answered with one JSON
 // completion. message.content is a string or an array of typed parts; only
 // the text parts are prose. The whole text goes out as ONE delta — the
 // incremental onDelta contract is degenerate here by definition.
-async function wholeJson(res: Response, onDelta?: (delta: string) => void): Promise<string> {
-  let body: { choices?: Array<{ message?: { content?: unknown } }> } | null
+async function wholeJson(
+  res: Response,
+  onDelta?: (delta: string) => void,
+  signal?: AbortSignal,
+): Promise<CompletionResult> {
+  let body: CompletionBody | null
   try {
+    if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
     body = await res.json()
   } catch (err) {
-    if (isAbort(err)) throw new ApiError('Cancelled.', 'aborted')
+    if (err instanceof ApiError) throw err
+    if (isAbort(err) || signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
     throw new ApiError('The API response was not valid JSON.', 'response')
   }
-  const text = flattenContent(body?.choices?.[0]?.message?.content)
+  if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
+  if (body?.error !== undefined && body.error !== null) throw providerError()
+  const choice = Array.isArray(body?.choices) ? body.choices[0] : undefined
+  const content = choice?.message?.content
+  const text = content === null ? '' : flattenContent(content)
+  if (text) onDelta?.(text)
+  if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
+  const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined
+  if (finishReason === 'error' || finishReason === 'content_filter') throw providerError()
   if (text === null) throw new ApiError('The API response had no message content.', 'response')
-  onDelta?.(text)
-  return text
+  return completionResult(text, finishReason)
 }
 
 // Content arrives as a string, or as an array of typed parts — the same shape

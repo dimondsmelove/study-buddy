@@ -9,6 +9,9 @@ import type { CaptureRequest, ChatState, Message, Rect, StoredCapture } from '..
 import { CAPTURE_PREFIX, MAX_KEPT_CAPTURES } from '../shared/messages'
 import { restrictedReason } from '../shared/restricted'
 import { captureTab } from './capture'
+import { installConversationCoordinator } from './conversations'
+
+installConversationCoordinator()
 
 const CHAT_URL = 'src/chat/chat.html'
 

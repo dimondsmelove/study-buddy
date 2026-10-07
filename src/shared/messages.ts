@@ -68,6 +68,15 @@ export interface PermissionGranted {
   type: 'PERMISSION_GRANTED'
 }
 
+export type ConversationAction =
+  | { action: 'create'; title: string }
+  | { action: 'select'; conversationId: string }
+  | { action: 'attach'; conversationId: string; imageId: string }
+  | { action: 'delete'; conversationId: string }
+
+export type ConversationResponse<T> = { ok: true; value: T } | { ok: false; error: string }
+export const GENERATION_PORT = 'study-buddy-generation'
+
 export type Message =
   | StartSelection
   | ShowOverlay

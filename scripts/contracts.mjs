@@ -55,7 +55,13 @@ for (const value of [null, 'old', { apiKey: 42, baseUrl: [], uiLanguage: 'bad' }
   assert(!('model' in got))
 }
 runtime.chrome.storage.local.get = async () => { throw new Error('fixture storage failure') }
-assert.equal((await settings.getSettings()).apiKey, '')
+await assert.rejects(settings.getSettings(), /storage.read/)
+const previousSettings = structuredClone(stored.settings)
+runtime.chrome.storage.local.set = async () => { throw new Error('fixture write failure') }
+await assert.rejects(settings.setSettings({ ...settings.DEFAULT_SETTINGS, apiKey: 'unsaved-key' }), /fixture write failure/)
+assert.deepEqual(stored.settings, previousSettings)
+assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: '', baseUrl: '  ' }, defaults).apiKey, 'fixture-baked-key')
+assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: 'byok', baseUrl: 'https://custom.test' }, { apiKey: 'baked', baseUrl: 'invalid default' }).apiKey, 'byok')
 console.log('SETTINGS CONTRACTS OK — defaults, BYOK, custom isolation, malformed/legacy records, storage failure')
 
 const api = load('src/shared/api.ts')

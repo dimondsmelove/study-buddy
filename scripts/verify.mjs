@@ -232,6 +232,14 @@ try {
   check(true, 'settings view opens from the error view')
   await settings.click('.advanced summary') // advanced block is collapsed
   await settings.fill('#set-api-key', 'sk-test-123')
+  await settings.evaluate(() => {
+    globalThis.fixtureStorageSet = chrome.storage.local.set
+    chrome.storage.local.set = async () => { throw new Error('expected fixture write failure') }
+  })
+  await settings.click('#set-save')
+  await settings.waitForFunction(() => document.getElementById('set-msg')?.textContent?.includes('Could not save'))
+  check(await settings.locator('#view-settings').isVisible() && !(await settings.evaluate(() => chrome.storage.local.get('settings'))).settings, 'failed settings save stays on the form without updating saved data')
+  await settings.evaluate(() => { chrome.storage.local.set = globalThis.fixtureStorageSet; delete globalThis.fixtureStorageSet })
   await settings.click('#set-save')
   // state 'attached': an element WITH [hidden] can never be "visible" — the
   // selector already encodes the hidden-ness we're waiting for.
@@ -392,6 +400,14 @@ try {
       tx.onabort = () => reject(tx.error)
     }
   }))
+
+  const settingsReadFailure = await openCapture()
+  const beforeReadFailure = requestCount
+  await settingsReadFailure.evaluate(() => { chrome.storage.local.get = async () => { throw new Error('expected fixture read failure') } })
+  await settingsReadFailure.click('[data-preset="hint"]')
+  await settingsReadFailure.waitForFunction(() => !document.getElementById('operation-error')?.hidden)
+  check(requestCount === beforeReadFailure && await settingsReadFailure.locator('.msg').count() === 0, 'failed settings read is visible and cannot silently switch to defaults or start a request')
+  await settingsReadFailure.close()
 
   const hint = await openCapture()
   await hint.setViewportSize({ width: 480, height: 660 })

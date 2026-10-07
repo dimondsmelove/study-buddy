@@ -15,7 +15,7 @@ export default defineManifest({
   description:
     'Select any region of the screen and ask an AI about it — solve, explain, translate.',
   action: {
-    default_title: 'Study Buddy — select a region and ask',
+    default_title: 'Study Buddy — restore chat (Ctrl+Shift+Y to select)',
     default_icon: { '16': 'icons/icon16.png', '32': 'icons/icon32.png' },
   },
 

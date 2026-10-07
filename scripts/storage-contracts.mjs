@@ -45,6 +45,7 @@ try {
     await c.createConversation('Survives reload')
     const many = { ...first, turns: [] }
     for (let i = 0; i < 40; i++) many.turns.push({ ...user, id: `turn-${i}`, text: `turn ${i}`, kind: i === 4 ? 'check' : 'ask', input: i === 4 ? 'x=2' : undefined })
+    many.turns[30] = { ...many.turns[30], kind: 'check', input: 'different task attempt', attachmentId: 'other-task' }
     const bounded = c.contextTurns(many)
     let oversizeRejected = false
     try { c.contextTurns({ ...first, turns: [{ ...user, text: 'x'.repeat(32_001) }] }) } catch { oversizeRejected = true }

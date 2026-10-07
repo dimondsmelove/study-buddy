@@ -7,7 +7,8 @@
 //
 // Views: capture (crop + task buttons + thread), the rare permission /
 // restricted / error states, and a settings detour. There is no onboarding:
-// the store build ships a baked key, so the extension works on install. The
+// a keyless build requires BYOK; a baked credential is optional and not a
+// trusted public-key protection mechanism. The
 // crop goes through the Gateway (src/shared/gateway.ts) and the answer streams
 // into the thread, rendered as Markdown + LaTeX.
 
@@ -129,7 +130,7 @@ function apply(state: ChatState): void {
       showText('restricted-text', t(uiLang, 'state.restrictedText', { reason: state.reason }))
       break
     case 'error':
-      showText('error-text', state.message)
+      showText('error-text', state.message.startsWith('storage.') ? t(uiLang, 'dialog.storageError') : state.message)
       break
   }
 }
@@ -234,11 +235,11 @@ function restoreView(): void {
   }
   try {
     await updateSettings({
-    provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
-    baseUrl: baseUrlInput,
-    apiKey: (el('set-api-key') as HTMLInputElement).value.trim(),
-    uiLanguage: (el('set-ui-lang') as HTMLSelectElement).value as UiLanguage,
-    answerLanguage: (el('set-ans-lang') as HTMLSelectElement).value as AnswerLanguage,
+      provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
+      baseUrl: baseUrlInput,
+      apiKey: (el('set-api-key') as HTMLInputElement).value.trim(),
+      uiLanguage: (el('set-ui-lang') as HTMLSelectElement).value as UiLanguage,
+      answerLanguage: (el('set-ans-lang') as HTMLSelectElement).value as AnswerLanguage,
     })
     restoreView()
   } catch {
@@ -689,6 +690,10 @@ el('check-form').addEventListener('submit', (event) => {
 el('new-chat-btn').onclick = () => {
   void conversationAction<Conversation>({ action: 'create', title: t(uiLang, 'dialog.new') }).then(async (value) => {
     releaseImages()
+    ;(el('ask-input') as HTMLInputElement).value = ''
+    ;(el('check-input') as HTMLTextAreaElement).value = ''
+    el('check-form').hidden = true
+    el('ask-form').hidden = false
     await openConversation(value.id)
   }).catch(reportError)
 }
@@ -783,8 +788,8 @@ setInterval(updateStatus, 1000)
   })
 }
 
-// The host relays later states without reloading the iframe. Accept only our
-// own origin (the host posts with an explicit chrome-extension:// target).
+// The host is this iframe's parent page, not the extension origin. Ignore other
+// windows; the isolated content host targets this extension origin explicitly.
 window.addEventListener('message', (e: MessageEvent) => {
   const data = e.data as { source?: string; state?: ChatState; action?: string } | null
   if (e.source !== window.parent || window.parent === window || data?.source !== 'study-buddy-host') return
@@ -833,4 +838,9 @@ async function boot(): Promise<void> {
   }
 }
 
-void boot().catch(reportError)
+void boot().catch((err) => {
+  applyI18n()
+  fillLanguageSelects()
+  apply({ kind: 'error', message: err instanceof Error ? err.message : 'storage.read' })
+  reportError(err)
+})

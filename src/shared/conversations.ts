@@ -65,8 +65,8 @@ export function contextTurns(conversation: Conversation): { turns: Turn[]; omitt
   const latestUser = [...usable].reverse().find((turn) => turn.role === 'user')
   const taskId = latestUser?.attachmentId ?? conversation.activeAttachmentId
   const task = usable.find((turn) => turn.role === 'user' && turn.attachmentId === taskId)
-  const attempt = [...usable].reverse().find((turn) => turn.role === 'user' && !!turn.input && turn.kind === 'check')
-  const required = new Set([latestUser?.id, task?.id, attempt?.attachmentId === taskId ? attempt?.id : undefined])
+  const attempt = [...usable].reverse().find((turn) => turn.role === 'user' && !!turn.input && turn.kind === 'check' && turn.attachmentId === taskId)
+  const required = new Set([latestUser?.id, task?.id, attempt?.id])
   const selected = usable.slice(-CONTEXT_LIMITS.turns)
   for (const turn of usable) if (required.has(turn.id) && !selected.includes(turn)) selected.push(turn)
   selected.sort((a, b) => usable.indexOf(a) - usable.indexOf(b))

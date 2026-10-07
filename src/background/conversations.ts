@@ -3,6 +3,7 @@ import { contextImages, contextTurns, CONTEXT_LIMITS, cooldownRemaining, type Co
 import { CAPTURE_PREFIX, GENERATION_PORT, type ConversationAction, type StoredCapture } from '../shared/messages'
 
 const ready = recoverGeneration()
+void ready.catch(() => {}) // command handlers report failure; do not start a request without recovery
 let queue: Promise<unknown> = ready
 let active: { port: chrome.runtime.Port; generation: Generation; text: string } | undefined
 

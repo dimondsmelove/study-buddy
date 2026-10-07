@@ -76,9 +76,8 @@ export async function getSettings(): Promise<Settings> {
         : DEFAULT_SETTINGS.answerLanguage,
     }
   } catch {
-    // Storage can fail (quota, transient API errors); failing open to the
-    // defaults matches the rest of the extension's error handling.
-    return { ...DEFAULT_SETTINGS }
+    // A failed read is not an empty configuration: never switch endpoints/keys silently.
+    throw new Error('storage.read')
   }
 }
 
@@ -96,12 +95,12 @@ export function resolveSettings(
   settings: Settings,
   defaults = { apiKey: DEFAULT_API_KEY, baseUrl: DEFAULT_BASE_URL },
 ): Settings {
-  const baseUrl = normalizeBaseUrl(settings.baseUrl || defaults.baseUrl)
-  const defaultUrl = normalizeBaseUrl(defaults.baseUrl)
+  const baseUrl = normalizeBaseUrl(settings.baseUrl.trim() || defaults.baseUrl)
+  const userKey = settings.apiKey.trim()
   return {
     ...settings,
     baseUrl,
-    apiKey: settings.apiKey.trim() || (baseUrl === defaultUrl ? defaults.apiKey : ''),
+    apiKey: userKey || (defaults.apiKey && baseUrl === normalizeBaseUrl(defaults.baseUrl) ? defaults.apiKey : ''),
   }
 }
 

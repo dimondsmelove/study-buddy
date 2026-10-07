@@ -52,7 +52,7 @@ export async function fetchVisionModels(settings: Settings): Promise<ModelsResul
       headers: authHeaders(settings),
     })
   } catch (err) {
-    throw apiNetworkError(err, settings.baseUrl)
+    throw apiNetworkError(err)
   }
   if (!res.ok) throw await apiHttpError(res)
 

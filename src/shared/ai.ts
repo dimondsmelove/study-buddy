@@ -7,7 +7,7 @@
 // half an answer and then died must show that error, not silently restart on
 // another model and duplicate the visible text.
 
-import type { ApiMessage } from './api'
+import type { ApiMessage, CompletionResult } from './api'
 import { chatCompletion, isRetryable } from './api'
 import type { Settings } from './settings'
 
@@ -45,9 +45,9 @@ export interface AskOpts {
   onFallback?: (from: string, to: string, error: Error) => void
 }
 
-/** Ask the chain until one model answers. Returns the reply text; throws the
+/** Ask the chain until one model answers. Returns the completion; throws the
  *  last error if every model failed (or the first one failed non-retryably). */
-export async function askWithFallback(opts: AskOpts): Promise<string> {
+export async function askWithFallback(opts: AskOpts): Promise<CompletionResult> {
   let lastError: unknown
   for (let i = 0; i < MODEL_CHAIN.length; i++) {
     const model = MODEL_CHAIN[i]

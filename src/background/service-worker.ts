@@ -9,7 +9,7 @@ import type { CaptureRequest, ChatState, Message, Rect, StoredCapture } from '..
 import { CAPTURE_PREFIX, MAX_KEPT_CAPTURES } from '../shared/messages'
 import { restrictedReason } from '../shared/restricted'
 import { captureTab } from './capture'
-import { installConversationCoordinator } from './conversations'
+import { captureDialog, installConversationCoordinator, restoreDialog } from './conversations'
 
 installConversationCoordinator()
 
@@ -34,7 +34,7 @@ function entrypoint(task: () => Promise<void>, exclusive = false): void {
 chrome.action.onClicked.addListener((tab) => {
   if (tab.id === undefined) return
   const tabId = tab.id
-  entrypoint(() => startSelection(tabId), true)
+  entrypoint(() => restoreOnTab(tabId), true)
 })
 
 chrome.commands.onCommand.addListener((command, tab) => {
@@ -68,6 +68,11 @@ chrome.runtime.onMessage.addListener((msg: Message, sender) => {
       : undefined
   if (msg.type === 'START_SELECTION') {
     entrypoint(() => startActiveTabSelection(), true)
+  } else if (msg.type === 'RESTORE_CHAT') {
+    entrypoint(async () => {
+      const tab = contentTab ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]
+      if (tab?.id !== undefined) await restoreOnTab(tab.id)
+    }, true)
   } else if (msg.type === 'SELECTION_CANCELLED') {
     if (contentTab?.id === selectionTabId) selectionTabId = undefined
   } else if (msg.type === 'CAPTURE_REQUEST') {
@@ -86,6 +91,17 @@ chrome.runtime.onMessage.addListener((msg: Message, sender) => {
   }
   return false
 })
+
+async function restoreOnTab(tabId: number): Promise<void> {
+  const conversation = await restoreDialog(tabId)
+  const state: ChatState = { kind: 'conversation', conversationId: conversation.id }
+  try { await chrome.tabs.sendMessage(tabId, { type: 'SHOW_CHAT', state }); return } catch { /* inject below */ }
+  const tab = await chrome.tabs.get(tabId)
+  if (!restrictedReason(tab.url)) {
+    try { await injectOverlay(tabId) } catch { /* detached fallback */ }
+  }
+  await showChatWindow(tabId, state)
+}
 
 async function startActiveTabSelection(): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
@@ -166,7 +182,8 @@ async function handleCapture(req: CaptureRequest, tabId?: number, documentId?: s
     const cropDataUrl = await cropRegion(fullDataUrl, req)
 
     const imageId = await storeCapture(cropDataUrl, req.rect)
-    await showChatWindow(tab.id, { kind: 'capture', imageId, rect: req.rect })
+    const conversation = await captureDialog(imageId, tab.id)
+    await showChatWindow(tab.id, { kind: 'capture', imageId, rect: req.rect, conversationId: conversation.id })
   } catch (err) {
     await showError(err instanceof Error ? err.message : String(err))
   }
@@ -221,7 +238,9 @@ async function showChatWindow(tabId: number | undefined, state: ChatState): Prom
 function stateUrlParams(state: ChatState): Record<string, string> {
   switch (state.kind) {
     case 'capture':
-      return { kind: 'capture', id: state.imageId }
+      return { kind: 'capture', id: state.imageId, ...(state.conversationId ? { conversation: state.conversationId } : {}) }
+    case 'conversation':
+      return { kind: 'conversation', conversation: state.conversationId }
     case 'permission':
       return { kind: 'permission', origin: state.origin }
     case 'restricted':

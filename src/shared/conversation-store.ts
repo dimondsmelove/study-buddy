@@ -129,7 +129,7 @@ export function startGeneration(conversationId: string, user: Turn | null, assis
   })
 }
 
-export function updateReply(generation: Generation, text: string, status: Turn['status'], error?: string): Promise<void> {
+export function updateReply(generation: Generation, text: string, status: Turn['status'], error?: string, note?: string): Promise<void> {
   return transaction(['conversations', 'state'], 'readwrite', (tx, done) => {
     const store = tx.objectStore('conversations')
     const request = store.get(generation.conversationId)
@@ -140,6 +140,7 @@ export function updateReply(generation: Generation, text: string, status: Turn['
       turn.text = text
       turn.status = status
       turn.error = error
+      turn.note = note ?? turn.note
       conversation.updatedAt = Date.now()
       store.put(conversation)
       if (status !== 'streaming') {

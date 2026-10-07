@@ -37,9 +37,26 @@ section {
   gap: 10px;
 }
 
-section[hidden] {
+[hidden], section[hidden] {
   display: none;
 }
+
+#capture-top { flex-wrap: wrap; gap: 4px; }
+#dialog-status { margin: 0; font-size: 11px; color: var(--muted); }
+#conversation-title { margin: 0; color: var(--muted); font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#operation-error { flex: 0 0 auto; margin: 8px 12px 0; padding: 8px; border: 1px solid #fda29b; border-radius: 6px; color: #b42318; font-size: 12px; }
+.reply-status { color: var(--muted); font-size: 11px; margin-top: 6px; }
+.msg-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-body:has(p) { white-space: normal; }
+.turn-image { max-height: 45px; max-width: 100%; display: block; margin-top: 6px; cursor: zoom-in; }
+#check-form { display: flex; flex-direction: column; gap: 6px; }
+#check-form > div { display: flex; justify-content: flex-end; gap: 6px; }
+#check-input { width: 100%; resize: vertical; max-height: 140px; border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: inherit; }
+#history-list { overflow-y: auto; flex: 1; min-height: 0; }
+.history-row { border-bottom: 1px solid var(--line); padding: 10px 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.history-open { width: 100%; text-align: left; overflow-wrap: anywhere; }
+#crop-figure[hidden], #check-form[hidden] { display: none; }
+button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 h1 {
   font-size: 14px;
@@ -153,7 +170,8 @@ button:disabled {
 }
 
 .preset {
-  flex: 1;
+  flex: 1 0 auto;
+  padding: 5px 8px;
 }
 
 #thread {
@@ -255,6 +273,8 @@ button:disabled {
 /* Message bubbles: user right / accent, assistant left / white, errors red. */
 .msg {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   margin-bottom: 8px;
 }
 
@@ -272,7 +292,7 @@ button:disabled {
 }
 
 .msg.user {
-  justify-content: flex-end;
+  align-items: flex-end;
 }
 
 .msg.user .msg-body {
@@ -295,7 +315,7 @@ button:disabled {
 
 /* Fallback notice: quiet, centered, clearly not part of the conversation. */
 .msg.note {
-  justify-content: center;
+  align-items: center;
 }
 
 .msg.note .msg-body {

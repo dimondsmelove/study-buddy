@@ -13,6 +13,7 @@ export interface Turn {
   attachmentId?: string
   status?: ReplyStatus
   error?: string
+  note?: string
   createdAt: number
   locale: UiLang
   promptVersion: string
@@ -58,7 +59,9 @@ export function cooldownRemaining(lastStartedAt: number, now = Date.now()): numb
 
 /** Last selected task and its attempt remain source inputs, even outside the window. */
 export function contextTurns(conversation: Conversation): { turns: Turn[]; omitted: number } {
-  const usable = conversation.turns.filter((turn) => turn.role === 'user' || (!!turn.text && turn.status === 'complete'))
+  const latestReplies = new Map<string, string>()
+  for (const turn of conversation.turns) if (turn.role === 'assistant' && turn.status === 'complete' && turn.replyTo) latestReplies.set(turn.replyTo, turn.id)
+  const usable = conversation.turns.filter((turn) => turn.role === 'user' || (!!turn.text && turn.status === 'complete' && (!turn.replyTo || latestReplies.get(turn.replyTo) === turn.id)))
   const latestUser = [...usable].reverse().find((turn) => turn.role === 'user')
   const taskId = latestUser?.attachmentId ?? conversation.activeAttachmentId
   const task = usable.find((turn) => turn.role === 'user' && turn.attachmentId === taskId)
@@ -78,7 +81,10 @@ export function contextTurns(conversation: Conversation): { turns: Turn[]; omitt
     if (index < 0) throw new Error('context.text')
     selected.splice(index, 1)
   }
-  return { turns: selected, omitted: conversation.turns.filter((turn) => !!turn.text).length - selected.length }
+  const images = contextImages(selected)
+  const excluded = new Set(selected.filter((turn) => turn.role === 'user' && turn.attachmentId && !images.has(turn.attachmentId)).map((turn) => turn.id))
+  const included = selected.filter((turn) => !excluded.has(turn.id) && (!turn.replyTo || !excluded.has(turn.replyTo)))
+  return { turns: included, omitted: conversation.turns.filter((turn) => !!turn.text).length - included.length }
 }
 
 export function contextImages(turns: Turn[]): Set<string> {

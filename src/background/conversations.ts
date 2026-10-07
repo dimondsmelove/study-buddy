@@ -137,7 +137,7 @@ export function installConversationCoordinator(): void {
           if (active?.port !== port) throw new Error('dialog.disconnected')
           const status = message.status as ReplyStatus
           if (!['streaming', 'complete', 'truncated', 'interrupted', 'cancelled', 'provider_error', 'empty'].includes(status) || typeof message.text !== 'string') throw new Error('dialog.invalid')
-          await updateReply(active.generation, message.text, status, message.error)
+          await updateReply(active.generation, message.text, status, message.error, message.note)
           active.text = message.text
           if (status !== 'streaming') active = undefined
           changed()

@@ -18,7 +18,8 @@ export interface Rect {
 /** What the chat window should show. 'permission' / 'restricted' / 'error' are
  *  rare paths (no host access, Web Store / chrome:// pages, failures). */
 export type ChatState =
-  | { kind: 'capture'; imageId: string; rect: Rect }
+  | { kind: 'capture'; imageId: string; rect: Rect; conversationId?: string }
+  | { kind: 'conversation'; conversationId: string }
   | { kind: 'permission'; origin: string }
   | { kind: 'restricted'; reason: string }
   | { kind: 'error'; message: string }
@@ -27,6 +28,7 @@ export type ChatState =
 export interface StartSelection {
   type: 'START_SELECTION'
 }
+export interface RestoreChat { type: 'RESTORE_CHAT' }
 
 /** SW → overlay: show the drag-selection overlay. */
 export interface ShowOverlay {
@@ -79,6 +81,7 @@ export const GENERATION_PORT = 'study-buddy-generation'
 
 export type Message =
   | StartSelection
+  | RestoreChat
   | ShowOverlay
   | HideOverlay
   | CaptureRequest

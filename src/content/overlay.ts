@@ -176,6 +176,8 @@ const PANEL_SIZE_KEY = 'panel.size'
 let chatRoot: HTMLElement | undefined
 let chatPanel: HTMLDivElement | undefined
 let chatFrame: HTMLIFrameElement | undefined
+let launcher: HTMLButtonElement | undefined
+let chatLang: 'en' | 'ru' = 'en'
 
 /** User-resized panel size, persisted across pages/sessions. Loaded async;
  *  until it arrives (or if never resized) the defaults below apply. */
@@ -203,7 +205,9 @@ function chatUrl(state: ChatState): string {
 function chatUrlParams(state: ChatState): Record<string, string> {
   switch (state.kind) {
     case 'capture':
-      return { kind: 'capture', id: state.imageId }
+      return { kind: 'capture', id: state.imageId, ...(state.conversationId ? { conversation: state.conversationId } : {}) }
+    case 'conversation':
+      return { kind: 'conversation', conversation: state.conversationId }
     case 'permission':
       return { kind: 'permission', origin: state.origin }
     case 'restricted':
@@ -218,17 +222,22 @@ function chatUrlParams(state: ChatState): Record<string, string> {
  *  instead of reloading the iframe. */
 function showChat(state: ChatState): void {
   if (chatFrame) {
+    if (chatPanel) chatPanel.style.display = 'flex'
+    if (launcher) launcher.hidden = true
+    chatRoot?.setAttribute('data-state', 'open')
     postStateToChat(state)
     if (state.kind === 'capture') positionPanel(state.rect)
     return
   }
 
   const w = window as unknown as Record<string, unknown>
-  if (w[CHAT_FLAG]) return // host exists but our handle is gone (shouldn't happen)
+  chatRoot?.remove() // closed launcher is replaced, never duplicated
+  w[CHAT_FLAG] = false
 
   const root = document.createElement('div')
   // data-study-buddy: test/debug marker on the SHARED DOM (see the overlay).
   root.setAttribute('data-study-buddy', 'chat')
+  root.setAttribute('data-state', 'open')
   root.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647'
   const shadow = root.attachShadow({ mode: 'closed' })
 
@@ -266,6 +275,7 @@ function showChat(state: ChatState): void {
   const close = document.createElement('button')
   close.textContent = '✕'
   close.title = 'Close'
+  close.setAttribute('aria-label', 'Close and save')
   close.style.cssText = [
     'border:0',
     'background:transparent',
@@ -275,12 +285,30 @@ function showChat(state: ChatState): void {
     'padding:4px 6px',
     'border-radius:6px',
   ].join(';')
-  close.addEventListener('click', () => removeChat())
+  close.addEventListener('click', () => {
+    if (!chatFrame) { removeChat(); return }
+    const target = new URL(CHAT_URL)
+    chatFrame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close' }, `${target.protocol}//${target.hostname}`)
+  })
   close.addEventListener('pointerdown', (e) => e.stopPropagation()) // no drag from ✕
   bar.appendChild(title)
+  const minimize = document.createElement('button')
+  minimize.textContent = '−'
+  minimize.title = 'Minimize'
+  minimize.setAttribute('aria-label', 'Minimize; keep answering')
+  minimize.style.cssText = close.style.cssText
+  minimize.onpointerdown = (event) => event.stopPropagation()
+  minimize.onclick = () => {
+    panel.style.display = 'none'
+    if (launcher) launcher.hidden = false
+    root.setAttribute('data-state', 'minimized')
+    launcher?.focus()
+  }
+  bar.appendChild(minimize)
   bar.appendChild(close)
 
   const frame = document.createElement('iframe')
+  frame.title = 'Study Buddy conversation'
   frame.style.cssText = 'flex:1;width:100%;border:0;display:block;background:#fff'
   frame.src = chatUrl(state)
 
@@ -302,6 +330,46 @@ function showChat(state: ChatState): void {
   panel.appendChild(frame)
   panel.appendChild(grip)
   shadow.appendChild(panel)
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.textContent = 'Study Buddy'
+  button.setAttribute('aria-label', 'Restore Study Buddy')
+  button.style.cssText = 'position:fixed;right:24px;bottom:24px;border:1px solid #4f9cff;border-radius:24px;background:#111827;color:white;padding:12px 18px;font:13px system-ui;cursor:pointer;box-shadow:0 4px 18px #0004;max-width:260px'
+  button.hidden = true
+  button.onclick = () => {
+    if (chatFrame) {
+      panel.style.display = 'flex'
+      button.hidden = true
+      root.setAttribute('data-state', 'open')
+      frame.focus()
+    } else void chrome.runtime.sendMessage({ type: 'RESTORE_CHAT' }).catch(() => {})
+  }
+  // Drag a button; a short pointer movement remains a normal keyboard/click activation.
+  button.onpointerdown = (event) => {
+    if (event.button !== 0) return
+    const rect = button.getBoundingClientRect()
+    const x = event.clientX, y = event.clientY
+    let moved = false
+    button.setPointerCapture(event.pointerId)
+    const move = (next: PointerEvent) => {
+      if (Math.hypot(next.clientX - x, next.clientY - y) < 5 && !moved) return
+      moved = true
+      button.style.right = 'auto'
+      button.style.bottom = 'auto'
+      button.style.left = `${Math.max(8, Math.min(rect.left + next.clientX - x, innerWidth - rect.width - 8))}px`
+      button.style.top = `${Math.max(8, Math.min(rect.top + next.clientY - y, innerHeight - rect.height - 8))}px`
+    }
+    const up = () => {
+      button.removeEventListener('pointermove', move)
+      button.removeEventListener('pointerup', up)
+      button.removeEventListener('pointercancel', up)
+      if (moved) button.addEventListener('click', (click) => { click.preventDefault(); click.stopImmediatePropagation() }, { once: true, capture: true })
+    }
+    button.addEventListener('pointermove', move)
+    button.addEventListener('pointerup', up)
+    button.addEventListener('pointercancel', up)
+  }
+  shadow.appendChild(button)
   document.documentElement.appendChild(root)
   makeDraggable(panel, bar)
   makeResizable(panel, grip)
@@ -309,6 +377,22 @@ function showChat(state: ChatState): void {
   chatRoot = root
   chatPanel = panel
   chatFrame = frame
+  launcher = button
+  window.addEventListener('message', (event) => {
+    const data = event.data
+    const url = new URL(CHAT_URL)
+    if (event.source !== frame.contentWindow || event.origin !== `${url.protocol}//${url.hostname}` || data?.source !== 'study-buddy-chat') return
+    if (data.action === 'closed') removeChat()
+    if (data.action === 'status' && typeof data.text === 'string') {
+      chatLang = data.lang === 'ru' ? 'ru' : 'en'
+      button.textContent = `Study Buddy · ${data.text}`
+      button.setAttribute('aria-label', chatLang === 'ru' ? 'Открыть Study Buddy' : 'Restore Study Buddy')
+      close.title = chatLang === 'ru' ? 'Закрыть и сохранить' : 'Close and save'
+      minimize.title = chatLang === 'ru' ? 'Свернуть; продолжить ответ' : 'Minimize; keep answering'
+      close.setAttribute('aria-label', close.title)
+      minimize.setAttribute('aria-label', minimize.title)
+    }
+  })
   w[CHAT_FLAG] = true
   positionPanel(state.kind === 'capture' ? state.rect : undefined)
 }
@@ -323,8 +407,13 @@ function postStateToChat(state: ChatState): void {
 }
 
 function removeChat(): void {
-  chatRoot?.remove()
-  chatRoot = undefined
+  chatPanel?.remove()
+  if (launcher) {
+    launcher.hidden = false
+    launcher.textContent = 'Study Buddy'
+    launcher.focus()
+  }
+  chatRoot?.setAttribute('data-state', 'closed')
   chatPanel = undefined
   chatFrame = undefined
   const w = window as unknown as Record<string, unknown>

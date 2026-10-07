@@ -11,7 +11,8 @@
 // (chrome.commands.getAll). Verify the physical keypress in a real browser.
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
-import { cpSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
 
@@ -37,8 +38,7 @@ cpSync(dist, distTest, { recursive: true })
 // Fresh profile each run: a reused persistent profile can restore a STALE
 // service worker from the code cache (an old build!) — which once sent this
 // very test in circles. Fresh dir = always the current dist/ code.
-const profile = join('/tmp/opencode', 'study-buddy-profile')
-rmSync(profile, { recursive: true, force: true })
+const profile = mkdtempSync(join(tmpdir(), 'study-buddy-verify-'))
 
 let failures = 0
 const check = (ok, label) => {
@@ -56,11 +56,14 @@ const pageHtml = `<!doctype html><meta charset="utf-8"><title>target</title>
 // `failModel` makes that one model answer 503, to exercise the fallback chain.
 let lastAiRequest = null
 let failModel = null
+let responseMode = 'normal'
+let requestCount = 0
 const server = createServer((req, res) => {
   if (req.url?.includes('/chat/completions')) {
     let body = ''
     req.on('data', (chunk) => (body += chunk))
     req.on('end', () => {
+      requestCount++
       try {
         lastAiRequest = JSON.parse(body)
       } catch {
@@ -73,6 +76,15 @@ const server = createServer((req, res) => {
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n')
+      if (responseMode === 'slow') {
+        const interval = setInterval(() => res.write('data: {"choices":[{"delta":{"content":" step"}}]}\n\n'), 180)
+        const finish = setTimeout(() => { clearInterval(interval); res.end('data: [DONE]\n\n') }, 10_000)
+        res.on('close', () => { clearInterval(interval); clearTimeout(finish) })
+        return
+      }
+      if (responseMode === 'truncated') { res.end('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'); return }
+      if (responseMode === 'interrupted') { res.end(); return }
+      if (responseMode === 'provider-error') { res.end('data: {"error":{"message":"private-provider-fixture"}}\n\n'); return }
       res.write('data: {"choices":[{"delta":{"content":" world"}}]}\n\n')
       res.end('data: [DONE]\n\n')
     })
@@ -196,6 +208,7 @@ try {
   // The chat page must render the crop when opened with this capture id.
   const chat = await ctx.newPage()
   await chat.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}`)
+  await chat.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
   const imgLoaded = await chat.evaluate(async () => {
     const img = document.getElementById('crop')
     await img.decode().catch(() => {})
@@ -210,7 +223,7 @@ try {
   // the rescue path, and Save persists. Clearing storage gives the clean state.
   await sw.evaluate(() => chrome.storage.local.remove('settings'))
   const settings = await ctx.newPage()
-  await settings.goto(`${chatOrigin}/src/chat/chat.html`)
+  await settings.goto(`${chatOrigin}/src/chat/chat.html?kind=error&message=Settings%20fixture`)
   await settings.waitForSelector('#view-error:not([hidden])')
   check(true, 'bare chat page shows the no-state error view')
   await settings.click('#view-error:not([hidden]) [data-goto-settings]')
@@ -250,13 +263,32 @@ try {
   // preset click could race the storage read and send a caption-less question.
   const openCapture = async () => {
     const p = await ctx.newPage()
-    await p.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}`)
+    await p.goto(`${chatOrigin}/src/chat/chat.html?kind=error&message=Fixture`)
+    const fresh = await p.evaluate(() => chrome.runtime.sendMessage({ type: 'CONVERSATION', action: 'create', title: 'Verify fixture' }))
+    if (!fresh.ok) throw new Error(fresh.error)
+    await p.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}&conversation=${fresh.value.id}`)
     await p.waitForFunction(() => {
       const i = document.getElementById('crop')
       return !!i?.src && i.naturalWidth > 0
     })
+    // Test-owned database only: reset between independent scenarios. The real
+    // interval boundary and concurrent starts are tested separately below.
+    await resetCooldown(p)
     return p
   }
+  const resetCooldown = (p) => p.evaluate(() => new Promise((resolve, reject) => {
+    const request = indexedDB.open('study-buddy-conversations', 1)
+    request.onsuccess = () => {
+      const db = request.result
+      const tx = db.transaction('state', 'readwrite')
+      const store = tx.objectStore('state')
+      const get = store.get('state')
+      get.onsuccess = () => store.put({ ...get.result, lastStartedAt: 0 })
+      tx.oncomplete = () => { db.close(); resolve() }
+      tx.onabort = () => { db.close(); reject(new Error('fixture state abort')) }
+    }
+    request.onerror = () => reject(request.error)
+  }))
   const waitReply = (p) =>
     p
       .waitForFunction(
@@ -341,10 +373,189 @@ try {
   check(await fb.evaluate(() => !!document.querySelector('.msg.note')), 'fallback notice shown in the thread')
   await fb.close()
 
+  failModel = null
+  const evidence = resolve(root, '..', 'review', 'loop')
+  mkdirSync(evidence, { recursive: true })
+  const waitSaved = (p, status = 'complete') => p.waitForFunction((expected) => {
+    const nodes = [...document.querySelectorAll('.reply-status')]
+    return nodes.at(-1)?.textContent?.includes(expected)
+  }, status, { timeout: 7000 })
+  const readSaved = (p) => p.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open('study-buddy-conversations', 1)
+    open.onsuccess = () => {
+      const db = open.result
+      const tx = db.transaction(['conversations', 'state'], 'readonly')
+      const state = tx.objectStore('state').get('state')
+      const conversations = tx.objectStore('conversations').getAll()
+      tx.oncomplete = () => { db.close(); resolve({ state: state.result, conversations: conversations.result }) }
+      tx.onabort = () => reject(tx.error)
+    }
+  }))
+
+  const hint = await openCapture()
+  await hint.setViewportSize({ width: 480, height: 660 })
+  await hint.click('[data-preset="hint"]')
+  await waitSaved(hint, 'Complete')
+  check(lastAiRequest.max_tokens === 512 && lastAiRequest.temperature === 0.3, 'Hint UI uses its bounded one-step prompt budget')
+  const hintDb = await readSaved(hint)
+  const hintId = hintDb.state.lastConversationId
+  check(hintDb.conversations.find(c => c.id === hintId).turns.at(-1).status === 'complete', 'completion status committed to IndexedDB')
+  await hint.reload()
+  await waitSaved(hint, 'Complete')
+  check(await hint.locator('.msg.user').count() === 1, 'reload restores the saved conversation without duplicate turns')
+  await hint.screenshot({ path: join(evidence, 'dialog.png') })
+  await resetCooldown(hint)
+  await hint.fill('#ask-input', 'What is the next step?')
+  await hint.click('#ask-btn')
+  await hint.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 2)
+  await waitSaved(hint, 'Complete')
+  check(lastAiRequest.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length === 1, 'attachment sent once across multiple turns')
+
+  const checked = await openCapture()
+  await checked.setViewportSize({ width: 480, height: 660 })
+  await checked.click('#check-btn')
+  await checked.click('#check-submit')
+  check(await checked.locator('#check-form').isVisible(), 'Check refuses an empty attempt and leaves the input visible')
+  const attempt = '2(x+3)=10\n2x+3=10\nx=3.5'
+  await checked.fill('#check-input', attempt)
+  await checked.screenshot({ path: join(evidence, 'check.png') })
+  await checked.click('#check-submit')
+  await waitSaved(checked, 'Complete')
+  const checkedDb = await readSaved(checked)
+  const checkedId = checkedDb.state.lastConversationId
+  check(checkedDb.conversations.find(c => c.id === checkedId).turns[0].input === attempt, 'raw multiline student attempt saved independently of its template')
+  check(lastAiRequest.max_tokens === 1024 && lastAiRequest.messages.some(m => Array.isArray(m.content) && m.content.some(p => p.text?.includes(attempt))), 'Check serializes the actual attempt and its budget')
+  const beforeCooldown = requestCount
+  await checked.fill('#ask-input', 'Too soon')
+  await checked.click('#ask-btn')
+  await checked.waitForTimeout(100)
+  check(requestCount === beforeCooldown, 'accepted start imposes the ten-second interval without a queued request')
+  await checked.click('#history-btn')
+  await checked.screenshot({ path: join(evidence, 'history.png') })
+  const row = checked.locator('.history-row').filter({ hasText: '2(x+3)=10' })
+  const download = checked.waitForEvent('download')
+  await row.getByRole('button', { name: 'Export JSON' }).click()
+  const json = JSON.parse(readFileSync(await (await download).path(), 'utf8'))
+  check(json.schema === 1 && json.conversation.id === checkedId && Object.values(json.attachments)[0]?.startsWith('data:image/png') && !JSON.stringify(json).includes('sk-test-123'), 'JSON export includes transcript/images and excludes settings/key')
+  checked.once('dialog', d => d.dismiss())
+  await row.getByRole('button', { name: 'Delete', exact: true }).click()
+  check((await readSaved(checked)).conversations.some(c => c.id === checkedId), 'cancelled delete preserves the conversation')
+  checked.once('dialog', d => d.accept())
+  await row.getByRole('button', { name: 'Delete', exact: true }).click()
+  await checked.waitForFunction(() => !document.querySelector('#history-list')?.textContent?.includes('2(x+3)=10'))
+  check(!(await readSaved(checked)).conversations.some(c => c.id === checkedId), 'confirmed deletion removes the selected conversation')
+
+  for (const [mode, label, status] of [['truncated', 'Length limit', 'truncated'], ['interrupted', 'Interrupted', 'interrupted'], ['provider-error', 'Provider error', 'provider_error']]) {
+    responseMode = mode
+    const p = await openCapture()
+    await p.click('[data-preset="hint"]')
+    await waitSaved(p, label)
+    const saved = await readSaved(p)
+    check(saved.conversations.find(c => c.id === saved.state.lastConversationId).turns.at(-1).status === status, `${status} preserves partial text and its actual saved status`)
+    await p.close()
+  }
+  responseMode = 'normal'
+  await hint.close()
+  await checked.close()
+
+  await page.bringToFront()
+  const hostCdp = await ctx.newCDPSession(page)
+  const clickHostButton = async (text) => {
+    const { root: documentNode } = await hostCdp.send('DOM.getDocument', { depth: -1, pierce: true })
+    const find = (node) => {
+      if (node.nodeName === 'BUTTON' && node.children?.some(child => child.nodeValue === text)) return node
+      for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) {
+        const found = find(child)
+        if (found) return found
+      }
+    }
+    const node = find(documentNode)
+    if (!node) throw new Error(`Missing rendered host button ${text}`)
+    const { model } = await hostCdp.send('DOM.getBoxModel', { nodeId: node.nodeId })
+    await page.mouse.click((model.border[0] + model.border[4]) / 2, (model.border[1] + model.border[5]) / 2)
+  }
+  let embedded = page.frames().find(f => f.url().startsWith(chatOrigin))
+  await embedded.waitForSelector('#view-capture:not([hidden])')
+  await resetCooldown(embedded)
+  responseMode = 'slow'
+  const nativeBefore = requestCount
+  await embedded.click('[data-preset="hint"]')
+  await embedded.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.includes('Hello'))
+  const nativeState = await readSaved(embedded)
+  const nativeId = nativeState.state.generation.conversationId
+  const duplicate = await ctx.newPage()
+  await duplicate.goto(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${nativeId}`)
+  await duplicate.waitForFunction(() => document.getElementById('ask-btn')?.disabled)
+  check(await duplicate.locator('[data-preset="hint"]').isDisabled(), 'duplicate window observes the active writer and cannot start another answer')
+  await page.bringToFront()
+  await clickHostButton('−')
+  await page.waitForSelector('[data-study-buddy="chat"][data-state="minimized"]', { state: 'attached' })
+  const partialLength = await embedded.locator('.msg.assistant .msg-body').textContent()
+  await embedded.waitForFunction((length) => (document.querySelector('.msg.assistant .msg-body')?.textContent?.length ?? 0) > length, partialLength.length, { polling: 100 })
+  check(true, 'minimize keeps the same iframe and its stream running')
+  await page.screenshot({ path: join(evidence, 'minimized.png') })
+  await page.keyboard.press('Enter')
+  await page.waitForSelector('[data-study-buddy="chat"][data-state="open"]', { state: 'attached' })
+  check(page.frames().includes(embedded) && requestCount === nativeBefore + 1, 'keyboard restore reuses the live iframe without a new provider call')
+  await clickHostButton('✕')
+  await page.waitForSelector('[data-study-buddy="chat"][data-state="closed"]', { state: 'attached' })
+  const afterClose = await readSaved(duplicate)
+  const savedClose = afterClose.conversations.find(c => c.id === nativeId).turns.at(-1)
+  check(savedClose.status === 'cancelled' && savedClose.text.startsWith('Hello') && !afterClose.state.generation, 'Close cancels and commits the partial reply before removing the iframe')
+  await page.keyboard.press('Enter')
+  await page.waitForSelector('[data-study-buddy="chat"][data-state="open"]', { state: 'attached' })
+  await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
+  embedded = page.frames().find(f => f.url().startsWith(chatOrigin))
+  await waitSaved(embedded, 'Stopped')
+  check((await readSaved(embedded)).state.lastConversationId === nativeId, 'page button reopens the same selected conversation and saved image')
+  await resetCooldown(embedded)
+  const existingAnswers = await embedded.locator('.msg.assistant').count()
+  await embedded.click('[data-preset="hint"]')
+  await embedded.waitForFunction((count) => document.querySelectorAll('.msg.assistant').length > count && [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)?.textContent?.includes('step'), existingAnswers)
+  await embedded.waitForTimeout(400) // wait for the real bounded partial-save cadence
+  await page.reload()
+  await duplicate.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Interrupted'))
+  const navigation = await readSaved(duplicate)
+  check(navigation.conversations.find(c => c.id === nativeId).turns.at(-1).status === 'interrupted' && !navigation.state.generation, 'navigation releases the writer and retains the last committed partial as interrupted')
+  responseMode = 'normal'
+  await duplicate.click('#new-chat-btn')
+  await duplicate.waitForFunction(() => document.querySelectorAll('.msg').length === 0 && document.getElementById('crop-figure')?.hidden)
+  check((await readSaved(duplicate)).state.lastConversationId !== nativeId, 'New chat creates a distinct empty conversation without a hidden prior image')
+  await duplicate.setViewportSize({ width: 340, height: 620 })
+  await duplicate.click('#check-btn')
+  await duplicate.screenshot({ path: join(evidence, 'narrow.png') })
+  check(await duplicate.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'narrow panel has no horizontal overflow')
+
+  // Exercise the worker's atomic admission, not just disabled UI controls.
+  await resetCooldown(duplicate)
+  const raceId = (await readSaved(duplicate)).state.lastConversationId
+  const racePeer = await ctx.newPage()
+  await racePeer.goto(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${raceId}`)
+  const admission = (p) => p.evaluate((id) => new Promise((resolve) => {
+    const port = chrome.runtime.connect({ name: 'study-buddy-generation' })
+    const user = { id: crypto.randomUUID(), role: 'user', text: 'Race fixture', kind: 'ask', createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' }
+    const assistant = { ...user, id: crypto.randomUUID(), role: 'assistant', text: '', status: 'streaming', replyTo: user.id }
+    port.onMessage.addListener((response) => {
+      if (response.seq === 1) {
+        if (response.ok) port.postMessage({ seq: 2, action: 'update', text: '', status: 'cancelled' })
+        else { port.disconnect(); resolve(response) }
+      } else { port.disconnect(); resolve({ ok: true }) }
+    })
+    port.postMessage({ seq: 1, action: 'start', conversationId: id, user, assistant })
+  }), raceId)
+  const races = await Promise.all([admission(duplicate), admission(racePeer)])
+  check(races.filter(r => r.ok).length === 1 && races.some(r => !r.ok && /dialog.busy|dialog.cooldown/.test(r.error)), 'two concurrent native window starts admit exactly one writer')
+  check(JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8')).incognito === 'not_allowed', 'incognito is explicitly disabled')
+  await racePeer.close()
+  await duplicate.close()
+
+  writeFileSync(join(evidence, 'runtime.json'), JSON.stringify({ requestCount, pageErrors, fixture: 'localhost mock only', physicalShortcut: 'not dispatched by headless Chromium' }, null, 2))
+
   check(pageErrors.length === 0, `no page errors${pageErrors.length ? `: ${pageErrors.join('; ')}` : ''}`)
 } finally {
   await ctx.close()
   server.close()
+  rmSync(profile, { recursive: true, force: true })
 }
 
 console.log(failures === 0 ? '\nSMOKE OK' : `\nSMOKE FAILED (${failures})`)

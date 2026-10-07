@@ -8,16 +8,22 @@
   </head>
   <body>
     <main id="app">
+      <p id="operation-error" role="alert" hidden></p>
       <!-- capture state: the crop + the conversation about it -->
       <section id="view-capture" hidden>
         <div id="capture-top">
           <button type="button" id="new-selection-btn" class="ghost" data-i18n="capture.newSelection"></button>
+          <button type="button" id="history-btn" class="ghost" data-i18n="dialog.history"></button>
+          <button type="button" id="new-chat-btn" class="ghost" data-i18n="dialog.new"></button>
           <button type="button" id="settings-btn" title="Settings" aria-label="Settings" data-i18n-title="capture.settings">⚙</button>
         </div>
+        <p id="conversation-title"></p>
         <figure id="crop-figure">
           <img id="crop" alt="Selected region" />
         </figure>
         <div id="presets">
+          <button type="button" class="preset" data-preset="hint" data-i18n="preset.hint"></button>
+          <button type="button" class="preset" id="check-btn" data-i18n="preset.check"></button>
           <button type="button" class="preset" data-preset="solve" data-i18n="preset.solve"></button>
           <button type="button" class="preset" data-preset="quiz" data-i18n="preset.quiz"></button>
           <button type="button" class="preset" data-preset="explain" data-i18n="preset.explain"></button>
@@ -25,10 +31,25 @@
           <button type="button" class="preset" data-preset="summarize" data-i18n="preset.summarize"></button>
         </div>
         <div id="thread" aria-live="polite"></div>
+        <form id="check-form" hidden>
+          <label for="check-input" data-i18n="preset.check"></label>
+          <textarea id="check-input" rows="3" data-i18n-placeholder="check.placeholder"></textarea>
+          <div><button id="check-cancel" type="button" class="ghost" data-i18n="settings.back"></button>
+          <button id="check-submit" type="submit" data-i18n="check.submit"></button></div>
+        </form>
+        <p id="dialog-status" role="status"></p>
         <form id="ask-form" autocomplete="off">
           <input id="ask-input" type="text" data-i18n-placeholder="ask.placeholder" />
           <button id="ask-btn" type="submit" data-i18n="ask.button"></button>
         </form>
+      </section>
+
+      <section id="view-history" hidden>
+        <h1 data-i18n="dialog.history"></h1>
+        <p class="set-note" data-i18n="dialog.retention"></p>
+        <div id="history-list"></div>
+        <p id="storage-usage"></p>
+        <button id="history-back" type="button" data-i18n="settings.back"></button>
       </section>
 
       <!-- permission state: per-site capture grant -->

@@ -9,6 +9,7 @@ import { defineManifest } from '@crxjs/vite-plugin'
 //    page near the selection (see src/content/overlay.ts).
 export default defineManifest({
   manifest_version: 3,
+  incognito: 'not_allowed',
   name: 'Study Buddy',
   version: '0.1.0',
   description:

@@ -7,15 +7,15 @@
 import type { AnswerLanguage } from '../settings'
 import { PROMPT_LANGUAGE_NAMES, RU_LANGUAGE_NAMES } from '../i18n'
 import { buildSystemPrompt, buildSystemPromptRu } from './system'
-import { simplerEn, taskPromptsEn } from './tasks.en'
-import { simplerRu, taskPromptsRu } from './tasks.ru'
+import { checkEn, simplerEn, taskPromptsEn } from './tasks.en'
+import { checkRu, simplerRu, taskPromptsRu } from './tasks.ru'
 
 /** Bump on any prompt-text or parameter change; logged/verifiable. */
-export const PROMPTS_VERSION = '2026-10-05.1'
+export const PROMPTS_VERSION = '2026-10-07.1'
 
-export type TaskId = 'solve' | 'quiz' | 'explain' | 'translate' | 'summarize'
-/** Everything that starts a turn: a task button, a free question, or "simpler". */
-export type TurnKind = TaskId | 'ask' | 'simpler'
+export type TaskId = 'solve' | 'quiz' | 'explain' | 'translate' | 'summarize' | 'hint'
+/** Everything that starts a turn: a task button, a free question, "simpler", or checking an attempt. */
+export type TurnKind = TaskId | 'ask' | 'simpler' | 'check'
 
 export interface PromptContext {
   answerLanguage: AnswerLanguage
@@ -52,6 +52,13 @@ export function taskPrompt(task: TaskId, ctx: PromptContext): string {
     : taskPromptsEn[task](targetLanguageName(ctx))
 }
 
+export function checkPrompt(attempt: string, ctx: PromptContext): string {
+  if (!attempt.trim()) throw new Error('Enter a student attempt to check.')
+  return isRussian(ctx)
+    ? checkRu(attempt, ruLanguageName(ctx))
+    : checkEn(attempt, targetLanguageName(ctx))
+}
+
 export function simplerPrompt(ctx: PromptContext): string {
   return isRussian(ctx)
     ? simplerRu(ruLanguageName(ctx))
@@ -66,6 +73,8 @@ const TURN_PARAMS: Record<TurnKind, { temperature: number; maxTokens: number }> 
   translate: { temperature: 0, maxTokens: 2048 },
   explain: { temperature: 0.3, maxTokens: 2048 },
   summarize: { temperature: 0.3, maxTokens: 1024 },
+  hint: { temperature: 0.3, maxTokens: 512 },
+  check: { temperature: 0, maxTokens: 1024 },
   ask: { temperature: 0.3, maxTokens: 2048 },
   simpler: { temperature: 0.3, maxTokens: 1536 },
 }

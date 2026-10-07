@@ -409,6 +409,27 @@ try {
   check(requestCount === beforeReadFailure && await settingsReadFailure.locator('.msg').count() === 0, 'failed settings read is visible and cannot silently switch to defaults or start a request')
   await settingsReadFailure.close()
 
+  const rapid = await openCapture()
+  const beforeRapid = requestCount
+  responseMode = 'slow'
+  await rapid.evaluate(() => {
+    const originalGet = chrome.storage.local.get.bind(chrome.storage.local)
+    chrome.storage.local.get = async (...args) => {
+      await new Promise(resolve => setTimeout(resolve, 80))
+      return originalGet(...args)
+    }
+    // Dispatch both handlers even after the first disables its button: exercise
+    // the asynchronous reservation invariant, not just disabled DOM controls.
+    for (const kind of ['hint', 'solve']) document.querySelector(`[data-preset="${kind}"]`).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await rapid.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.includes('Hello'))
+  check(requestCount === beforeRapid + 1 && await rapid.locator('.msg.user').count() === 1 && await rapid.locator('#ask-btn').textContent() === 'Stop' && !await rapid.locator('#ask-btn').isDisabled(), 'rapid same-page events reserve one start before settings resolve and retain its Stop controller')
+  await rapid.click('#ask-btn')
+  await waitSaved(rapid, 'Stopped')
+  check((await readSaved(rapid)).conversations.find(c => c.id === (rapid.url().match(/conversation=([^&]+)/)?.[1])).turns.at(-1).status === 'cancelled', 'the surviving same-page request can still be cancelled and saved')
+  await rapid.close()
+  responseMode = 'normal'
+
   const hint = await openCapture()
   await hint.setViewportSize({ width: 480, height: 660 })
   await hint.click('[data-preset="hint"]')
@@ -569,9 +590,13 @@ try {
   const navigation = await readSaved(duplicate)
   check(navigation.conversations.find(c => c.id === nativeId).turns.at(-1).status === 'interrupted' && !navigation.state.generation, 'navigation releases the writer and retains the last committed partial as interrupted')
   responseMode = 'normal'
+  await duplicate.fill('#ask-input', 'Previous task question')
+  await duplicate.click('#check-btn')
+  await duplicate.fill('#check-input', 'Previous task attempt\nsecond line')
   await duplicate.click('#new-chat-btn')
   await duplicate.waitForFunction(() => document.querySelectorAll('.msg').length === 0 && document.getElementById('crop-figure')?.hidden)
   check((await readSaved(duplicate)).state.lastConversationId !== nativeId, 'New chat creates a distinct empty conversation without a hidden prior image')
+  check(await duplicate.locator('#ask-input').inputValue() === '' && await duplicate.locator('#check-input').inputValue() === '' && await duplicate.locator('#check-form').isHidden(), 'New chat also clears drafts and the previous task attempt form')
   await duplicate.setViewportSize({ width: 340, height: 620 })
   await duplicate.click('#check-btn')
   await duplicate.screenshot({ path: join(evidence, 'narrow.png') })

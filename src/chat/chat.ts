@@ -500,14 +500,14 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
 
   const simpler = iconButton('simpler', t(uiLang, 'msg.simpler'))
   simpler.dataset.generation = '1'
-  simpler.onclick = () => void send(simplerPrompt(promptCtx()), 'simpler', t(uiLang, 'msg.simpler'))
+  simpler.onclick = () => void send(simplerPrompt(promptCtx()), 'simpler', t(uiLang, 'msg.simpler')).catch(reportError)
   actions.appendChild(simpler)
 
   if (canRegenerate) {
     const retry = iconButton('retry', t(uiLang, 'msg.retry'))
     retry.dataset.retry = '1'
     retry.dataset.generation = '1'
-    retry.onclick = () => void regenerate()
+    retry.onclick = () => void regenerate().catch(reportError)
     actions.appendChild(retry)
   }
 
@@ -544,6 +544,7 @@ async function requireSettings(): Promise<Settings | null> {
 async function streamReply(settings: Settings, user: Turn | null, source: Turn): Promise<boolean> {
   if (!conversation) return false
   const selectedId = conversation.id
+  const promptContext = { answerLanguage: settings.answerLanguage, uiLang: source.locale }
   const assistant: Turn = { id: crypto.randomUUID(), role: 'assistant', text: '', kind: source.kind, status: 'streaming', replyTo: source.id, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION }
   const controller = new AbortController()
   let lost = false
@@ -577,7 +578,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     const context = await requestContext({ ...conversation, turns: conversation.turns.slice(0, index + 1) }, async (id) => (await getAttachment(id))?.data)
     if (context.omitted) addMessage('note', t(uiLang, 'context.omitted', { count: context.omitted }))
     const result = await createGateway(settings).ask({
-      messages: [{ role: 'system', content: systemPrompt(promptCtx()) }, ...context.messages],
+      messages: [{ role: 'system', content: systemPrompt(promptContext) }, ...context.messages],
       ...turnParams(source.kind),
       signal: controller.signal,
       onDelta: (delta) => {
@@ -630,22 +631,33 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
 
 async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string): Promise<boolean> {
   if (!prompt.trim() || inflight || starting || !conversation) return false
-  const settings = await requireSettings()
-  if (!settings) return false
-  const text = kind === 'ask' ? prompt : kind === 'check' ? checkPrompt(input!, promptCtx()) : kind === 'simpler' ? simplerPrompt(promptCtx()) : taskPrompt(kind, promptCtx())
-  const label = kind === 'ask' ? display : kind === 'check' ? `${t(uiLang, 'preset.check')}\n${input}` : kind === 'simpler' ? t(uiLang, 'msg.simpler') : t(uiLang, `preset.${kind}`)
-  const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: conversation.activeAttachmentId }
-  generationDone = streamReply(settings, user, user)
-  return generationDone
+  // Reserve before the asynchronous settings read: rapid events in this page
+  // must not replace its Stop controller even if the worker rejects the loser.
+  starting = true
+  setBusy(true)
+  try {
+    const settings = await requireSettings()
+    if (!settings) return false
+    const text = kind === 'ask' ? prompt : kind === 'check' ? checkPrompt(input!, promptCtx()) : kind === 'simpler' ? simplerPrompt(promptCtx()) : taskPrompt(kind, promptCtx())
+    const label = kind === 'ask' ? display : kind === 'check' ? `${t(uiLang, 'preset.check')}\n${input}` : kind === 'simpler' ? t(uiLang, 'msg.simpler') : t(uiLang, `preset.${kind}`)
+    const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: conversation.activeAttachmentId }
+    generationDone = streamReply(settings, user, user)
+    return await generationDone
+  } finally { starting = false; updateStatus() }
 }
 
 async function regenerate(): Promise<void> {
   if (inflight || starting || !conversation) return
   const last = [...conversation.turns].reverse().find((turn) => turn.role === 'user')
-  const settings = await requireSettings()
-  if (!last || !settings) return
-  generationDone = streamReply(settings, null, last)
-  await generationDone
+  if (!last) return
+  starting = true
+  setBusy(true)
+  try {
+    const settings = await requireSettings()
+    if (!settings) return
+    generationDone = streamReply(settings, null, last)
+    await generationDone
+  } finally { starting = false; updateStatus() }
 }
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
@@ -653,7 +665,7 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
     const task = btn.dataset.preset as TaskId | undefined
     if (!task) return
     // The bubble shows the button label; the full template goes to the model.
-    void send(taskPrompt(task, promptCtx()), task, t(uiLang, `preset.${task}`))
+    void send(taskPrompt(task, promptCtx()), task, t(uiLang, `preset.${task}`)).catch(reportError)
   })
 }
 

@@ -178,6 +178,7 @@ let chatPanel: HTMLDivElement | undefined
 let chatFrame: HTMLIFrameElement | undefined
 let launcher: HTMLButtonElement | undefined
 let chatLang: 'en' | 'ru' = 'en'
+let hostMessages: ((event: MessageEvent) => void) | undefined
 
 /** User-resized panel size, persisted across pages/sessions. Loaded async;
  *  until it arrives (or if never resized) the defaults below apply. */
@@ -231,6 +232,8 @@ function showChat(state: ChatState): void {
   }
 
   const w = window as unknown as Record<string, unknown>
+  if (w[CHAT_FLAG] && !chatRoot) return // another injection owns the existing host
+  if (hostMessages) window.removeEventListener('message', hostMessages)
   chatRoot?.remove() // closed launcher is replaced, never duplicated
   w[CHAT_FLAG] = false
 
@@ -378,7 +381,7 @@ function showChat(state: ChatState): void {
   chatPanel = panel
   chatFrame = frame
   launcher = button
-  window.addEventListener('message', (event) => {
+  hostMessages = (event) => {
     const data = event.data
     const url = new URL(CHAT_URL)
     if (event.source !== frame.contentWindow || event.origin !== `${url.protocol}//${url.hostname}` || data?.source !== 'study-buddy-chat') return
@@ -392,7 +395,8 @@ function showChat(state: ChatState): void {
       close.setAttribute('aria-label', close.title)
       minimize.setAttribute('aria-label', minimize.title)
     }
-  })
+  }
+  window.addEventListener('message', hostMessages)
   w[CHAT_FLAG] = true
   positionPanel(state.kind === 'capture' ? state.rect : undefined)
 }
@@ -407,6 +411,8 @@ function postStateToChat(state: ChatState): void {
 }
 
 function removeChat(): void {
+  if (hostMessages) window.removeEventListener('message', hostMessages)
+  hostMessages = undefined
   chatPanel?.remove()
   if (launcher) {
     launcher.hidden = false

@@ -321,8 +321,9 @@ function renderAnswer(node: HTMLElement, text: string): void {
 let conversation: Conversation | undefined
 let profileState: ConversationState = { id: 'state', lastStartedAt: 0 }
 let opening = 0
+let rendering = 0
 let starting = false
-let generationDone: Promise<void> | undefined
+let generationDone: Promise<boolean> | undefined
 const unsaved = new Map<string, Turn>()
 const imageUrls = new Map<string, string>()
 let inflight: AbortController | null = null
@@ -340,6 +341,8 @@ async function imageUrl(id: string): Promise<string> {
   if (cached) return cached
   const attachment = await getAttachment(id)
   if (!attachment) throw new Error('context.imageMissing')
+  const existing = imageUrls.get(id)
+  if (existing) return existing
   const url = URL.createObjectURL(attachment.data)
   imageUrls.set(id, url)
   return url
@@ -362,11 +365,14 @@ async function openConversation(id: string): Promise<void> {
 
 async function renderConversation(): Promise<void> {
   if (!conversation) return
+  const epoch = ++rendering
   const selected = conversation
   el('conversation-title').textContent = selected.title
   lightbox.classList.remove('open')
   if (selected.activeAttachmentId) {
-    img.src = await imageUrl(selected.activeAttachmentId)
+    const url = await imageUrl(selected.activeAttachmentId)
+    if (epoch !== rendering) return
+    img.src = url
     el('crop-figure').hidden = false
   } else {
     img.removeAttribute('src')
@@ -382,6 +388,7 @@ async function renderConversation(): Promise<void> {
       thumbnail.className = 'turn-image'
       thumbnail.alt = t(uiLang, 'dialog.attachment')
       thumbnail.src = await imageUrl(turn.attachmentId)
+      if (epoch !== rendering) return
       thumbnail.onclick = () => { lightboxImg.src = thumbnail.src; lightbox.classList.add('open') }
       msg.wrap.appendChild(thumbnail)
     }
@@ -533,8 +540,8 @@ async function requireSettings(): Promise<Settings | null> {
 }
 
 /** Persist the accepted turn before any provider operation; only this port writes. */
-async function streamReply(settings: Settings, user: Turn | null, source: Turn): Promise<void> {
-  if (!conversation) return
+async function streamReply(settings: Settings, user: Turn | null, source: Turn): Promise<boolean> {
+  if (!conversation) return false
   const selectedId = conversation.id
   const assistant: Turn = { id: crypto.randomUUID(), role: 'assistant', text: '', kind: source.kind, status: 'streaming', replyTo: source.id, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION }
   const controller = new AbortController()
@@ -591,8 +598,8 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     acc = result.text
     status = result.status
   } catch (err) {
-    if (!reply) { reportError(err); return }
-    status = lost ? 'interrupted' : controller.signal.aborted ? 'cancelled' : err instanceof ApiError && ['network', 'interrupted', 'response'].includes(err.kind) ? 'interrupted' : 'provider_error'
+    if (!reply) { reportError(err); return false }
+    status = lost || storageFailed ? 'interrupted' : controller.signal.aborted ? 'cancelled' : err instanceof ApiError && ['network', 'interrupted', 'response'].includes(err.kind) ? 'interrupted' : 'provider_error'
     error = err instanceof ApiError ? err.message : undefined
   } finally {
     if (timer) clearTimeout(timer)
@@ -617,15 +624,18 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     await refreshStatus().catch(reportError)
     scrollThread()
   }
+  return true
 }
 
-async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string): Promise<void> {
-  if (!prompt.trim() || inflight || starting || !conversation) return
+async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string): Promise<boolean> {
+  if (!prompt.trim() || inflight || starting || !conversation) return false
   const settings = await requireSettings()
-  if (!settings) return
-  const user: Turn = { id: crypto.randomUUID(), role: 'user', text: prompt, display, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: conversation.activeAttachmentId }
+  if (!settings) return false
+  const text = kind === 'ask' ? prompt : kind === 'check' ? checkPrompt(input!, promptCtx()) : kind === 'simpler' ? simplerPrompt(promptCtx()) : taskPrompt(kind, promptCtx())
+  const label = kind === 'ask' ? display : kind === 'check' ? `${t(uiLang, 'preset.check')}\n${input}` : kind === 'simpler' ? t(uiLang, 'msg.simpler') : t(uiLang, `preset.${kind}`)
+  const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: conversation.activeAttachmentId }
   generationDone = streamReply(settings, user, user)
-  await generationDone
+  return generationDone
 }
 
 async function regenerate(): Promise<void> {
@@ -655,7 +665,9 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   }
   const input = el('ask-input') as HTMLInputElement
   const question = input.value
-  if (question.trim()) { input.value = ''; void send(question).catch(reportError) }
+  if (question.trim()) void send(question).then((accepted) => {
+    if (accepted && input.value === question) input.value = ''
+  }).catch(reportError)
 })
 
 el('check-btn').onclick = () => {
@@ -781,7 +793,7 @@ window.addEventListener('message', (e: MessageEvent) => {
     inflight?.abort()
     void (async () => {
       await generationDone
-      if (unsaved.size) { reportError(new Error('storage.write')); return }
+      if (unsaved.size && !confirm(t(uiLang, 'dialog.closeUnsaved'))) { reportError(new Error('storage.write')); return }
       window.parent.postMessage({ source: 'study-buddy-chat', action: 'closed' }, '*')
     })().catch(reportError)
   }

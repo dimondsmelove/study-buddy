@@ -9,7 +9,7 @@ export interface Turn {
   role: 'user' | 'assistant'
   text: string
   display?: string
-  kind: TurnKind | 'hint' | 'check'
+  kind: TurnKind
   attachmentId?: string
   status?: ReplyStatus
   error?: string

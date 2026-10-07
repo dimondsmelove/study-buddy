@@ -106,6 +106,7 @@ const ctx = await chromium.launchPersistentContext(profile, {
 
 const pageErrors = []
 ctx.on('page', (p) => p.on('pageerror', (err) => pageErrors.push(String(err))))
+await ctx.route('https://**/*', route => route.abort()) // fail closed on accidental non-mock provider use
 
 try {
   let [sw] = ctx.serviceWorkers()
@@ -225,7 +226,7 @@ try {
   const settings = await ctx.newPage()
   await settings.goto(`${chatOrigin}/src/chat/chat.html?kind=error&message=Settings%20fixture`)
   await settings.waitForSelector('#view-error:not([hidden])')
-  check(true, 'bare chat page shows the no-state error view')
+  check(true, 'explicit error state retains the settings rescue path')
   await settings.click('#view-error:not([hidden]) [data-goto-settings]')
   await settings.waitForSelector('#view-settings:not([hidden])')
   check(true, 'settings view opens from the error view')
@@ -410,6 +411,11 @@ try {
   await hint.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 2)
   await waitSaved(hint, 'Complete')
   check(lastAiRequest.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length === 1, 'attachment sent once across multiple turns')
+  await resetCooldown(hint)
+  await hint.click('[data-retry]')
+  await hint.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 3)
+  await waitSaved(hint, 'Complete')
+  check(await hint.locator('.msg.user').count() === 2 && lastAiRequest.max_tokens === 2048, 'explicit Regenerate preserves the source user turn and its original turn budget')
 
   const checked = await openCapture()
   await checked.setViewportSize({ width: 480, height: 660 })
@@ -430,6 +436,7 @@ try {
   await checked.click('#ask-btn')
   await checked.waitForTimeout(100)
   check(requestCount === beforeCooldown, 'accepted start imposes the ten-second interval without a queued request')
+  check(await checked.inputValue('#ask-input') === 'Too soon', 'a rejected start retains the typed question instead of silently clearing it')
   await checked.click('#history-btn')
   await checked.screenshot({ path: join(evidence, 'history.png') })
   const row = checked.locator('.history-row').filter({ hasText: '2(x+3)=10' })
@@ -454,6 +461,34 @@ try {
     check(saved.conversations.find(c => c.id === saved.state.lastConversationId).turns.at(-1).status === status, `${status} preserves partial text and its actual saved status`)
     await p.close()
   }
+  responseMode = 'normal'
+  const quota = await openCapture()
+  responseMode = 'slow'
+  await quota.click('[data-preset="hint"]')
+  await quota.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.includes('Hello'))
+  await sw.evaluate(() => {
+    const original = IDBObjectStore.prototype.put
+    const handler = event => event.preventDefault()
+    self.addEventListener('error', handler, { once: true })
+    IDBObjectStore.prototype.put = function (...args) {
+      if (this.name === 'conversations') {
+        IDBObjectStore.prototype.put = original
+        throw new DOMException('expected synthetic quota failure', 'QuotaExceededError')
+      }
+      return original.apply(this, args)
+    }
+  })
+  await waitSaved(quota, 'Not saved')
+  check(await quota.locator('#operation-error').isVisible(), 'mid-stream quota failure stops the request and keeps a visible unsaved-text warning')
+  await quota.click('#history-btn')
+  const quotaDb = await readSaved(quota)
+  const quotaId = quotaDb.state.lastConversationId
+  const quotaRow = quota.locator('.history-row').filter({ has: quota.locator('.history-open').filter({ hasText: 'Hint' }) }).first()
+  const quotaDownload = quota.waitForEvent('download')
+  await quotaRow.getByRole('button', { name: 'Export JSON' }).click()
+  const quotaJson = JSON.parse(readFileSync(await (await quotaDownload).path(), 'utf8'))
+  check(quotaJson.conversation.id === quotaId && quotaJson.conversation.turns.at(-1).text.startsWith('Hello'), 'export rescues the latest visible partial after a failed write')
+  await quota.close()
   responseMode = 'normal'
   await hint.close()
   await checked.close()
@@ -545,9 +580,70 @@ try {
   }), raceId)
   const races = await Promise.all([admission(duplicate), admission(racePeer)])
   check(races.filter(r => r.ok).length === 1 && races.some(r => !r.ok && /dialog.busy|dialog.cooldown/.test(r.error)), 'two concurrent native window starts admit exactly one writer')
+  await sw.evaluate(() => {
+    globalThis.fixtureOriginalNow = Date.now
+    globalThis.fixtureNow = 1_000_000
+    Date.now = () => globalThis.fixtureNow
+  })
+  try {
+    await resetCooldown(duplicate)
+    const atZero = await admission(duplicate)
+    await sw.evaluate(() => { globalThis.fixtureNow += 9999 })
+    const early = await admission(racePeer)
+    await sw.evaluate(() => { globalThis.fixtureNow += 1 })
+    const boundary = await admission(racePeer)
+    check(atZero.ok && !early.ok && early.error === 'dialog.cooldown:1' && boundary.ok, 'native coordinator rejects t=9.999s and admits t=10s across windows')
+  } finally { await sw.evaluate(() => { Date.now = globalThis.fixtureOriginalNow; delete globalThis.fixtureNow; delete globalThis.fixtureOriginalNow }) }
   check(JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8')).incognito === 'not_allowed', 'incognito is explicitly disabled')
   await racePeer.close()
+
+  await page.bringToFront()
+  await duplicate.evaluate(() => chrome.runtime.sendMessage({ type: 'START_SELECTION' }))
+  await page.waitForSelector('[data-study-buddy="overlay"]')
+  await page.mouse.move(60, 160)
+  await page.mouse.down()
+  await page.mouse.move(180, 210, { steps: 5 })
+  await page.mouse.up()
+  await page.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
+  const recaptured = page.frames().find(f => f.url().startsWith(chatOrigin))
+  await recaptured.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+  const recaptureDb = await readSaved(recaptured)
+  const recaptureDialog = recaptureDb.conversations.find(c => c.id === nativeId)
+  check(recaptureDb.state.lastConversationId === nativeId && recaptureDialog.activeAttachmentId !== capture.id && recaptureDialog.turns[0].attachmentId === capture.id, 'new capture continues the tab-selected dialog while keeping old turn attachment links')
+  await resetCooldown(recaptured)
+  const oldCount = await recaptured.locator('.msg.assistant').count()
+  await recaptured.fill('#ask-input', 'Use the newly selected task')
+  await recaptured.click('#ask-btn')
+  await recaptured.waitForFunction(count => document.querySelectorAll('.msg.assistant').length > count, oldCount)
+  await waitSaved(recaptured, 'Complete')
+  check(lastAiRequest.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length === 2, 'multi-capture request retains at most two unique source images')
   await duplicate.close()
+
+  // Actual browser restart with the same isolated profile, not just page reload.
+  await ctx.close()
+  const restarted = await chromium.launchPersistentContext(profile, { channel: 'chromium', args: [`--disable-extensions-except=${distTest}`, `--load-extension=${distTest}`] })
+  await restarted.route('https://**/*', route => route.abort())
+  restarted.on('page', p => p.on('pageerror', err => pageErrors.push(String(err))))
+  try {
+    const resumed = await restarted.newPage()
+    await resumed.goto(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${nativeId}`)
+    await waitSaved(resumed, 'Complete')
+    await resumed.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+    const volatile = await resumed.evaluate(() => chrome.storage.session.get())
+    check(!Object.keys(volatile).some(k => k.startsWith('capture.')), 'browser restart clears session crops without losing saved Blob attachments')
+    check((await readSaved(resumed)).conversations.find(c => c.id === nativeId).turns.at(-1).status === 'complete', 'full browser restart preserves transcript/status and settings')
+    const privilegedEvent = restarted.waitForEvent('page')
+    await resumed.evaluate(() => chrome.tabs.create({ url: 'chrome://version' }))
+    const privileged = await privilegedEvent
+    await privileged.waitForURL(/chrome:\/\/version/)
+    await privileged.bringToFront()
+    const popupEvent = restarted.waitForEvent('page')
+    await resumed.evaluate(() => chrome.runtime.sendMessage({ type: 'RESTORE_CHAT' }))
+    const popup = await popupEvent
+    await popup.waitForURL(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${nativeId}`)
+    await waitSaved(popup, 'Complete')
+    check(true, 'restricted-page restore uses a detached popup bound to the same saved conversation')
+  } finally { await restarted.close() }
 
   writeFileSync(join(evidence, 'runtime.json'), JSON.stringify({ requestCount, pageErrors, fixture: 'localhost mock only', physicalShortcut: 'not dispatched by headless Chromium' }, null, 2))
 

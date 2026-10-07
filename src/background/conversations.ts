@@ -25,8 +25,11 @@ async function selectedForTab(tabId?: number): Promise<Conversation | undefined>
   const key = `dialog.tab.${tabId}`
   const saved = tabId === undefined ? {} : await chrome.storage.session.get(key)
   const state = await getConversationState()
-  const id = saved[key] ?? state.lastConversationId
-  return typeof id === 'string' ? getConversation(id) : undefined
+  if (typeof saved[key] === 'string') {
+    const selected = await getConversation(saved[key])
+    if (selected) return selected
+  }
+  return state.lastConversationId ? getConversation(state.lastConversationId) : undefined
 }
 
 async function remember(id: string, tabId?: number): Promise<void> {

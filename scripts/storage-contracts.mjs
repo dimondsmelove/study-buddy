@@ -48,7 +48,14 @@ try {
     const bounded = c.contextTurns(many)
     let oversizeRejected = false
     try { c.contextTurns({ ...first, turns: [{ ...user, text: 'x'.repeat(32_001) }] }) } catch { oversizeRejected = true }
-    return { recovered: recovered.turns.at(-1), state, bytes, quotaRejected, preserved, sharedKept, orphanRemoved, empty, bounded: { count: bounded.turns.length, ids: bounded.turns.map(t => t.id), omitted: bounded.omitted }, oversizeRejected, cooldown: [c.cooldownRemaining(100, 10099), c.cooldownRemaining(100, 10100)] }
+    const images = { ...first, turns: ['old', 'recent', 'current'].map((id) => ({ ...user, id, attachmentId: id })) }
+    const sourceSnapshot = JSON.stringify(images)
+    const context = await c.requestContext(images, async () => image.data)
+    const imageCount = context.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length
+    let imageLarge = false, imageMissing = false
+    try { await c.requestContext(images, async () => new Blob([new Uint8Array(4 * 1024 * 1024 + 1)])) } catch (err) { imageLarge = err.message === 'context.imageLarge' }
+    try { await c.requestContext(images, async () => undefined) } catch (err) { imageMissing = err.message === 'context.imageMissing' }
+    return { recovered: recovered.turns.at(-1), state, bytes, quotaRejected, preserved, sharedKept, orphanRemoved, empty, bounded: { count: bounded.turns.length, ids: bounded.turns.map(t => t.id), omitted: bounded.omitted }, oversizeRejected, imageCount, imageLarge, imageMissing, contextPreserved: JSON.stringify(images) === sourceSnapshot, cooldown: [c.cooldownRemaining(100, 10099), c.cooldownRemaining(100, 10100)] }
   })
   assert.equal(result.recovered.text, 'partial response')
   assert.equal(result.recovered.status, 'interrupted')
@@ -60,6 +67,8 @@ try {
   assert.ok(result.bounded.ids.includes('turn-4'))
   assert.ok(result.bounded.ids.includes('turn-39'))
   assert.deepEqual(result.cooldown, [1, 0])
+  assert.equal(result.imageCount, 2)
+  for (const key of ['imageLarge', 'imageMissing', 'contextPreserved']) assert.equal(result[key], true, key)
   await page.reload()
   await page.addScriptTag({ content: compiled.outputFiles[0].text })
   assert.equal(await page.evaluate(async () => (await contracts.listConversations())[0].title), 'Survives reload')

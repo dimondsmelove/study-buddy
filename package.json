@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "contracts": "node scripts/contracts.mjs",
     "verify": "node scripts/verify.mjs",
     "playtest": "npm run build && node scripts/playtest.mjs",
     "quality": "npm run build && node scripts/quality.mjs",

@@ -18,12 +18,11 @@ import 'katex/dist/katex.min.css'
 
 import type { ApiContent, ApiMessage } from '../shared/api'
 import { modelLabel } from '../shared/ai'
-import { DEFAULT_API_KEY, DEFAULT_BASE_URL } from '../shared/config'
 import { createGateway } from '../shared/gateway'
 import type { ChatState, Rect, StoredCapture } from '../shared/messages'
 import { CAPTURE_PREFIX } from '../shared/messages'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
-import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
+import { DEFAULT_SETTINGS, getSettings, normalizeBaseUrl, resolveSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
 import { simplerPrompt, systemPrompt, taskPrompt, turnParams, type TaskId, type TurnKind } from '../shared/prompts'
@@ -96,20 +95,11 @@ async function loadSettings(): Promise<Settings> {
 }
 
 async function updateSettings(next: Settings): Promise<void> {
+  await setSettings(next)
   settingsCache = next
   uiLang = resolveUiLang(next.uiLanguage, browserLang())
   applyI18n()
   fillLanguageSelects()
-  await setSettings(next)
-}
-
-/** Settings with the baked defaults filled in: a shipped build always has a key. */
-function effectiveSettings(): Settings {
-  return {
-    ...settingsCache,
-    baseUrl: settingsCache.baseUrl || DEFAULT_BASE_URL,
-    apiKey: settingsCache.apiKey || DEFAULT_API_KEY,
-  }
 }
 
 // ── views ────────────────────────────────────────────────────────────────────
@@ -234,21 +224,24 @@ function restoreView(): void {
   // check is the actual gate, not mere parseability. Empty = use the default.
   if (baseUrlInput) {
     try {
-      const u = new URL(baseUrlInput)
-      if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('not http(s)')
+      normalizeBaseUrl(baseUrlInput)
     } catch {
       setMsg(t(uiLang, 'err.badUrl'))
       return
     }
   }
-  await updateSettings({
+  try {
+    await updateSettings({
     provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
     baseUrl: baseUrlInput,
     apiKey: (el('set-api-key') as HTMLInputElement).value.trim(),
     uiLanguage: (el('set-ui-lang') as HTMLSelectElement).value as UiLanguage,
     answerLanguage: (el('set-ans-lang') as HTMLSelectElement).value as AnswerLanguage,
-  })
-  restoreView()
+    })
+    restoreView()
+  } catch {
+    setMsg(t(uiLang, 'err.storage'))
+  }
 }
 
 ;(el('set-back') as HTMLButtonElement).onclick = () => restoreView()
@@ -434,14 +427,18 @@ function setBusy(busy: boolean): void {
 /** With a baked key this always succeeds; the settings detour is the dev-only
  *  path when a build carries no key and none was entered. */
 async function requireSettings(): Promise<Settings | null> {
-  const settings = effectiveSettings()
-  if (settings.apiKey) return settings
-  openSettings(t(uiLang, 'err.needKey'))
+  try {
+    const settings = resolveSettings(settingsCache)
+    if (settings.apiKey) return settings
+    openSettings(t(uiLang, 'err.needKey'))
+  } catch {
+    openSettings(t(uiLang, 'err.badUrl'))
+  }
   return null
 }
 
 /** Stream the answer to the current `history` into a fresh bubble. */
-async function streamReply(): Promise<void> {
+async function streamReply(settings: Settings): Promise<void> {
   const reply = addMessage('assistant', '…')
   const controller = new AbortController()
   inflight = controller
@@ -449,7 +446,7 @@ async function streamReply(): Promise<void> {
   let acc = ''
   try {
     const { temperature, maxTokens } = turnParams(currentTurn)
-    await createGateway(settingsCache).ask({
+    await createGateway(settings).ask({
       messages: [{ role: 'system', content: systemPrompt(promptCtx()) }, ...history],
       temperature,
       maxTokens,
@@ -516,18 +513,20 @@ async function send(prompt: string, kind: TurnKind = 'ask', display?: string): P
   if (activeImage) content.push({ type: 'image_url', image_url: { url: activeImage } })
   history.push({ role: 'user', content })
   addMessage('user', display ?? text)
-  await streamReply()
+  await streamReply(settings)
 }
 
 /** Re-ask the last user turn: drop the last assistant answer and re-run. */
 async function regenerate(): Promise<void> {
   if (inflight) return
   if (history[history.length - 1]?.role !== 'assistant') return
+  const settings = await requireSettings()
+  if (!settings) return
   history.pop()
   const assistants = thread.querySelectorAll('.msg.assistant')
   assistants[assistants.length - 1]?.remove()
   scrollThread()
-  await streamReply()
+  await streamReply(settings)
 }
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {

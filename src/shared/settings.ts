@@ -10,6 +10,8 @@
 // The model is NOT here: it is fixed by the fallback chain in ai.ts, so the
 // user never picks one.
 
+import { DEFAULT_API_KEY, DEFAULT_BASE_URL } from './config'
+
 /** UI chrome language. 'auto' follows the browser. */
 export type UiLanguage = 'auto' | 'en' | 'ru'
 
@@ -58,13 +60,14 @@ const ANSWER_LANGUAGES: AnswerLanguage[] = [
 export async function getSettings(): Promise<Settings> {
   try {
     const got = await chrome.storage.local.get(SETTINGS_KEY)
-    const stored = (got[SETTINGS_KEY] ?? {}) as Partial<Settings>
+    const value: unknown = got[SETTINGS_KEY]
+    const stored = (value && typeof value === 'object' ? value : {}) as Partial<Settings>
     return {
       // Union fields must not leak an unexpected stored value into typed
       // callers, so anything unknown falls back to the default.
       provider: stored.provider === 'custom' ? 'custom' : 'openrouter',
-      baseUrl: stored.baseUrl ?? DEFAULT_SETTINGS.baseUrl,
-      apiKey: stored.apiKey ?? DEFAULT_SETTINGS.apiKey,
+      baseUrl: typeof stored.baseUrl === 'string' ? stored.baseUrl : DEFAULT_SETTINGS.baseUrl,
+      apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : DEFAULT_SETTINGS.apiKey,
       uiLanguage: UI_LANGUAGES.includes(stored.uiLanguage as UiLanguage)
         ? (stored.uiLanguage as UiLanguage)
         : DEFAULT_SETTINGS.uiLanguage,
@@ -76,6 +79,29 @@ export async function getSettings(): Promise<Settings> {
     // Storage can fail (quota, transient API errors); failing open to the
     // defaults matches the rest of the extension's error handling.
     return { ...DEFAULT_SETTINGS }
+  }
+}
+
+/** Normalize before checking configuration or constructing a gateway. */
+export function normalizeBaseUrl(value: string): string {
+  const url = new URL(value.trim())
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error('Base URL must be an http(s) endpoint without credentials, query or fragment.')
+  }
+  return url.href.replace(/\/+$/, '')
+}
+
+/** A baked credential belongs only to its baked endpoint, never a custom URL. */
+export function resolveSettings(
+  settings: Settings,
+  defaults = { apiKey: DEFAULT_API_KEY, baseUrl: DEFAULT_BASE_URL },
+): Settings {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl || defaults.baseUrl)
+  const defaultUrl = normalizeBaseUrl(defaults.baseUrl)
+  return {
+    ...settings,
+    baseUrl,
+    apiKey: settings.apiKey.trim() || (baseUrl === defaultUrl ? defaults.apiKey : ''),
   }
 }
 

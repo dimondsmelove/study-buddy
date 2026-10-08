@@ -324,6 +324,7 @@ let profileState: ConversationState = { id: 'state', lastStartedAt: 0 }
 let opening = 0
 let rendering = 0
 let starting = false
+let closing = false
 let generationDone: Promise<boolean> | undefined
 const unsaved = new Map<string, Turn>()
 const imageUrls = new Map<string, string>()
@@ -637,7 +638,7 @@ async function send(prompt: string, kind: TurnKind = 'ask', display?: string, in
   setBusy(true)
   try {
     const settings = await requireSettings()
-    if (!settings) return false
+    if (!settings || closing) return false
     const text = kind === 'ask' ? prompt : kind === 'check' ? checkPrompt(input!, promptCtx()) : kind === 'simpler' ? simplerPrompt(promptCtx()) : taskPrompt(kind, promptCtx())
     const label = kind === 'ask' ? display : kind === 'check' ? `${t(uiLang, 'preset.check')}\n${input}` : kind === 'simpler' ? t(uiLang, 'msg.simpler') : t(uiLang, `preset.${kind}`)
     const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: conversation.activeAttachmentId }
@@ -654,7 +655,7 @@ async function regenerate(): Promise<void> {
   setBusy(true)
   try {
     const settings = await requireSettings()
-    if (!settings) return
+    if (!settings || closing) return
     generationDone = streamReply(settings, null, last)
     await generationDone
   } finally { starting = false; updateStatus() }
@@ -807,12 +808,27 @@ window.addEventListener('message', (e: MessageEvent) => {
   if (e.source !== window.parent || window.parent === window || data?.source !== 'study-buddy-host') return
   if (data.state) apply(data.state)
   if (data.action === 'close') {
+    const closingConversationId = conversation?.id
+    closing = true
     inflight?.abort()
     void (async () => {
       await generationDone
-      if (unsaved.size && !confirm(t(uiLang, 'dialog.closeUnsaved'))) { reportError(new Error('storage.write')); return }
-      window.parent.postMessage({ source: 'study-buddy-chat', action: 'closed' }, '*')
+      if (unsaved.size && !confirm(t(uiLang, 'dialog.closeUnsaved'))) {
+        closing = false
+        reportError(new Error('storage.write'))
+        return
+      }
+      window.parent.postMessage({ source: 'study-buddy-chat', action: 'closed', conversationId: closingConversationId }, '*')
     })().catch(reportError)
+  }
+  if (data.action === 'close-cancelled') {
+    closing = false
+    updateStatus()
+  }
+  if (data.action === 'close-failed') {
+    closing = false
+    updateStatus()
+    reportError(new Error('storage.write'))
   }
 })
 

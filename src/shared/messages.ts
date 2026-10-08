@@ -65,6 +65,12 @@ export interface CaptureFailed {
   message: string
 }
 
+/** content script → SW after the chat has saved/cancelled and closed itself. */
+export interface DialogClosed {
+  type: 'DIALOG_CLOSED'
+  conversationId?: string
+}
+
 /** SW → overlay: embed the chat window with this state (create or reuse). */
 export interface ShowChat {
   type: 'SHOW_CHAT'
@@ -99,6 +105,7 @@ export type Message =
   | CaptureRequest
   | SelectionCancelled
   | CaptureFailed
+  | DialogClosed
   | ShowChat
   | HideChat
   | PermissionGranted

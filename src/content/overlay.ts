@@ -184,8 +184,10 @@ let chatPanel: HTMLDivElement | undefined
 let chatFrame: HTMLIFrameElement | undefined
 let launcher: HTMLButtonElement | undefined
 let errorNotice: HTMLDivElement | undefined
+let activeConversationId: string | undefined
 let chatLang: 'en' | 'ru' = 'en'
 let selectionRestoreState: 'open' | 'minimized' | undefined
+let selectionRestoreNotice: { hidden: boolean; display: string } | undefined
 let hostMessages: ((event: MessageEvent) => void) | undefined
 
 /** User-resized panel size, persisted across pages/sessions. Loaded async;
@@ -230,8 +232,15 @@ function chatUrlParams(state: ChatState): Record<string, string> {
  *  conversation keeps its context); a new state is relayed in via postMessage
  *  instead of reloading the iframe. */
 function showChat(state: ChatState): void {
+  const nextConversationId = state.kind === 'capture' || state.kind === 'conversation' ? state.conversationId : undefined
   if (chatFrame) {
+    if (activeConversationId && nextConversationId && activeConversationId !== nextConversationId) {
+      const url = new URL(CHAT_URL)
+      chatFrame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close-cancelled' }, `${url.protocol}//${url.hostname}`)
+    }
+    activeConversationId = nextConversationId
     selectionRestoreState = undefined
+    selectionRestoreNotice = undefined
     if (chatPanel) chatPanel.style.display = 'flex'
     if (chatPanel) chatPanel.style.visibility = 'visible'
     if (launcher) launcher.hidden = true
@@ -247,6 +256,7 @@ function showChat(state: ChatState): void {
 
   const w = window as unknown as Record<string, unknown>
   if (w[CHAT_FLAG] && !chatRoot) return // another injection owns the existing host
+  activeConversationId = nextConversationId
   if (hostMessages) window.removeEventListener('message', hostMessages)
   chatRoot?.remove() // closed launcher is replaced, never duplicated
   w[CHAT_FLAG] = false
@@ -349,13 +359,23 @@ function showChat(state: ChatState): void {
   shadow.appendChild(panel)
   const button = document.createElement('button')
   button.type = 'button'
-  button.textContent = 'Study Buddy'
   button.setAttribute('aria-label', 'Restore Study Buddy')
-  button.style.cssText = 'position:fixed;right:24px;bottom:24px;border:1px solid #4f9cff;border-radius:24px;background:#111827;color:white;padding:12px 18px;font:13px system-ui;cursor:pointer;box-shadow:0 4px 18px #0004;max-width:260px'
+  button.title = 'Restore Study Buddy'
+  button.style.cssText = 'position:fixed;right:24px;bottom:24px;width:40px;height:40px;box-sizing:border-box;border:1px solid #4f9cff;border-radius:50%;background:#111827;color:white;padding:0;line-height:0;cursor:pointer;box-shadow:0 4px 18px #0004'
+  const icon = document.createElement('img')
+  icon.src = chrome.runtime.getURL('icons/icon32.png')
+  icon.alt = ''
+  icon.width = 24
+  icon.height = 24
+  icon.style.cssText = 'position:absolute;left:7px;top:7px;display:block'
+  icon.draggable = false
+  icon.setAttribute('aria-hidden', 'true')
+  button.appendChild(icon)
   button.hidden = true
   button.onclick = () => {
     if (chatFrame) {
       panel.style.display = 'flex'
+      panel.style.visibility = 'visible'
       button.hidden = true
       root.setAttribute('data-state', 'open')
       frame.focus()
@@ -416,11 +436,28 @@ function showChat(state: ChatState): void {
     const data = event.data
     const url = new URL(CHAT_URL)
     if (event.source !== frame.contentWindow || event.origin !== `${url.protocol}//${url.hostname}` || data?.source !== 'study-buddy-chat') return
-    if (data.action === 'closed') removeChat()
+    if (data.action === 'closed') {
+      const closingConversationId = data.conversationId
+      const failClose = () => {
+        if (chatRoot !== root || chatFrame !== frame ||
+          (typeof closingConversationId === 'string' && activeConversationId !== closingConversationId)) return
+        frame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close-failed' }, `${url.protocol}//${url.hostname}`)
+      }
+      if (typeof closingConversationId !== 'string') {
+        failClose()
+        return
+      }
+      void chrome.runtime.sendMessage({ type: 'DIALOG_CLOSED', conversationId: closingConversationId }).then((response) => {
+        if (chatRoot !== root || chatFrame !== frame || activeConversationId !== closingConversationId) return
+        if (response?.ok) removeChat()
+        else failClose()
+      }, failClose)
+    }
     if (data.action === 'status' && typeof data.text === 'string') {
       chatLang = data.lang === 'ru' ? 'ru' : 'en'
-      button.textContent = `Study Buddy · ${data.text}`
-      button.setAttribute('aria-label', chatLang === 'ru' ? 'Открыть Study Buddy' : 'Restore Study Buddy')
+      const label = chatLang === 'ru' ? 'Открыть Study Buddy' : 'Restore Study Buddy'
+      button.setAttribute('aria-label', data.text ? `${label} · ${data.text}` : label)
+      button.title = data.text ? `Study Buddy · ${data.text}` : label
       close.title = chatLang === 'ru' ? 'Закрыть и сохранить' : 'Close and save'
       minimize.title = chatLang === 'ru' ? 'Свернуть; продолжить ответ' : 'Minimize; keep answering'
       close.setAttribute('aria-label', close.title)
@@ -436,8 +473,15 @@ function prepareForSelection(): void {
   if (chatFrame && chatRoot && chatPanel && launcher && !selectionRestoreState) {
     selectionRestoreState = chatPanel.style.display === 'none' ? 'minimized' : 'open'
   }
+  if (errorNotice && !selectionRestoreNotice) {
+    selectionRestoreNotice = { hidden: errorNotice.hidden, display: errorNotice.style.display }
+  }
   if (chatPanel) chatPanel.style.visibility = 'hidden'
   if (launcher) launcher.hidden = true
+  if (errorNotice) {
+    errorNotice.hidden = true
+    errorNotice.style.display = 'none'
+  }
   if (chatRoot) chatRoot.setAttribute('data-state', 'selecting')
 }
 
@@ -449,6 +493,12 @@ function restoreAfterSelection(): void {
   chatPanel.style.display = state === 'open' ? 'flex' : 'none'
   launcher.hidden = state === 'open'
   chatRoot.setAttribute('data-state', state)
+  if (errorNotice && selectionRestoreNotice) {
+    errorNotice.hidden = selectionRestoreNotice.hidden
+    errorNotice.style.display = selectionRestoreNotice.display
+    selectionRestoreNotice = undefined
+  }
+  if (state === 'minimized') launcher.focus()
 }
 
 function captureFailed(message: string): void {
@@ -478,15 +528,15 @@ function postStateToChat(state: ChatState): void {
 function removeChat(): void {
   if (hostMessages) window.removeEventListener('message', hostMessages)
   hostMessages = undefined
-  chatPanel?.remove()
-  if (launcher) {
-    launcher.hidden = false
-    launcher.textContent = 'Study Buddy'
-    launcher.focus()
-  }
-  chatRoot?.setAttribute('data-state', 'closed')
+  chatRoot?.remove()
+  chatRoot = undefined
   chatPanel = undefined
   chatFrame = undefined
+  launcher = undefined
+  errorNotice = undefined
+  activeConversationId = undefined
+  selectionRestoreState = undefined
+  selectionRestoreNotice = undefined
   const w = window as unknown as Record<string, unknown>
   w[CHAT_FLAG] = false
 }

@@ -85,9 +85,7 @@ export function closeDialog(conversationId: string, tabId: number): Promise<void
 
 async function action(message: ConversationAction, tabId?: number): Promise<Conversation | undefined> {
   if (message.action === 'create') {
-    const conversation = await createConversation(message.title.slice(0, 80))
-    await remember(conversation.id, tabId)
-    return conversation
+    return createConversation(message.title.slice(0, 80))
   }
   const conversation = await getConversation(message.conversationId)
   if (!conversation) throw new Error('dialog.missing')

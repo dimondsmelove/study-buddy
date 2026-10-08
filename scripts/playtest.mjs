@@ -1,49 +1,41 @@
-// Turnkey manual test: launch a real (headed) Chromium with the built
-// extension already loaded and the OpenRouter key/model pre-seeded, open a
-// demo page with tasks in several languages and formats, and leave the window
-// open for you to drag-select on. Close the window to finish.
-//
-//   npm run playtest                 # default model
-//   npm run playtest -- <model-id>   # another model
-//
-// The key is read from ~/.config/study-buddy/credentials.json (or
-// OPENROUTER_API_KEY) and written only into this throwaway profile's
-// chrome.storage.local — never into the repo.
+// Launch a real-provider Chromium test session with a demo page. The profile
+// persists under ~/.config/study-buddy/playtest-profile; saved languages and
+// custom connections survive restarts. Close the browser window to finish.
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
-import { cpSync, rmSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(import.meta.url), '..', '..')
 const dist = join(root, 'dist')
+const profile = process.env.PLAYTEST_PROFILE?.trim()
+  ? resolve(process.env.PLAYTEST_PROFILE.trim())
+  : join(homedir(), '.config', 'study-buddy', 'playtest-profile')
+const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1'
 
-function creds() {
-  if (process.env.OPENROUTER_API_KEY) {
-    return { apiKey: process.env.OPENROUTER_API_KEY.trim(), baseUrl: 'https://openrouter.ai/api/v1' }
-  }
+function openRouterCredentials() {
+  const envKey = process.env.OPENROUTER_API_KEY?.trim()
+  if (envKey) return { apiKey: envKey, baseUrl: DEFAULT_BASE_URL }
   const file = join(homedir(), '.config', 'study-buddy', 'credentials.json')
-  const c = JSON.parse(readFileSync(file, 'utf8')).openrouter
-  if (!c?.apiKey) throw new Error(`No OpenRouter key in ${file}`)
-  return { apiKey: c.apiKey, baseUrl: c.baseUrl ?? 'https://openrouter.ai/api/v1' }
+  if (!existsSync(file)) return undefined
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    throw new Error('credentials.json is invalid JSON.')
+  }
+  const c = parsed?.openrouter
+  if (typeof c?.apiKey !== 'string' || !c.apiKey.trim()) return undefined
+  const baseUrl = typeof c.baseUrl === 'string' ? c.baseUrl.trim() : ''
+  return {
+    apiKey: c.apiKey.trim(),
+    baseUrl: baseUrl || DEFAULT_BASE_URL,
+  }
 }
 
-const { apiKey, baseUrl } = creds()
-
-// Test build: dist + host_permissions, so capture is authorized without the
-// activeTab gesture Playwright can't produce (a real user click still grants
-// it, but this removes one moving part). Production stays activeTab-only.
-const distTest = join(root, 'dist-test')
-rmSync(distTest, { recursive: true, force: true })
-cpSync(dist, distTest, { recursive: true })
-{
-  const mf = join(distTest, 'manifest.json')
-  const m = JSON.parse(readFileSync(mf, 'utf8'))
-  m.host_permissions = ['<all_urls>']
-  const { writeFileSync } = await import('node:fs')
-  writeFileSync(mf, JSON.stringify(m, null, 2))
-}
+mkdirSync(profile, { recursive: true })
 
 const DEMO = `<!doctype html><meta charset="utf-8"><title>Study Buddy — demo</title>
 <style>
@@ -58,7 +50,7 @@ const DEMO = `<!doctype html><meta charset="utf-8"><title>Study Buddy — demo</
  code{font:14px/1.5 ui-monospace,monospace}
  pre{margin:0;background:#f7f7f8;padding:10px;border-radius:8px;overflow:auto}
 </style>
-<header>Study Buddy demo — dragging a region here helps test. <b>Ctrl+Shift+Y</b> (or the toolbar icon) to select. ⚙ in the chat window to switch model, then click ↻ to load the list.</header>
+<header>Study Buddy demo — drag a region here to start. <b>Ctrl+Shift+Y</b> or the toolbar icon starts selection; chat appears after a successful crop.</header>
 <main>
  <section class="card"><h2>Math → Solve</h2>
    <p>Problem 3. A train travels 240 km in 3 hours, then 180 km in 2 hours.</p>
@@ -85,6 +77,7 @@ console.log(sum) // expected 6</code></pre></section>
    shape the ecosystem rather than freezing it at a chosen point.</p></section>
 </main>`
 
+const headless = process.env.PLAYTEST_HEADLESS === '1'
 const server = createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
   res.end(DEMO)
@@ -92,35 +85,115 @@ const server = createServer((_req, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const url = `http://127.0.0.1:${server.address().port}/`
 
-const profile = join('/tmp/opencode', 'study-buddy-playtest')
-rmSync(profile, { recursive: true, force: true })
+let ctx
+try {
+  ctx = await chromium.launchPersistentContext(profile, {
+    channel: 'chromium',
+    headless,
+    viewport: headless ? { width: 1200, height: 800 } : null,
+    args: ['--enable-unsafe-extension-debugging', `--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
+  })
 
-const headless = process.env.PLAYTEST_HEADLESS === '1'
-const ctx = await chromium.launchPersistentContext(profile, {
-  channel: 'chromium',
-  headless,
-  viewport: headless ? { width: 1200, height: 800 } : null,
-  args: [`--disable-extensions-except=${distTest}`, `--load-extension=${distTest}`],
-})
+  const extensionPrefix = 'chrome-extension://'
+  let sw = ctx.serviceWorkers().find(worker => worker.url().startsWith(extensionPrefix))
+  if (!sw) {
+    sw = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        ctx.off('serviceworker', onWorker)
+        reject(new Error('Study Buddy extension worker did not start.'))
+      }, 15_000)
+      const onWorker = worker => {
+        if (!worker.url().startsWith(extensionPrefix)) return
+        clearTimeout(timeout)
+        ctx.off('serviceworker', onWorker)
+        resolve(worker)
+      }
+      ctx.on('serviceworker', onWorker)
+      const current = ctx.serviceWorkers().find(worker => worker.url().startsWith(extensionPrefix))
+      if (current) onWorker(current)
+    })
+  }
 
-let [sw] = ctx.serviceWorkers()
-if (!sw) sw = await ctx.waitForEvent('serviceworker')
-await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), {
-  provider: 'openrouter',
-  baseUrl,
-  apiKey,
-})
+  // Ask Chromium to reload the unpacked extension from disk. This refreshes
+  // built files while keeping chrome.storage.local and IndexedDB in the profile.
+  const extensionId = new URL(sw.url()).hostname
+  const previousWorker = sw
+  const browserCdp = await ctx.browser().newBrowserCDPSession()
+  const loaded = await browserCdp.send('Extensions.loadUnpacked', { path: dist })
+  if (loaded.id !== extensionId) throw new Error('Chromium loaded a different Study Buddy extension.')
+  sw = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      ctx.off('serviceworker', onWorker)
+      reject(new Error('Study Buddy extension worker did not restart from the current build.'))
+    }, 15_000)
+    const onWorker = worker => {
+      if (worker === previousWorker || !worker.url().startsWith(`chrome-extension://${extensionId}/`)) return
+      clearTimeout(timeout)
+      ctx.off('serviceworker', onWorker)
+      resolve(worker)
+    }
+    ctx.on('serviceworker', onWorker)
+    const current = ctx.serviceWorkers().find(worker => worker !== previousWorker && worker.url().startsWith(`chrome-extension://${extensionId}/`))
+    if (current) onWorker(current)
+  })
 
-const page = await ctx.newPage()
-await page.goto(url)
-await page.bringToFront()
+  // Confirm that the refreshed worker still sees the dedicated profile's saved data.
+  const envKey = process.env.OPENROUTER_API_KEY?.trim()
+  const existing = await sw.evaluate(async (defaultBaseUrl) => {
+    const saved = (await chrome.storage.local.get('settings')).settings
+    const endpoint = typeof saved?.baseUrl === 'string' ? saved.baseUrl.trim().replace(/\/+$/, '') : ''
+    const apiKey = typeof saved?.apiKey === 'string' ? saved.apiKey.trim() : ''
+    return {
+      hasKey: !!apiKey,
+      customConnection: saved?.provider === 'custom' || !!(endpoint && endpoint !== defaultBaseUrl),
+    }
+  }, DEFAULT_BASE_URL)
+  const credentials = existing.customConnection || (existing.hasKey && !envKey) ? undefined : openRouterCredentials()
+  const merged = await sw.evaluate(async ({ defaultBaseUrl, envKey, credentials }) => {
+    const saved = (await chrome.storage.local.get('settings')).settings ?? {}
+    const endpoint = typeof saved.baseUrl === 'string' ? saved.baseUrl.trim().replace(/\/+$/, '') : ''
+    const savedApiKey = typeof saved.apiKey === 'string' ? saved.apiKey.trim() : ''
+    const savedBaseUrl = typeof saved.baseUrl === 'string' ? saved.baseUrl.trim() : ''
+    const customConnection = saved.provider === 'custom' || !!(endpoint && endpoint !== defaultBaseUrl)
+    const settings = {
+      ...saved,
+      uiLanguage: typeof saved.uiLanguage === 'string' ? saved.uiLanguage : 'auto',
+      answerLanguage: typeof saved.answerLanguage === 'string' ? saved.answerLanguage : 'auto',
+    }
+    if (customConnection) {
+      if (!settings.provider) settings.provider = 'custom'
+      settings.baseUrl = savedBaseUrl
+      settings.apiKey = savedApiKey
+      await chrome.storage.local.set({ settings })
+      return { ok: true, provider: 'custom', source: 'saved custom connection' }
+    }
+    settings.provider = 'openrouter'
+    settings.baseUrl = envKey ? defaultBaseUrl : credentials?.baseUrl || savedBaseUrl || defaultBaseUrl
+    settings.apiKey = envKey || savedApiKey || credentials?.apiKey || ''
+    if (!settings.apiKey) return { ok: false, error: 'No OpenRouter key is configured in saved settings, OPENROUTER_API_KEY, or credentials.json.' }
+    await chrome.storage.local.set({ settings })
+    const source = envKey ? 'OPENROUTER_API_KEY' : savedApiKey ? 'saved OpenRouter connection' : 'credentials file'
+    return { ok: true, provider: 'openrouter', source }
+  }, { defaultBaseUrl: DEFAULT_BASE_URL, envKey, credentials })
+  if (!merged.ok) throw new Error(merged.error)
 
-console.log(`\nStudy Buddy test browser is up.`)
-console.log(`  model:    DeepSeek (auto-fallback to Gemini / GPT-5 Nano)`)
-console.log(`  endpoint: ${baseUrl}`)
-console.log(`  demo:     ${url}`)
-console.log(`\nSelect a region with Ctrl+Shift+Y, choose Solve/Explain/Translate or ask.`)
-console.log(`Close the browser window to exit.\n`)
+  const page = await ctx.newPage()
+  await page.goto(url)
+  await page.bringToFront()
 
-await new Promise((resolve) => ctx.on('close', resolve))
-server.close()
+  const close = new Promise((resolve) => ctx.once('close', resolve))
+  process.once('SIGINT', () => void ctx.close())
+  process.once('SIGTERM', () => void ctx.close())
+  console.log(`\nStudy Buddy test browser is up.`)
+  console.log(`  profile:  ${profile}`)
+  console.log(`  provider: ${merged.provider} (${merged.source})`)
+  console.log(`  models:   DeepSeek → Gemini 2.5 Flash Lite → GPT-5 Nano (automatic fallback)`)
+  console.log(`  demo:     ${url}`)
+  console.log(`\nSelect a region with Ctrl+Shift+Y or the toolbar icon; chat opens after capture. Choose a task or ask a question.`)
+  console.log(`Saved settings and History remain in this profile after closing the browser.\n`)
+
+  await close
+} finally {
+  await ctx?.close().catch(() => {})
+  server.close()
+}

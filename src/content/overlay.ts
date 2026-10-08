@@ -185,10 +185,22 @@ let chatFrame: HTMLIFrameElement | undefined
 let launcher: HTMLButtonElement | undefined
 let errorNotice: HTMLDivElement | undefined
 let activeConversationId: string | undefined
+let closeRequest: { id: string; conversationId: string } | undefined
 let chatLang: 'en' | 'ru' = 'en'
 let selectionRestoreState: 'open' | 'minimized' | undefined
 let selectionRestoreNotice: { hidden: boolean; display: string } | undefined
 let hostMessages: ((event: MessageEvent) => void) | undefined
+
+function trackConversation(nextConversationId: string | undefined, cancelClose: boolean): void {
+  if (activeConversationId && nextConversationId && activeConversationId !== nextConversationId) {
+    if (cancelClose && closeRequest) {
+      const url = new URL(CHAT_URL)
+      chatFrame?.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close-cancelled', closeId: closeRequest.id }, `${url.protocol}//${url.hostname}`)
+      closeRequest = undefined
+    }
+  }
+  if (nextConversationId) activeConversationId = nextConversationId
+}
 
 /** User-resized panel size, persisted across pages/sessions. Loaded async;
  *  until it arrives (or if never resized) the defaults below apply. */
@@ -234,11 +246,7 @@ function chatUrlParams(state: ChatState): Record<string, string> {
 function showChat(state: ChatState): void {
   const nextConversationId = state.kind === 'capture' || state.kind === 'conversation' ? state.conversationId : undefined
   if (chatFrame) {
-    if (activeConversationId && nextConversationId && activeConversationId !== nextConversationId) {
-      const url = new URL(CHAT_URL)
-      chatFrame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close-cancelled' }, `${url.protocol}//${url.hostname}`)
-    }
-    activeConversationId = nextConversationId
+    trackConversation(nextConversationId, true)
     selectionRestoreState = undefined
     selectionRestoreNotice = undefined
     if (chatPanel) chatPanel.style.display = 'flex'
@@ -299,6 +307,10 @@ function showChat(state: ChatState): void {
   const title = document.createElement('span')
   title.textContent = 'Study Buddy'
   title.style.cssText = 'flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'
+  const frame = document.createElement('iframe')
+  frame.title = 'Study Buddy conversation'
+  frame.style.cssText = 'flex:1;width:100%;border:0;display:block;background:#fff'
+  frame.src = chatUrl(state)
   const close = document.createElement('button')
   close.textContent = '✕'
   close.title = 'Close'
@@ -312,10 +324,26 @@ function showChat(state: ChatState): void {
     'padding:4px 6px',
     'border-radius:6px',
   ].join(';')
+  let frameReady = false
+  let closeRequested = false
+  const sendClose = () => {
+    if (!frameReady || !closeRequested || chatFrame !== frame) return
+    closeRequested = false
+    const request = closeRequest
+    if (!request) return
+    const target = new URL(CHAT_URL)
+    frame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close', closeId: request.id }, `${target.protocol}//${target.hostname}`)
+  }
+  frame.addEventListener('load', () => {
+    frameReady = true
+    sendClose()
+  }, { once: true })
   close.addEventListener('click', () => {
     if (!chatFrame) { removeChat(); return }
-    const target = new URL(CHAT_URL)
-    chatFrame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close' }, `${target.protocol}//${target.hostname}`)
+    if (!activeConversationId) { removeChat(); return }
+    closeRequest = { id: crypto.randomUUID(), conversationId: activeConversationId }
+    closeRequested = true
+    sendClose()
   })
   close.addEventListener('pointerdown', (e) => e.stopPropagation()) // no drag from ✕
   bar.appendChild(title)
@@ -333,11 +361,6 @@ function showChat(state: ChatState): void {
   }
   bar.appendChild(minimize)
   bar.appendChild(close)
-
-  const frame = document.createElement('iframe')
-  frame.title = 'Study Buddy conversation'
-  frame.style.cssText = 'flex:1;width:100%;border:0;display:block;background:#fff'
-  frame.src = chatUrl(state)
 
   // Bottom-right resize grip (subtle; matches the panel border color).
   const grip = document.createElement('div')
@@ -436,20 +459,37 @@ function showChat(state: ChatState): void {
     const data = event.data
     const url = new URL(CHAT_URL)
     if (event.source !== frame.contentWindow || event.origin !== `${url.protocol}//${url.hostname}` || data?.source !== 'study-buddy-chat') return
+    if (data.action === 'conversation-selected' && typeof data.conversationId === 'string') {
+      trackConversation(data.conversationId, false)
+    }
+    if (data.action === 'close-cancelled' && typeof data.closeId === 'string' && closeRequest?.id === data.closeId) {
+      closeRequest = undefined
+    }
     if (data.action === 'closed') {
-      const closingConversationId = data.conversationId
-      const failClose = () => {
-        if (chatRoot !== root || chatFrame !== frame ||
-          (typeof closingConversationId === 'string' && activeConversationId !== closingConversationId)) return
-        frame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close-failed' }, `${url.protocol}//${url.hostname}`)
-      }
-      if (typeof closingConversationId !== 'string') {
-        failClose()
+      const closeId = typeof data.closeId === 'string' ? data.closeId : undefined
+      const request = closeRequest
+      if (!closeId || !request || request.id !== closeId) return
+      const closingConversationId = typeof data.conversationId === 'string' ? data.conversationId : request.conversationId
+      if (!closingConversationId) {
+        if (chatRoot === root && chatFrame === frame) removeChat()
         return
       }
+      const failClose = () => {
+        if (chatRoot !== root || chatFrame !== frame || closeRequest?.id !== closeId) return
+        if (activeConversationId !== request.conversationId && activeConversationId !== closingConversationId) {
+          closeRequest = undefined
+          return
+        }
+        closeRequest = undefined
+        frame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'close-failed', closeId }, `${url.protocol}//${url.hostname}`)
+      }
       void chrome.runtime.sendMessage({ type: 'DIALOG_CLOSED', conversationId: closingConversationId }).then((response) => {
-        if (chatRoot !== root || chatFrame !== frame || activeConversationId !== closingConversationId) return
-        if (response?.ok) removeChat()
+        if (chatRoot !== root || chatFrame !== frame || closeRequest?.id !== closeId) return
+        if (activeConversationId !== request.conversationId && activeConversationId !== closingConversationId) {
+          closeRequest = undefined
+          return
+        }
+        if (response?.ok) { closeRequest = undefined; removeChat() }
         else failClose()
       }, failClose)
     }
@@ -535,6 +575,7 @@ function removeChat(): void {
   launcher = undefined
   errorNotice = undefined
   activeConversationId = undefined
+  closeRequest = undefined
   selectionRestoreState = undefined
   selectionRestoreNotice = undefined
   const w = window as unknown as Record<string, unknown>

@@ -105,6 +105,31 @@ try {
     if (!target) throw new Error(`Could not find the browser tab for ${targetPage.url()}; targets: ${targetInfos.map((item) => `${item.type}:${item.url}`).join(' | ')}`)
     await browserCdp.send('Extensions.triggerAction', { id: extensionId, targetId: target.targetId })
   }
+  const chatFrameOn = async (targetPage) => {
+    const find = () => targetPage.frames().find((frame) => frame.url().startsWith(chatOrigin))
+    const current = find()
+    if (current) return current
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeout)
+        targetPage.off('frameattached', inspect)
+        targetPage.off('framenavigated', inspect)
+      }
+      const inspect = (frame) => {
+        if (!frame.url().startsWith(chatOrigin)) return
+        cleanup()
+        resolve(frame)
+      }
+      const timeout = setTimeout(() => {
+        cleanup()
+        reject(new Error('The embedded Study Buddy frame did not navigate to its extension page.'))
+      }, 5000)
+      targetPage.on('frameattached', inspect)
+      targetPage.on('framenavigated', inspect)
+      const attached = find()
+      if (attached) inspect(attached)
+    })
+  }
 
   // The shortcut must be registered (its physical dispatch needs a real window).
   const commands = await sw.evaluate(() => chrome.commands.getAll())
@@ -176,7 +201,7 @@ try {
   // closed shadow root) — "visible" waits would never pass.
   await page.waitForSelector('[data-study-buddy="chat"]', { timeout: 5000, state: 'attached' })
   check(true, 'chat window host embedded near the selection')
-  const liveFrame = page.frames().find((frame) => frame.url().startsWith(chatOrigin))
+  const liveFrame = await chatFrameOn(page)
   await liveFrame.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
 
   // The SW should have captured, cropped, and stored the region.
@@ -224,21 +249,60 @@ try {
     return undefined
   }, capture.id)
   check(cleanCrop !== capture.id, 'a second native selection stores a fresh crop while the chat is open')
-  await liveFrame.waitForFunction((previous) => {
+  const cleanCapture = cleanCrop ? await sw.evaluate(async (id) => {
+    const capture = (await chrome.storage.session.get(`capture.${id}`))[`capture.${id}`]
+    if (!capture?.dataUrl) return undefined
+    const bitmap = await createImageBitmap(await (await fetch(capture.dataUrl)).blob())
+    return { dataUrl: capture.dataUrl, width: bitmap.width, height: bitmap.height }
+  }, cleanCrop) : undefined
+  const cleanSizeMatchesSelection = Boolean(cleanCapture
+    && Math.abs(cleanCapture.width - 100) <= 2
+    && Math.abs(cleanCapture.height - 60) <= 2)
+  check(cleanSizeMatchesSelection,
+    `new crop matches its 100×60 selection (${cleanCapture?.width}×${cleanCapture?.height})`)
+  const exactCleanImage = cleanSizeMatchesSelection
+    && await liveFrame.waitForFunction(({ previous, width, height }) => {
+      const img = document.getElementById('crop')
+      return img?.src !== previous && img.complete && img.naturalWidth === width && img.naturalHeight === height
+    }, { previous: beforeCleanSelection, width: cleanCapture.width, height: cleanCapture.height }, { timeout: 5000 }).then(() => true, () => false)
+  const cleanPixel = exactCleanImage ? await liveFrame.evaluate(async ({ dataUrl }) => {
     const img = document.getElementById('crop')
-    return img?.src !== previous && img?.naturalWidth > 0
-  }, beforeCleanSelection)
-  const cleanPixel = await liveFrame.evaluate(() => {
-    const img = document.getElementById('crop')
+    await img.decode()
+    const expected = new Image()
+    expected.src = dataUrl
+    await expected.decode()
     const canvas = document.createElement('canvas')
     canvas.width = img.naturalWidth
     canvas.height = img.naturalHeight
     const context = canvas.getContext('2d')
+    const expectedCanvas = document.createElement('canvas')
+    expectedCanvas.width = expected.naturalWidth
+    expectedCanvas.height = expected.naturalHeight
+    const expectedContext = expectedCanvas.getContext('2d')
     context.drawImage(img, 0, 0)
-    const pixel = context.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data
-    return [...pixel].slice(0, 3)
-  })
-  check(cleanPixel[1] > 100 && cleanPixel[1] > cleanPixel[0] * 2, `capture excludes the overlapping chat panel (${cleanPixel.join(',')})`)
+    expectedContext.drawImage(expected, 0, 0)
+    const x = Math.floor(canvas.width / 2)
+    const y = Math.floor(canvas.height / 2)
+    const pixel = [...context.getImageData(x, y, 1, 1).data]
+    const actualPixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+    const expectedPixels = expectedContext.getImageData(0, 0, expectedCanvas.width, expectedCanvas.height).data
+    const matchesCapture = canvas.width === expectedCanvas.width
+      && canvas.height === expectedCanvas.height
+      && actualPixels.length === expectedPixels.length
+      && actualPixels.every((value, index) => value === expectedPixels[index])
+    return { width: canvas.width, height: canvas.height, x, y, pixel, matchesCapture }
+  }, cleanCapture) : undefined
+  check(Boolean(exactCleanImage && cleanPixel?.matchesCapture),
+    'chat renders the exact newly selected crop at its stored dimensions')
+  const sampleInBounds = Boolean(cleanPixel
+    && cleanPixel.x >= 0 && cleanPixel.y >= 0
+    && cleanPixel.x < cleanPixel.width && cleanPixel.y < cleanPixel.height)
+  const sampleIsVisibleGreen = Boolean(sampleInBounds
+    && cleanPixel.pixel[3] > 0
+    && cleanPixel.pixel[1] > 100
+    && cleanPixel.pixel[1] > cleanPixel.pixel[0] * 2)
+  check(sampleIsVisibleGreen,
+    `capture excludes the overlapping chat panel (${cleanPixel?.width}×${cleanPixel?.height}, sample ${cleanPixel?.x},${cleanPixel?.y} rgba ${cleanPixel?.pixel.join(',')})`)
 
   const alertCdp = await ctx.newCDPSession(page)
   const alertState = async () => {
@@ -294,34 +358,80 @@ try {
     'Escape restores the visible error notice with the previous chat state')
 
   const priorToastSrc = await liveFrame.locator('#crop').getAttribute('src')
+  const beforeToastCaptureId = await sw.evaluate(async () => Object.entries(await chrome.storage.session.get())
+    .filter(([key]) => key.startsWith('capture.')).sort(([, a], [, b]) => a.ts - b.ts).at(-1)?.[0].slice('capture.'.length))
   await triggerAction(page)
   await page.waitForSelector('[data-study-buddy="overlay"]')
   const viewport = page.viewportSize()
-  const toastLeft = viewport.width - 390
+  const toastLeft = Math.max(0, noticeScreenPoint.x - 4)
+  const toastWidth = Math.min(250, viewport.width - toastLeft - 1)
   await page.mouse.move(toastLeft, 20)
   await page.mouse.down()
-  await page.mouse.move(toastLeft + 250, 140, { steps: 5 })
+  await page.mouse.move(toastLeft + toastWidth, 140, { steps: 5 })
   await page.mouse.up()
-  await liveFrame.waitForFunction((previous) => {
+  const toastCaptureId = await sw.evaluate(async (previousId) => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const captures = Object.entries(await chrome.storage.session.get())
+        .filter(([key]) => key.startsWith('capture.')).sort(([, a], [, b]) => a.ts - b.ts)
+      const id = captures.at(-1)?.[0].slice('capture.'.length)
+      if (id && id !== previousId) return id
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    return undefined
+  }, beforeToastCaptureId)
+  const toastCapture = toastCaptureId ? await sw.evaluate(async (id) => {
+    const capture = (await chrome.storage.session.get(`capture.${id}`))[`capture.${id}`]
+    if (!capture?.dataUrl) return undefined
+    const bitmap = await createImageBitmap(await (await fetch(capture.dataUrl)).blob())
+    return { dataUrl: capture.dataUrl, width: bitmap.width, height: bitmap.height }
+  }, toastCaptureId) : undefined
+  check(Boolean(toastCaptureId && toastCapture), 'retry selection stores a new crop after hiding the error notice')
+  check(Boolean(toastCapture && Math.abs(toastCapture.width - toastWidth) <= 2 && Math.abs(toastCapture.height - 120) <= 2),
+    'retry crop dimensions match the selection containing the prior notice border')
+  await liveFrame.waitForFunction(({ previous, width, height }) => {
     const img = document.getElementById('crop')
-    return img?.src !== previous && img?.naturalWidth > 0
-  }, priorToastSrc)
+    return img?.src !== previous && img.complete && img.naturalWidth === width && img.naturalHeight === height
+  }, { previous: priorToastSrc, width: toastCapture.width, height: toastCapture.height })
   const devicePixelRatio = await page.evaluate(() => window.devicePixelRatio)
   const cropPoint = {
     x: Math.round((noticeScreenPoint.x - toastLeft) * devicePixelRatio),
     y: Math.round((noticeScreenPoint.y - 20) * devicePixelRatio),
   }
-  const toastCropPixel = await liveFrame.evaluate(({ x, y }) => {
+  const toastCropPixel = toastCapture ? await liveFrame.evaluate(async ({ x, y, dataUrl, width, height }) => {
     const img = document.getElementById('crop')
+    await img.decode()
+    const expected = new Image()
+    expected.src = dataUrl
+    await expected.decode()
+    const inBounds = x >= 0 && y >= 0 && x < img.naturalWidth && y < img.naturalHeight
+      && img.naturalWidth === width && img.naturalHeight === height
+      && expected.naturalWidth === width && expected.naturalHeight === height
+    if (!inBounds) return { inBounds, alpha: 0, pixel: [], expectedPixel: [], matchesCapture: false }
     const canvas = document.createElement('canvas')
     canvas.width = img.naturalWidth
     canvas.height = img.naturalHeight
     const context = canvas.getContext('2d')
     context.drawImage(img, 0, 0)
-    return [...context.getImageData(x, y, 1, 1).data].slice(0, 3)
-  }, cropPoint)
-  check(!noticeIsRed(toastCropPixel) && (await alertState())?.hidden,
-    `retry crop excludes the prior error notice border (${toastCropPixel.join(',')})`)
+    const expectedContext = document.createElement('canvas').getContext('2d')
+    expectedContext.canvas.width = expected.naturalWidth
+    expectedContext.canvas.height = expected.naturalHeight
+    expectedContext.drawImage(expected, 0, 0)
+    const pixel = [...context.getImageData(x, y, 1, 1).data]
+    const expectedPixel = [...expectedContext.getImageData(x, y, 1, 1).data]
+    const actual = context.getImageData(0, 0, width, height).data
+    const stored = expectedContext.getImageData(0, 0, width, height).data
+    return {
+      inBounds,
+      alpha: pixel[3],
+      pixel,
+      expectedPixel,
+      matchesCapture: actual.length === stored.length && actual.every((value, index) => value === stored[index]),
+    }
+  }, { ...cropPoint, dataUrl: toastCapture.dataUrl, width: toastCapture.width, height: toastCapture.height }) : undefined
+  check(Boolean(toastCropPixel?.inBounds && toastCropPixel.alpha > 0 && toastCropPixel.matchesCapture
+    && toastCropPixel.pixel.every((value, index) => value === toastCropPixel.expectedPixel[index])
+    && !noticeIsRed(toastCropPixel.pixel) && (await alertState())?.hidden),
+    `retry crop excludes the prior error notice border (${toastCropPixel?.pixel.join(',')}; expected ${toastCropPixel?.expectedPixel.join(',')}; inBounds=${toastCropPixel?.inBounds})`)
   await alertCdp.detach()
 
   await triggerAction(page)
@@ -359,8 +469,9 @@ try {
     chrome.storage.local.set = async () => { throw new Error('expected fixture write failure') }
   })
   await settings.click('#set-save')
-  await settings.waitForFunction(() => document.getElementById('set-msg')?.textContent?.includes('Could not save'))
-  check(await settings.locator('#view-settings').isVisible() && !(await settings.evaluate(() => chrome.storage.local.get('settings'))).settings, 'failed settings save stays on the form without updating saved data')
+  await settings.waitForFunction(() => !!document.getElementById('set-msg')?.textContent?.trim())
+  const saveError = await settings.locator('#set-msg').textContent()
+  check(await settings.locator('#view-settings').isVisible() && !(await settings.evaluate(() => chrome.storage.local.get('settings'))).settings, `failed settings save stays on the form without updating saved data (${saveError})`)
   await settings.evaluate(() => { chrome.storage.local.set = globalThis.fixtureStorageSet; delete globalThis.fixtureStorageSet })
   await settings.click('#set-save')
   // state 'attached': an element WITH [hidden] can never be "visible" — the
@@ -696,7 +807,7 @@ try {
   }
   const findHostButton = (text) => findHostButtonOn(page, text)
   const clickHostButton = (text) => clickHostButtonOn(page, text)
-  let embedded = page.frames().find(f => f.url().startsWith(chatOrigin))
+  let embedded = await chatFrameOn(page)
   await embedded.waitForSelector('#view-capture:not([hidden])')
   await resetCooldown(embedded)
   responseMode = 'slow'
@@ -779,7 +890,7 @@ try {
   await page.mouse.move(180, 210, { steps: 5 })
   await page.mouse.up()
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
-  embedded = page.frames().find(f => f.url().startsWith(chatOrigin))
+  embedded = await chatFrameOn(page)
   await embedded.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
   const afterFreshCapture = await readSaved(embedded)
   const nextConversationId = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${pageTabId}`)
@@ -843,6 +954,342 @@ try {
   await duplicate.click('#check-btn')
   await duplicate.screenshot({ path: join(evidence, 'narrow.png') })
   check(await duplicate.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'narrow panel has no horizontal overflow')
+
+  const dismissPage = await ctx.newPage()
+  const dismissUrl = `${origin}/dismiss-error`
+  await dismissPage.goto(dismissUrl)
+  await triggerAction(dismissPage)
+  await dismissPage.waitForSelector('[data-study-buddy="overlay"]')
+  await dismissPage.keyboard.press('Escape')
+  await dismissPage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
+  const dismissTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, dismissUrl)
+  if (dismissTabId === undefined) throw new Error('Could not find the initial error fixture tab.')
+  const beforeDismissError = await readSaved(duplicate)
+  await sw.evaluate(async (tabId) => new Promise((resolve) => chrome.tabs.sendMessage(tabId,
+    { type: 'SHOW_CHAT', state: { kind: 'error', message: 'Dismiss fixture' } }, () => resolve())), dismissTabId)
+  await dismissPage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
+  await clickHostButtonOn(dismissPage, '✕')
+  await dismissPage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  const dismissBinding = dismissTabId === undefined ? undefined :
+    await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${dismissTabId}`)
+  const afterDismissError = await readSaved(duplicate)
+  check(dismissBinding === undefined &&
+    beforeDismissError.conversations.map(c => c.id).join(',') === afterDismissError.conversations.map(c => c.id).join(','),
+  'Close dismisses an initial error host without creating or deleting a conversation')
+  await dismissPage.close()
+
+  const showChatOnTab = async (tabId, state) => sw.evaluate(async ({ tabId, state }) => new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { type: 'SHOW_CHAT', state }, () => resolve())
+  }), { tabId, state })
+  const earlyClosePage = await ctx.newPage()
+  await earlyClosePage.addInitScript(() => {
+    if (location.protocol !== 'chrome-extension:' || !location.pathname.endsWith('/chat.html')) return
+    const originalGet = chrome.storage.local.get.bind(chrome.storage.local)
+    chrome.storage.local.get = async (...args) => {
+      sessionStorage.setItem('__studyBuddyEarlyClose', 'pending')
+      await new Promise(resolve => setTimeout(resolve, 800))
+      return originalGet(...args)
+    }
+  })
+  const earlyCloseUrl = `${origin}/close-during-boot`
+  await earlyClosePage.goto(earlyCloseUrl)
+  await triggerAction(earlyClosePage)
+  await earlyClosePage.waitForSelector('[data-study-buddy="overlay"]')
+  await earlyClosePage.keyboard.press('Escape')
+  await earlyClosePage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
+  const earlyCloseTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, earlyCloseUrl)
+  if (earlyCloseTabId === undefined) throw new Error('Could not find the early-close fixture tab.')
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+    { tabId: earlyCloseTabId, conversationId: nativeId })
+  await showChatOnTab(earlyCloseTabId, { kind: 'conversation', conversationId: nativeId })
+  await earlyClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
+  const earlyCloseFrame = await chatFrameOn(earlyClosePage)
+  await earlyCloseFrame.waitForFunction(() => sessionStorage.getItem('__studyBuddyEarlyClose') === 'pending')
+  await clickHostButtonOn(earlyClosePage, '✕')
+  await earlyClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  await earlyClosePage.waitForTimeout(900)
+  const earlyCloseBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${earlyCloseTabId}`)
+  check(earlyCloseBinding === undefined, 'Close during delayed chat boot prevents initialization from restoring the released tab binding')
+  await triggerAction(earlyClosePage)
+  await earlyClosePage.waitForSelector('[data-study-buddy="overlay"]')
+  await earlyClosePage.mouse.move(60, 160)
+  await earlyClosePage.mouse.down()
+  await earlyClosePage.mouse.move(180, 210, { steps: 5 })
+  await earlyClosePage.mouse.up()
+  await earlyClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
+  const earlyCaptureFrame = await chatFrameOn(earlyClosePage)
+  await earlyCaptureFrame.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+  const earlyCaptureId = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${earlyCloseTabId}`)
+  check(typeof earlyCaptureId === 'string' && earlyCaptureId !== nativeId,
+    'the next toolbar capture after Close during boot creates a fresh conversation')
+  await clickHostButtonOn(earlyClosePage, '✕')
+  await earlyClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  await earlyClosePage.close()
+
+  const boundDismissPage = await ctx.newPage()
+  const boundDismissUrl = `${origin}/dismiss-bound-error`
+  await boundDismissPage.goto(boundDismissUrl)
+  await triggerAction(boundDismissPage)
+  await boundDismissPage.waitForSelector('[data-study-buddy="overlay"]')
+  await boundDismissPage.keyboard.press('Escape')
+  await boundDismissPage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
+  const boundDismissTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, boundDismissUrl)
+  if (boundDismissTabId === undefined) throw new Error('Could not find the existing-dialog fixture tab.')
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+    { tabId: boundDismissTabId, conversationId: nativeId })
+  await showChatOnTab(boundDismissTabId, { kind: 'conversation', conversationId: nativeId })
+  await boundDismissPage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
+  const boundDismissFrame = await chatFrameOn(boundDismissPage)
+  await boundDismissFrame.waitForSelector('#view-capture:not([hidden])')
+  await boundDismissFrame.click('#history-btn')
+  await boundDismissFrame.waitForSelector('#view-history:not([hidden])')
+  const historyOrder = await boundDismissFrame.evaluate(async () => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('study-buddy-conversations', 1)
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const rows = await new Promise((resolve, reject) => {
+      const request = db.transaction('conversations', 'readonly').objectStore('conversations').getAll()
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    db.close()
+    return rows.sort((a, b) => b.updatedAt - a.updatedAt).map(conversation => ({
+      id: conversation.id,
+      title: conversation.title,
+      turnCount: conversation.turns.length,
+    }))
+  })
+  const historyTargetIndex = historyOrder.findIndex(conversation => conversation.id === nextConversationId)
+  if (historyTargetIndex < 0) throw new Error('Could not locate the saved History target conversation.')
+  await boundDismissFrame.waitForFunction((expected) => {
+    const visible = [...document.querySelectorAll('.history-row .history-open')]
+    return visible.length === expected.length && expected.every((row, index) =>
+      visible[index]?.textContent?.startsWith(`${row.title} · ${row.turnCount} ·`))
+  }, historyOrder)
+  await boundDismissFrame.locator('.history-row .history-open').nth(historyTargetIndex).click()
+  const selectedHistoryBinding = await sw.evaluate(async ({ key, expected }) => {
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if ((await chrome.storage.session.get(key))[key] === expected) return expected
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    return undefined
+  }, { key: `dialog.tab.${boundDismissTabId}`, expected: nextConversationId })
+  if (selectedHistoryBinding !== nextConversationId) throw new Error('History did not select the other saved conversation for its tab.')
+  await showChatOnTab(boundDismissTabId, { kind: 'error', message: 'Dismiss bound fixture' })
+  await boundDismissFrame.waitForSelector('#view-error:not([hidden])')
+  await clickHostButtonOn(boundDismissPage, '✕')
+  await boundDismissPage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  const boundDismissBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${boundDismissTabId}`)
+  const afterBoundDismiss = await readSaved(duplicate)
+  check(boundDismissBinding === undefined && afterBoundDismiss.conversations.some(conversation => conversation.id === nextConversationId),
+    'History selection updates the host ID; SHOW_CHAT error then Close removes the host and clears that dialog binding')
+  await boundDismissPage.close()
+
+  const newChatClosePage = await ctx.newPage()
+  const newChatCloseUrl = `${origin}/new-chat-close`
+  await newChatClosePage.goto(newChatCloseUrl)
+  await triggerAction(newChatClosePage)
+  await newChatClosePage.waitForSelector('[data-study-buddy="overlay"]')
+  await newChatClosePage.keyboard.press('Escape')
+  await newChatClosePage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
+  const newChatCloseTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, newChatCloseUrl)
+  if (newChatCloseTabId === undefined) throw new Error('Could not find the New chat fixture tab.')
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+    { tabId: newChatCloseTabId, conversationId: nativeId })
+  await showChatOnTab(newChatCloseTabId, { kind: 'conversation', conversationId: nativeId })
+  await newChatClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
+  const newChatCloseFrame = await chatFrameOn(newChatClosePage)
+  await newChatCloseFrame.waitForSelector('#view-capture:not([hidden])')
+  await newChatCloseFrame.waitForFunction(() => !!document.getElementById('conversation-title')?.textContent?.trim())
+  await newChatCloseFrame.evaluate(() => {
+    const originalSend = chrome.runtime.sendMessage.bind(chrome.runtime)
+    chrome.runtime.sendMessage = (...args) => {
+      const response = originalSend(...args)
+      if (args[0]?.type === 'CONVERSATION' && args[0]?.action === 'select') {
+        return response.then(async value => {
+          if (value?.ok && value.value?.id !== new URLSearchParams(location.search).get('conversation')) {
+            sessionStorage.setItem('__studyBuddySelectMutated', value.value.id)
+            await new Promise(() => {}) // keep select pending until the host closes this frame
+          }
+          return value
+        })
+      }
+      return response
+    }
+  })
+  await newChatCloseFrame.click('#new-chat-btn')
+  await newChatCloseFrame.waitForFunction(() => !!sessionStorage.getItem('__studyBuddySelectMutated'))
+  const newChatBinding = await newChatCloseFrame.evaluate(() => sessionStorage.getItem('__studyBuddySelectMutated'))
+  const selectedBeforeClose = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${newChatCloseTabId}`)
+  if (!newChatBinding || selectedBeforeClose !== newChatBinding) throw new Error('New chat selection did not reach its tab binding before the delayed reply.')
+  await clickHostButtonOn(newChatClosePage, '✕')
+  await newChatClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  const newChatBindingAfterClose = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${newChatCloseTabId}`)
+  const afterNewChatClose = await readSaved(duplicate)
+  check(newChatBinding !== nativeId && newChatBindingAfterClose === undefined &&
+    afterNewChatClose.conversations.some(conversation => conversation.id === newChatBinding),
+  'Close during a delayed New chat select acknowledgement clears its pending ID and removes the host')
+  await newChatClosePage.close()
+
+  const createClosePage = await ctx.newPage()
+  const createCloseUrl = `${origin}/create-close`
+  await createClosePage.goto(createCloseUrl)
+  await triggerAction(createClosePage)
+  await createClosePage.waitForSelector('[data-study-buddy="overlay"]')
+  await createClosePage.keyboard.press('Escape')
+  await createClosePage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
+  const createCloseTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, createCloseUrl)
+  if (createCloseTabId === undefined) throw new Error('Could not find the delayed-create fixture tab.')
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+    { tabId: createCloseTabId, conversationId: nativeId })
+  await showChatOnTab(createCloseTabId, { kind: 'conversation', conversationId: nativeId })
+  await createClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
+  const createCloseFrame = await chatFrameOn(createClosePage)
+  await createCloseFrame.waitForSelector('#view-capture:not([hidden])')
+  const beforeDelayedCreate = await readSaved(duplicate)
+  await createCloseFrame.evaluate(() => {
+    const originalSend = chrome.runtime.sendMessage.bind(chrome.runtime)
+    chrome.runtime.sendMessage = (...args) => {
+      const response = originalSend(...args)
+      if (args[0]?.type === 'CONVERSATION' && args[0]?.action === 'create') {
+        return response.then(async value => {
+          if (value?.ok) {
+            sessionStorage.setItem('__studyBuddyCreateMutated', value.value.id)
+            await new Promise(resolve => setTimeout(resolve, 700))
+          }
+          return value
+        })
+      }
+      return response
+    }
+  })
+  await createCloseFrame.click('#new-chat-btn')
+  await createCloseFrame.waitForFunction(() => !!sessionStorage.getItem('__studyBuddyCreateMutated'))
+  const createdBeforeClose = await createCloseFrame.evaluate(() => sessionStorage.getItem('__studyBuddyCreateMutated'))
+  const bindingDuringCreateReply = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${createCloseTabId}`)
+  if (bindingDuringCreateReply !== nativeId) throw new Error('Create changed the tab binding before the delayed client reply.')
+  await clickHostButtonOn(createClosePage, '✕')
+  await createClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  await createClosePage.waitForTimeout(800)
+  const afterCreateCloseBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${createCloseTabId}`)
+  const afterDelayedCreate = await readSaved(duplicate)
+  check(afterCreateCloseBinding === undefined && afterDelayedCreate.conversations.some(conversation =>
+    conversation.id === createdBeforeClose && !beforeDelayedCreate.conversations.some(saved => saved.id === conversation.id)),
+  'Close during a delayed New chat create releases the old binding and leaves the created dialog saved without reselecting it')
+  await createClosePage.close()
+
+  const closeRacePage = await ctx.newPage()
+  const closeRaceUrl = `${origin}/late-close-response`
+  await closeRacePage.goto(closeRaceUrl)
+  await triggerAction(closeRacePage)
+  await closeRacePage.waitForSelector('[data-study-buddy="overlay"]')
+  await closeRacePage.keyboard.press('Escape')
+  await closeRacePage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
+  const closeRaceTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, closeRaceUrl)
+  if (closeRaceTabId === undefined) throw new Error('Could not find the late-close fixture tab.')
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+    { tabId: closeRaceTabId, conversationId: nativeId })
+  await showChatOnTab(closeRaceTabId, { kind: 'conversation', conversationId: nativeId })
+  await closeRacePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
+  const closeRaceFrame = await chatFrameOn(closeRacePage)
+  await closeRaceFrame.waitForSelector('#view-capture:not([hidden])')
+  await closeRaceFrame.evaluate(() => {
+    window.addEventListener('message', event => {
+      if (event.data?.source !== 'study-buddy-host' || event.data.action !== 'close') return
+      const ids = JSON.parse(sessionStorage.getItem('__studyBuddyHostCloseIds') || '[]')
+      ids.push(event.data.closeId)
+      sessionStorage.setItem('__studyBuddyHostCloseIds', JSON.stringify(ids))
+    })
+  })
+  await sw.evaluate(async (tabId) => chrome.scripting.executeScript({ target: { tabId }, world: 'ISOLATED', func: () => {
+    const original = chrome.runtime.sendMessage
+    let closeResponseCount = 0
+    const releaseCloseResponses = []
+    let delayedClosed
+    let replaying = false
+    chrome.runtime.sendMessage = function (message, ...args) {
+      const response = original.apply(chrome.runtime, [message, ...args])
+      if (message?.type === 'DIALOG_CLOSED') {
+        closeResponseCount++
+        sessionStorage.setItem('__studyBuddyCloseResponseCount', String(closeResponseCount))
+        const calls = JSON.parse(sessionStorage.getItem('__studyBuddyCloseCalls') || '[]')
+        calls.push(message.conversationId)
+        sessionStorage.setItem('__studyBuddyCloseCalls', JSON.stringify(calls))
+        return Promise.resolve(response).then(value => new Promise(resolve => {
+          releaseCloseResponses.push({ conversationId: message.conversationId, release: () => resolve(value) })
+          sessionStorage.setItem('__studyBuddyCloseResponsePending', 'yes')
+          sessionStorage.setItem('__studyBuddyPendingCloseConversations', JSON.stringify(releaseCloseResponses.map(item => item.conversationId)))
+        }))
+      }
+      return response
+    }
+    window.addEventListener('message', event => {
+      const message = event.data
+      if (replaying) return
+      if (!delayedClosed && event.source !== window && message?.source === 'study-buddy-chat' && message.action === 'closed') {
+        delayedClosed = { data: message, origin: event.origin, source: event.source }
+        sessionStorage.setItem('__studyBuddyStaleClosed', message.closeId)
+        return
+      }
+      if (event.source === window && message?.__studyBuddyReleaseStaleClosed && delayedClosed) {
+        event.stopImmediatePropagation()
+        replaying = true
+        window.dispatchEvent(new MessageEvent('message', delayedClosed))
+        replaying = false
+        sessionStorage.setItem('__studyBuddyStaleClosedReplayed', 'yes')
+      }
+      if (event.source === window && message?.__studyBuddyReleaseCloseResponse) {
+        event.stopImmediatePropagation()
+        for (let index = releaseCloseResponses.length - 1; index >= 0; index--) {
+          const response = releaseCloseResponses[index]
+          if (response.conversationId !== message.conversationId) continue
+          releaseCloseResponses.splice(index, 1)
+          response.release()
+        }
+        sessionStorage.setItem('__studyBuddyPendingCloseConversations', JSON.stringify(releaseCloseResponses.map(item => item.conversationId)))
+        sessionStorage.setItem('__studyBuddyReleasedCloseConversation', message.conversationId)
+      }
+    }, true)
+  } }), closeRaceTabId)
+  await clickHostButtonOn(closeRacePage, '✕')
+  await closeRacePage.waitForFunction(() => !!sessionStorage.getItem('__studyBuddyStaleClosed'))
+  const newerConversationId = await closeRaceFrame.evaluate(async () => {
+    const response = await chrome.runtime.sendMessage({ type: 'CONVERSATION', action: 'create', title: 'Late close target' })
+    if (!response?.ok) throw new Error('Could not create the newer SHOW_CHAT fixture.')
+    return response.value.id
+  })
+  await showChatOnTab(closeRaceTabId, { kind: 'conversation', conversationId: newerConversationId })
+  await closeRaceFrame.waitForFunction(() => document.getElementById('conversation-title')?.textContent === 'Late close target')
+  const newerBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${closeRaceTabId}`)
+  if (newerBinding !== newerConversationId) throw new Error('The newer SHOW_CHAT did not select its conversation before Close.')
+  await closeRacePage.waitForFunction(() => sessionStorage.getItem('__studyBuddyCloseResponsePending') === 'yes')
+  await closeRacePage.evaluate(conversationId => window.postMessage({ __studyBuddyReleaseCloseResponse: true, conversationId }, '*'), nativeId)
+  await closeRacePage.waitForFunction(id => sessionStorage.getItem('__studyBuddyReleasedCloseConversation') === id, nativeId)
+  check(await closeRacePage.locator('[data-study-buddy="chat"]').count() === 1 &&
+    await sw.evaluate(async ({ key, id }) => (await chrome.storage.session.get(key))[key] === id,
+      { key: `dialog.tab.${closeRaceTabId}`, id: newerConversationId }),
+    'a late unlink response for A preserves the newer SHOW_CHAT B and its binding')
+  await clickHostButtonOn(closeRacePage, '✕')
+  await closeRacePage.waitForFunction(id => JSON.parse(sessionStorage.getItem('__studyBuddyPendingCloseConversations') || '[]').includes(id), newerConversationId)
+  const callsBeforeStaleReplay = await closeRacePage.evaluate(() => Number(sessionStorage.getItem('__studyBuddyCloseResponseCount')))
+  if (callsBeforeStaleReplay !== 2) throw new Error('The two explicit X clicks did not produce exactly two distinct unlink requests.')
+  await closeRacePage.evaluate(() => window.postMessage({ __studyBuddyReleaseStaleClosed: true }, '*'))
+  await closeRacePage.waitForFunction(() => sessionStorage.getItem('__studyBuddyStaleClosedReplayed') === 'yes')
+  const closeRaceCalls = await closeRacePage.evaluate(() => sessionStorage.getItem('__studyBuddyCloseResponseCount'))
+  const closeRaceHostCount = await closeRacePage.locator('[data-study-buddy="chat"]').count()
+  const closeRaceCallIds = await closeRacePage.evaluate(() => sessionStorage.getItem('__studyBuddyCloseCalls'))
+  const closeRaceHostIds = await closeRaceFrame.evaluate(() => sessionStorage.getItem('__studyBuddyHostCloseIds'))
+  const staleClosedId = await closeRacePage.evaluate(() => sessionStorage.getItem('__studyBuddyStaleClosed'))
+  check(Number(closeRaceCalls) === callsBeforeStaleReplay && closeRaceHostCount === 1,
+    `a stale closed(A) cannot borrow the newer X(B) request or start another unlink (before=${callsBeforeStaleReplay}, after=${closeRaceCalls}, hosts=${closeRaceHostCount}, stale=${staleClosedId}, closes=${closeRaceHostIds}, unlinks=${closeRaceCallIds})`)
+  await closeRacePage.evaluate(conversationId => window.postMessage({ __studyBuddyReleaseCloseResponse: true, conversationId }, '*'), newerConversationId)
+  await closeRacePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  const closeRaceBindingAfter = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${closeRaceTabId}`)
+  check(closeRaceBindingAfter === undefined, 'the newer conversation remains closable after the stale response is discarded')
+  await closeRacePage.close()
+
   // Exercise the worker's atomic admission, not just disabled UI controls.
   await resetCooldown(duplicate)
   const raceId = (await readSaved(duplicate)).state.lastConversationId
@@ -889,7 +1336,7 @@ try {
   await page.mouse.move(180, 210, { steps: 5 })
   await page.mouse.up()
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
-  const recaptured = page.frames().find(f => f.url().startsWith(chatOrigin))
+  const recaptured = await chatFrameOn(page)
   await recaptured.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
   const recaptureDb = await readSaved(recaptured)
   const recaptureDialog = recaptureDb.conversations.find(c => c.id === nextConversationId)
@@ -913,7 +1360,7 @@ try {
   await quickPage.mouse.move(180, 210, { steps: 5 })
   await quickPage.mouse.up()
   await quickPage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
-  const quickFrame = quickPage.frames().find(f => f.url().startsWith(chatOrigin))
+  const quickFrame = await chatFrameOn(quickPage)
   await quickFrame.waitForSelector('#view-capture:not([hidden])')
   await resetCooldown(quickFrame)
   await quickFrame.evaluate(() => {
@@ -953,7 +1400,7 @@ try {
     return tab.id
   }, { targetUrl: otherUrl, conversationId: nextConversationId })
   await otherPage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
-  const otherFrame = otherPage.frames().find(f => f.url().startsWith(chatOrigin))
+  const otherFrame = await chatFrameOn(otherPage)
   await otherFrame.waitForSelector('#view-capture:not([hidden])')
   const otherBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${otherTabId}`)
   check(otherBinding === nextConversationId, 'second tab can select the same saved conversation independently')

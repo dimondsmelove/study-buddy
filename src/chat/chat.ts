@@ -114,6 +114,8 @@ function show(kind: Kind | 'settings' | 'history'): void {
 }
 
 function apply(state: ChatState): void {
+  opening++
+  pendingConversationId = undefined
   current = state
   show(state.kind === 'conversation' ? 'capture' : state.kind)
   switch (state.kind) {
@@ -136,11 +138,16 @@ function apply(state: ChatState): void {
 }
 
 async function showCapture(imageId: string, conversationId?: string): Promise<void> {
+  if (closing) return
   const state = await getConversationState()
+  if (closing) return
   const id = conversationId ?? conversation?.id ?? state.lastConversationId
   const target = id ? await getConversation(id) : undefined
+  if (closing) return
   const selected = target ?? await conversationAction<Conversation>({ action: 'create', title: t(uiLang, 'dialog.new') })
+  if (closing) return
   await conversationAction({ action: 'attach', conversationId: selected.id, imageId })
+  if (closing) return
   await openConversation(selected.id)
 }
 
@@ -322,9 +329,11 @@ function renderAnswer(node: HTMLElement, text: string): void {
 let conversation: Conversation | undefined
 let profileState: ConversationState = { id: 'state', lastStartedAt: 0 }
 let opening = 0
+let pendingConversationId: string | undefined
 let rendering = 0
 let starting = false
 let closing = false
+let activeCloseId: string | undefined
 let generationDone: Promise<boolean> | undefined
 const unsaved = new Map<string, Turn>()
 const imageUrls = new Map<string, string>()
@@ -356,11 +365,26 @@ function releaseImages(): void {
 }
 
 async function openConversation(id: string): Promise<void> {
+  if (closing) return
   const epoch = ++opening
-  const value = await conversationAction<Conversation>({ action: 'select', conversationId: id })
+  pendingConversationId = id
+  let value: Conversation
+  try {
+    value = await conversationAction<Conversation>({ action: 'select', conversationId: id })
+  } catch (err) {
+    if (epoch === opening && pendingConversationId === id) pendingConversationId = undefined
+    throw err
+  }
   if (epoch !== opening) return
   conversation = value
+  pendingConversationId = undefined
   current = { kind: 'conversation', conversationId: id }
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      { source: 'study-buddy-chat', action: 'conversation-selected', conversationId: id },
+      '*',
+    )
+  }
   show('capture')
   await renderConversation()
 }
@@ -701,7 +725,9 @@ el('check-form').addEventListener('submit', (event) => {
 })
 
 el('new-chat-btn').onclick = () => {
+  if (closing) return
   void conversationAction<Conversation>({ action: 'create', title: t(uiLang, 'dialog.new') }).then(async (value) => {
+    if (closing) return
     releaseImages()
     ;(el('ask-input') as HTMLInputElement).value = ''
     ;(el('check-input') as HTMLTextAreaElement).value = ''
@@ -774,13 +800,15 @@ el('history-back').onclick = () => {
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type !== 'CONVERSATIONS_CHANGED') return
+  const epoch = opening
   void (async () => {
     await refreshStatus()
-    if (conversation && !inflight && !starting && !unsaved.size) {
-      const latest = await getConversation(conversation.id)
-      if (latest) { conversation = latest; await renderConversation() }
-      else { conversation = undefined; await showHistory() }
-    }
+    if (epoch !== opening || !conversation || inflight || starting || unsaved.size) return
+    const selectedId = conversation.id
+    const latest = await getConversation(selectedId)
+    if (epoch !== opening || conversation?.id !== selectedId || inflight || starting || unsaved.size) return
+    if (latest) { conversation = latest; await renderConversation() }
+    else { conversation = undefined; await showHistory() }
   })().catch(reportError)
 })
 
@@ -801,32 +829,47 @@ setInterval(updateStatus, 1000)
   })
 }
 
-// The host is this iframe's parent page, not the extension origin. Ignore other
-// windows; the isolated content host targets this extension origin explicitly.
+// The parent is the host web page, so the host validates the sender and this
+// frame's extension origin instead of relying on a matching target origin.
 window.addEventListener('message', (e: MessageEvent) => {
-  const data = e.data as { source?: string; state?: ChatState; action?: string } | null
+  const data = e.data as { source?: string; state?: ChatState; action?: string; closeId?: string } | null
   if (e.source !== window.parent || window.parent === window || data?.source !== 'study-buddy-host') return
   if (data.state) apply(data.state)
-  if (data.action === 'close') {
-    const closingConversationId = conversation?.id
+  if (data.action === 'close' && typeof data.closeId === 'string') {
+    const closeId = data.closeId
+    const closingConversationId = pendingConversationId ?? conversation?.id
+    if (closing && activeCloseId) {
+      window.parent.postMessage({ source: 'study-buddy-chat', action: 'close-cancelled', closeId: activeCloseId }, '*')
+    }
+    activeCloseId = closeId
     closing = true
     inflight?.abort()
     void (async () => {
       await generationDone
+      if (!closing || activeCloseId !== closeId) return
       if (unsaved.size && !confirm(t(uiLang, 'dialog.closeUnsaved'))) {
         closing = false
-        reportError(new Error('storage.write'))
+        activeCloseId = undefined
+        window.parent.postMessage({ source: 'study-buddy-chat', action: 'close-cancelled', closeId }, '*')
         return
       }
-      window.parent.postMessage({ source: 'study-buddy-chat', action: 'closed', conversationId: closingConversationId }, '*')
-    })().catch(reportError)
+      window.parent.postMessage({ source: 'study-buddy-chat', action: 'closed', closeId, conversationId: closingConversationId }, '*')
+    })().catch((err) => {
+      if (activeCloseId !== closeId) return
+      closing = false
+      activeCloseId = undefined
+      window.parent.postMessage({ source: 'study-buddy-chat', action: 'close-cancelled', closeId }, '*')
+      reportError(err)
+    })
   }
-  if (data.action === 'close-cancelled') {
+  if (data.action === 'close-cancelled' && typeof data.closeId === 'string' && activeCloseId === data.closeId) {
     closing = false
+    activeCloseId = undefined
     updateStatus()
   }
-  if (data.action === 'close-failed') {
+  if (data.action === 'close-failed' && typeof data.closeId === 'string' && activeCloseId === data.closeId) {
     closing = false
+    activeCloseId = undefined
     updateStatus()
     reportError(new Error('storage.write'))
   }
@@ -856,12 +899,16 @@ function stateFromLocation(): ChatState | null {
 
 async function boot(): Promise<void> {
   await loadSettings()
+  if (closing) return
   const initial = stateFromLocation()
   if (initial) apply(initial)
   else {
     const state = await getConversationState()
+    if (closing) return
     const saved = state.lastConversationId ? await getConversation(state.lastConversationId) : undefined
+    if (closing) return
     const next = saved ?? await conversationAction<Conversation>({ action: 'create', title: t(uiLang, 'dialog.new') })
+    if (closing) return
     await openConversation(next.id)
   }
 }

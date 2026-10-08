@@ -14,7 +14,7 @@
     "contracts:prompts": "node scripts/prompt-contracts.mjs",
     "preview:local": "node scripts/preview-local.mjs",
     "verify": "node scripts/verify.mjs",
-    "playtest": "npm run build && node scripts/playtest.mjs",
+    "playtest": "SB_DEFAULT_API_KEY= npm run build && node scripts/playtest.mjs",
     "quality": "npm run build && node scripts/quality.mjs",
     "screenshots": "npm run build && node scripts/screenshots.mjs",
     "review": "npm run build && node scripts/review.mjs",

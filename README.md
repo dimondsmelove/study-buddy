@@ -6,7 +6,8 @@ translate, summarize.
 
 Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
 selection → pick a task or ask your own question. The answer streams in beside
-the page, in your language. The toolbar icon restores your selected/latest chat.
+the page, in your language. The toolbar icon also starts region selection; chat
+opens after a successful crop and continues the conversation selected for that tab.
 
 **Status: MVP.** Region selection → screenshot → crop → chat window,
 interface + answer language settings (English / Russian), task-shaped answers
@@ -25,7 +26,7 @@ screenshots live in `store/`.
 Manual use:
 
 ```
-Ctrl+Shift+Y  →  drag a box around a question  →  Solve / Quiz / …  →  read
+Ctrl+Shift+Y or toolbar icon  →  drag a box around a question  →  Solve / Quiz / …  →  read
 ```
 
 ## Roadmap
@@ -93,10 +94,15 @@ npm run preview:local -- stop
 # Each start has its own profile under review/preview; stop does not delete it.
 # review/loop contains the actual verify screenshots. Run verify to regenerate.
 
-# manual test in a ready browser (key pre-seeded, demo page opens):
+# manual real-provider test (demo page opens; no request is sent until you start a task):
 npm run playtest
-#   the OpenRouter key is read from ~/.config/study-buddy/credentials.json
-#   (or OPENROUTER_API_KEY); it is never written into the repo
+#   OpenRouter credentials come from ~/.config/study-buddy/credentials.json
+#   or OPENROUTER_API_KEY; the key is stored only in this device's extension settings
+#   OPENROUTER_API_KEY overrides the default OpenRouter setup; a saved custom
+#   provider, endpoint, and key remain paired and are preserved.
+#   The dedicated ~/.config/study-buddy/playtest-profile persists settings and
+#   History across restarts; it is never cleared by the script.
+#   PLAYTEST_PROFILE can point to a separate agent-owned QA profile.
 
 # task quality: drive the real UI against the real API, one fixture per task:
 npm run quality

@@ -1,7 +1,7 @@
 // Isolated local acceptance browser + mock provider. Never reads credentials.
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 const root = resolve(fileURLToPath(import.meta.url), '..', '..')
 const stateDir = join(root, 'review', 'preview')
 const stateFile = join(stateDir, 'state.json')
+const dist = join(root, 'dist')
 const command = process.argv[2] ?? 'start'
 if (command === 'stop' || command === 'health') {
   const state = JSON.parse(readFileSync(stateFile, 'utf8'))
@@ -23,17 +24,16 @@ if (command === 'stop' || command === 'health') {
 if (command !== 'start') throw new Error('Use start, health or stop')
 mkdirSync(stateDir, { recursive: true })
 const runDir = mkdtempSync(join(stateDir, 'run-'))
-const dist = join(runDir, 'extension')
-cpSync(join(root, 'dist'), dist, { recursive: true })
-const manifestFile = join(dist, 'manifest.json')
-const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
-manifest.host_permissions = ['http://127.0.0.1/*'] // preview only; production remains activeTab-only
-writeFileSync(manifestFile, JSON.stringify(manifest, null, 2))
+const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
+if (manifest.host_permissions?.length || manifest.permissions?.includes('<all_urls>')) {
+  throw new Error('Preview requires the original narrow manifest without persistent host permissions.')
+}
 const token = randomUUID()
 let ctx
 let stopping = false
 let requests = 0
 let origin
+let captureReady = false
 const stop = async () => {
   if (stopping) return
   stopping = true
@@ -44,13 +44,13 @@ const demo = `<!doctype html><meta charset="utf-8"><title>Study Buddy · лок�
 <style>body{font:18px/1.6 system-ui;background:#eef1f5;color:#18181b;margin:0}header{padding:18px;background:#111827;color:white}main{padding:28px}article{background:white;border:1px solid #ddd;border-radius:10px;padding:20px;width:340px}small{font-size:13px}</style>
 <header>Study Buddy · изолированный mock, без реального AI и оплаты</header>
 <main><article><b>Задача</b><p>2x + 6 = 10</p><b>Попытка ученика</b><p>2(x + 3) = 10<br>2x + 3 = 10</p></article>
-<p>Ctrl+Shift+Y: выделить область. Значок расширения: вернуть диалог.</p>
+<p>Ctrl+Shift+Y или значок расширения: выделить область. Диалог открывается после успешного захвата.</p>
 <small>Hint/Check отвечают фиксированной демонстрацией. Это проверка интерфейса, не качества модели. Свернуть: ответ продолжается. Закрыть: ответ сохраняется и останавливается.</small></main>`
 const screenshots = ['dialog', 'check', 'history', 'minimized', 'narrow']
 const server = createServer((req, res) => {
   if (req.url === '/healthz') {
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ ok: !stopping && !!ctx, browser: 'agent-owned Chromium', requests, mockOnly: true, pid: process.pid }))
+    res.end(JSON.stringify({ ok: !stopping && !!ctx && captureReady, browser: 'agent-owned Chromium', captured: captureReady, requests, mockOnly: true, pid: process.pid }))
     return
   }
   if (req.url === '/stop' && req.method === 'POST') {
@@ -97,7 +97,7 @@ try {
   origin = `http://127.0.0.1:${server.address().port}`
   ctx = await chromium.launchPersistentContext(join(runDir, 'profile'), {
     channel: 'chromium', headless: process.argv.includes('--headless'), viewport: { width: 1200, height: 800 },
-    args: [`--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
+    args: ['--enable-unsafe-extension-debugging', `--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
   })
   await ctx.route('**/*', route => {
     const url = new URL(route.request().url())
@@ -108,19 +108,38 @@ try {
   await sw.evaluate(settings => chrome.storage.local.set({ settings }), { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'mock-preview-only', uiLanguage: 'ru', answerLanguage: 'auto' })
   const page = await ctx.newPage()
   await page.goto(`${origin}/demo`)
-  const trigger = await ctx.newPage()
-  await trigger.goto(await sw.evaluate(() => chrome.runtime.getURL('src/chat/chat.html')))
   await page.bringToFront()
-  await trigger.evaluate(() => chrome.runtime.sendMessage({ type: 'START_SELECTION' }))
+  const extensionId = new URL(sw.url()).hostname
+  const extensionPrefix = `chrome-extension://${extensionId}/`
+  const extensionFrameNavigation = page.waitForEvent('framenavigated', frame => frame.url().startsWith(extensionPrefix), { timeout: 15_000 }).catch(() => undefined)
+  const browserCdp = await ctx.browser().newBrowserCDPSession()
+  const { targetInfos } = await browserCdp.send('Target.getTargets', {
+    filter: [{ type: 'tab', exclude: false }, { exclude: true }],
+  })
+  const target = targetInfos.find(info => info.type === 'tab' && info.url === page.url())
+  if (!target) throw new Error(`Preview could not find the browser tab for ${page.url()}`)
+  await browserCdp.send('Extensions.triggerAction', { id: extensionId, targetId: target.targetId })
   await page.waitForSelector('[data-study-buddy="overlay"]')
   await page.mouse.move(50, 130)
   await page.mouse.down()
   await page.mouse.move(360, 200, { steps: 8 })
   await page.mouse.up()
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
-  await trigger.close()
+  let chatFrame = page.frames().find(frame => frame.url().startsWith(extensionPrefix))
+  if (!chatFrame) {
+    await extensionFrameNavigation
+    chatFrame = page.frames().find(frame => frame.url().startsWith(extensionPrefix))
+  }
+  if (!chatFrame) throw new Error('Preview did not create the embedded Study Buddy chat frame.')
+  await chatFrame.waitForFunction(() => {
+    const crop = document.getElementById('crop')
+    return !!crop?.naturalWidth && !!crop.naturalHeight
+  }, null, { timeout: 15_000 })
+  const cropSize = await chatFrame.locator('#crop').evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight }))
+  if (cropSize.width < 4 || cropSize.height < 4) throw new Error('Preview capture produced an empty crop.')
+  captureReady = true
   writeFileSync(stateFile, JSON.stringify({ origin, token, pid: process.pid, runDir, mode: 'localhost mock only' }, null, 2))
-  console.log(`READY ${origin} · demo ${origin}/demo · isolated profile ${runDir}/profile`)
+  console.log(`READY ${origin} · demo ${origin}/demo · captured crop ${cropSize.width}×${cropSize.height}px · isolated profile ${runDir}/profile`)
   process.once('SIGINT', () => void stop())
   process.once('SIGTERM', () => void stop())
   ctx.once('close', () => { stopping = true; server.close() })

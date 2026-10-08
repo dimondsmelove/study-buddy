@@ -9,7 +9,7 @@ import type { CaptureRequest, ChatState, Message, Rect, StoredCapture } from '..
 import { CAPTURE_PREFIX, MAX_KEPT_CAPTURES } from '../shared/messages'
 import { restrictedReason } from '../shared/restricted'
 import { captureTab } from './capture'
-import { captureDialog, installConversationCoordinator, restoreDialog } from './conversations'
+import { captureDialog, closeDialog, installConversationCoordinator, restoreDialog } from './conversations'
 
 installConversationCoordinator()
 
@@ -59,7 +59,7 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 })
 chrome.tabs.onRemoved.addListener(selectionUnavailable)
 
-chrome.runtime.onMessage.addListener((msg: Message, sender) => {
+chrome.runtime.onMessage.addListener((msg: Message, sender, respond) => {
   // Extension pages can also live in tabs; only a content script's tab
   // identifies the capture source.
   const contentTab =
@@ -68,6 +68,10 @@ chrome.runtime.onMessage.addListener((msg: Message, sender) => {
       : undefined
   if (msg.type === 'START_SELECTION') {
     entrypoint(() => startActiveTabSelection(), true)
+  } else if (msg.type === 'DIALOG_CLOSED') {
+    if (!contentTab?.id || typeof msg.conversationId !== 'string') { respond({ ok: false }); return false }
+    void closeDialog(msg.conversationId, contentTab.id).then(() => respond({ ok: true }), () => respond({ ok: false }))
+    return true
   } else if (msg.type === 'RESTORE_CHAT') {
     entrypoint(async () => {
       const tab = contentTab ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]

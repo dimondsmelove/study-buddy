@@ -5,7 +5,7 @@ import { CAPTURE_PREFIX, GENERATION_PORT, type ConversationAction, type StoredCa
 const ready = recoverGeneration()
 void ready.catch(() => {}) // command handlers report failure; do not start a request without recovery
 let queue: Promise<unknown> = ready
-let active: { port: chrome.runtime.Port; generation: Generation; text: string } | undefined
+let active: { port: chrome.runtime.Port; generation: Generation; text: string; tabId?: number } | undefined
 
 /** Every transcript mutation shares this writer, including port disconnects. */
 function serialized<T>(run: () => Promise<T>): Promise<T> {
@@ -25,12 +25,11 @@ function ownPage(sender?: chrome.runtime.MessageSender): boolean {
 async function selectedForTab(tabId?: number): Promise<Conversation | undefined> {
   const key = `dialog.tab.${tabId}`
   const saved = tabId === undefined ? {} : await chrome.storage.session.get(key)
-  const state = await getConversationState()
   if (typeof saved[key] === 'string') {
     const selected = await getConversation(saved[key])
     if (selected) return selected
   }
-  return state.lastConversationId ? getConversation(state.lastConversationId) : undefined
+  return undefined
 }
 
 async function remember(id: string, tabId?: number): Promise<void> {
@@ -65,6 +64,22 @@ export function captureDialog(imageId: string, tabId: number): Promise<Conversat
     await remember(conversation.id, tabId)
     changed()
     return updated
+  })
+}
+
+/** Close only the association and writer owned by this content tab. */
+export function closeDialog(conversationId: string, tabId: number): Promise<void> {
+  return serialized(async () => {
+    const running = active
+    if (running?.tabId === tabId && running.generation.conversationId === conversationId) {
+      active = undefined
+      await updateReply(running.generation, running.text, 'cancelled')
+      running.port.disconnect()
+      changed()
+    }
+    const key = `dialog.tab.${tabId}`
+    const saved = await chrome.storage.session.get(key)
+    if (saved[key] === conversationId) await chrome.storage.session.remove(key)
   })
 }
 
@@ -132,7 +147,7 @@ export function installConversationCoordinator(): void {
           }
           await validateContext(conversation)
           const generation = await startGeneration(conversation.id, user, assistant)
-          active = { port, generation, text: '' }
+          active = { port, generation, text: '', tabId: port.sender?.tab?.id }
           await remember(conversation.id, port.sender?.tab?.id)
           changed()
           return { generation, conversation: await getConversation(conversation.id) }

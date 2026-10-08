@@ -49,7 +49,7 @@ export default defineManifest({
   web_accessible_resources: [
     {
       // The chat window is embedded in pages as an iframe from this URL.
-      resources: ['src/chat/chat.html'],
+      resources: ['src/chat/chat.html', 'icons/icon32.png'],
       matches: ['<all_urls>'],
     },
   ],

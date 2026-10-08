@@ -35,6 +35,11 @@ export interface ShowOverlay {
   type: 'SHOW_OVERLAY'
 }
 
+/** SW → overlay: hide an existing chat while the user selects a region. */
+export interface PrepareSelection {
+  type: 'PREPARE_SELECTION'
+}
+
 /** SW → overlay: hide / cancel the selection overlay. */
 export interface HideOverlay {
   type: 'HIDE_OVERLAY'
@@ -52,6 +57,12 @@ export interface CaptureRequest {
 /** overlay → SW: user cancelled the selection (Esc / click). */
 export interface SelectionCancelled {
   type: 'SELECTION_CANCELLED'
+}
+
+/** SW → overlay: restore its prior visibility and show a capture failure. */
+export interface CaptureFailed {
+  type: 'CAPTURE_FAILED'
+  message: string
 }
 
 /** SW → overlay: embed the chat window with this state (create or reuse). */
@@ -83,9 +94,11 @@ export type Message =
   | StartSelection
   | RestoreChat
   | ShowOverlay
+  | PrepareSelection
   | HideOverlay
   | CaptureRequest
   | SelectionCancelled
+  | CaptureFailed
   | ShowChat
   | HideChat
   | PermissionGranted

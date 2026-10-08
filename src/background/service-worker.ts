@@ -34,7 +34,7 @@ function entrypoint(task: () => Promise<void>, exclusive = false): void {
 chrome.action.onClicked.addListener((tab) => {
   if (tab.id === undefined) return
   const tabId = tab.id
-  entrypoint(() => restoreOnTab(tabId), true)
+  entrypoint(() => startSelection(tabId), true)
 })
 
 chrome.commands.onCommand.addListener((command, tab) => {
@@ -119,11 +119,11 @@ async function startSelection(tabId: number): Promise<void> {
   try {
     await injectOverlay(tabId) // needs host access (activeTab / granted host)
     if (await showOverlay(tabId)) return
-  } catch {
-    // injection blocked — fall through to the permission prompt
+  } catch (err) {
+    await showCaptureFailure(tabId, err instanceof Error ? err.message : String(err))
+    return
   }
-  pendingSelect = { tabId }
-  await showChatWindow(tabId, { kind: 'permission', origin: await originOf(tabId) })
+  await showCaptureFailure(tabId, 'Study Buddy could not start region selection on this page.')
 }
 
 /** If a page is one Chrome forbids ALL extensions from touching (the Web Store,
@@ -140,7 +140,7 @@ async function blockedIfRestricted(tab: chrome.tabs.Tab): Promise<boolean> {
 async function showOverlay(tabId: number): Promise<boolean> {
   selectionTabId = tabId
   try {
-    await chrome.tabs.sendMessage(tabId, { type: 'SHOW_OVERLAY' })
+    await chrome.tabs.sendMessage(tabId, { type: 'PREPARE_SELECTION' })
     return true
   } catch {
     // A cancellation/navigation during delivery must not trigger reinjection.
@@ -185,19 +185,40 @@ async function handleCapture(req: CaptureRequest, tabId?: number, documentId?: s
     const conversation = await captureDialog(imageId, tab.id)
     await showChatWindow(tab.id, { kind: 'capture', imageId, rect: req.rect, conversationId: conversation.id })
   } catch (err) {
-    await showError(err instanceof Error ? err.message : String(err))
+    await showCaptureFailure(tabId, err instanceof Error ? err.message : String(err))
   }
 }
 
 async function showError(message: string): Promise<void> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-  if (/activeTab|all_urls|permission|cannot be scripted|Cannot access/i.test(message)) {
-    // A capture-path permission failure (e.g. a retried capture after the SW was
-    // recycled): a grant fixes it, same as the selection path.
-    await showChatWindow(tab?.id, { kind: 'permission', origin: '' })
+  await showCaptureFailure(tab?.id, message)
+}
+
+async function showCaptureFailure(tabId: number | undefined, message: string): Promise<void> {
+  if (tabId === undefined) {
+    await showChatWindow(undefined, { kind: 'error', message })
     return
   }
-  await showChatWindow(tab?.id, { kind: 'error', message })
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+  const restricted = restrictedReason(tab?.url)
+  if (restricted) {
+    await showChatWindow(tabId, { kind: 'restricted', reason: restricted })
+    return
+  }
+  if (isMissingAccessFailure(message)) {
+    pendingSelect = { tabId }
+    await showChatWindow(tabId, { kind: 'permission', origin: await originOf(tabId) })
+    return
+  }
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_FAILED', message })
+  } catch {
+    await showChatWindow(tabId, { kind: 'error', message })
+  }
+}
+
+function isMissingAccessFailure(message: string): boolean {
+  return /(?:activeTab|host|site).{0,60}permission.{0,40}(?:required|missing)|permission.{0,40}(?:required|missing)|does not have permission to access|cannot access contents/i.test(message)
 }
 
 /** Keep the crop in session storage (RAM-backed, never touches disk) and prune

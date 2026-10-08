@@ -22,10 +22,15 @@ let lastPointer = { x: 0, y: 0 }
 chrome.runtime.onMessage.addListener((msg: Message) => {
   if (msg.type === 'SHOW_OVERLAY') {
     showOverlay()
+  } else if (msg.type === 'PREPARE_SELECTION') {
+    prepareForSelection()
+    showOverlay()
   } else if (msg.type === 'HIDE_OVERLAY') {
     cancelOverlay?.()
   } else if (msg.type === 'SHOW_CHAT') {
     showChat(msg.state)
+  } else if (msg.type === 'CAPTURE_FAILED') {
+    captureFailed(msg.message)
   } else if (msg.type === 'HIDE_CHAT') {
     removeChat()
   }
@@ -97,6 +102,7 @@ function showOverlay() {
   }
 
   function notifyCancelled() {
+    restoreAfterSelection()
     void chrome.runtime.sendMessage({ type: 'SELECTION_CANCELLED' }).catch(() => {})
   }
 
@@ -177,7 +183,9 @@ let chatRoot: HTMLElement | undefined
 let chatPanel: HTMLDivElement | undefined
 let chatFrame: HTMLIFrameElement | undefined
 let launcher: HTMLButtonElement | undefined
+let errorNotice: HTMLDivElement | undefined
 let chatLang: 'en' | 'ru' = 'en'
+let selectionRestoreState: 'open' | 'minimized' | undefined
 let hostMessages: ((event: MessageEvent) => void) | undefined
 
 /** User-resized panel size, persisted across pages/sessions. Loaded async;
@@ -223,9 +231,15 @@ function chatUrlParams(state: ChatState): Record<string, string> {
  *  instead of reloading the iframe. */
 function showChat(state: ChatState): void {
   if (chatFrame) {
+    selectionRestoreState = undefined
     if (chatPanel) chatPanel.style.display = 'flex'
+    if (chatPanel) chatPanel.style.visibility = 'visible'
     if (launcher) launcher.hidden = true
     chatRoot?.setAttribute('data-state', 'open')
+    if (errorNotice) {
+      errorNotice.hidden = true
+      errorNotice.style.display = 'none'
+    }
     postStateToChat(state)
     if (state.kind === 'capture') positionPanel(state.rect)
     return
@@ -373,6 +387,22 @@ function showChat(state: ChatState): void {
     button.addEventListener('pointercancel', up)
   }
   shadow.appendChild(button)
+
+  const notice = document.createElement('div')
+  notice.setAttribute('role', 'alert')
+  notice.style.cssText = 'position:fixed;right:24px;top:24px;display:none;align-items:flex-start;gap:12px;max-width:min(360px,calc(100vw - 48px));padding:12px 14px;border:1px solid #fca5a5;border-radius:8px;background:#fff;color:#7f1d1d;box-shadow:0 4px 18px #0003;font:13px/1.45 system-ui,sans-serif;z-index:2147483647'
+  const noticeText = document.createElement('span')
+  noticeText.style.cssText = 'flex:1;overflow-wrap:anywhere'
+  const dismiss = document.createElement('button')
+  dismiss.type = 'button'
+  dismiss.textContent = '×'
+  dismiss.title = 'Dismiss error'
+  dismiss.setAttribute('aria-label', 'Dismiss error')
+  dismiss.style.cssText = 'border:0;background:transparent;color:inherit;font:20px/1 system-ui,sans-serif;cursor:pointer;padding:0 2px'
+  dismiss.onclick = () => { notice.hidden = true; notice.style.display = 'none' }
+  notice.append(noticeText, dismiss)
+  notice.hidden = true
+  shadow.appendChild(notice)
   document.documentElement.appendChild(root)
   makeDraggable(panel, bar)
   makeResizable(panel, grip)
@@ -381,6 +411,7 @@ function showChat(state: ChatState): void {
   chatPanel = panel
   chatFrame = frame
   launcher = button
+  errorNotice = notice
   hostMessages = (event) => {
     const data = event.data
     const url = new URL(CHAT_URL)
@@ -399,6 +430,40 @@ function showChat(state: ChatState): void {
   window.addEventListener('message', hostMessages)
   w[CHAT_FLAG] = true
   positionPanel(state.kind === 'capture' ? state.rect : undefined)
+}
+
+function prepareForSelection(): void {
+  if (chatFrame && chatRoot && chatPanel && launcher && !selectionRestoreState) {
+    selectionRestoreState = chatPanel.style.display === 'none' ? 'minimized' : 'open'
+  }
+  if (chatPanel) chatPanel.style.visibility = 'hidden'
+  if (launcher) launcher.hidden = true
+  if (chatRoot) chatRoot.setAttribute('data-state', 'selecting')
+}
+
+function restoreAfterSelection(): void {
+  if (!selectionRestoreState || !chatPanel || !chatRoot || !launcher) return
+  const state = selectionRestoreState
+  selectionRestoreState = undefined
+  chatPanel.style.visibility = 'visible'
+  chatPanel.style.display = state === 'open' ? 'flex' : 'none'
+  launcher.hidden = state === 'open'
+  chatRoot.setAttribute('data-state', state)
+}
+
+function captureFailed(message: string): void {
+  if (!chatFrame || !errorNotice) {
+    restoreAfterSelection()
+    showChat({ kind: 'error', message })
+    return
+  }
+  restoreAfterSelection()
+  const text = errorNotice.querySelector('span')
+  if (text) text.textContent = `${chatLang === 'ru' ? 'Не удалось захватить область' : 'Could not capture the selected region'}: ${message}`
+  const dismiss = errorNotice.querySelector('button')
+  if (dismiss) dismiss.setAttribute('aria-label', chatLang === 'ru' ? 'Скрыть сообщение об ошибке' : 'Dismiss error')
+  errorNotice.hidden = false
+  errorNotice.style.display = 'flex'
 }
 
 /** Relay a new state into the live chat page without reloading it. Target

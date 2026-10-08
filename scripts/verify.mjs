@@ -4,36 +4,19 @@
 //   crop → chrome.storage.session → chat window host embedded in the page →
 //   the chat page renders the crop.
 //
-// Trigger note: the keyboard shortcut itself (keypress → onCommand) is browser
-// machinery that stays dormant in headless Chromium, so the flow is started
-// from an extension page with the same runtime message the chat window will
-// use for its "new selection" action. The shortcut's registration IS verified
-// (chrome.commands.getAll). Verify the physical keypress in a real browser.
+// The toolbar path is invoked through Chromium's native extension action so
+// activeTab is granted by the same browser gesture as a real click. The
+// shortcut registration is verified here; dispatching the physical key still
+// requires a headed browser.
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
-import { cpSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
 
 const root = resolve(fileURLToPath(import.meta.url), '..')
 const dist = resolve(root, '..', 'dist')
-
-// Test build: a copy of dist with host_permissions added, so capture works
-// WITHOUT the activeTab grant that only a real toolbar click / shortcut press
-// provides (Playwright can't click the browser action; its evaluate() trigger
-// is not a user gesture). Production keeps activeTab-only; this only changes
-// HOW capture is authorized, not the capture/crop/chat code path.
-// (Solution inherited from OCR Buddy's verify-ux.mjs.)
-const distTest = resolve(root, '..', 'dist-test')
-rmSync(distTest, { recursive: true, force: true })
-cpSync(dist, distTest, { recursive: true })
-{
-  const mf = join(distTest, 'manifest.json')
-  const m = JSON.parse(readFileSync(mf, 'utf8'))
-  m.host_permissions = ['<all_urls>']
-  writeFileSync(mf, JSON.stringify(m, null, 2))
-}
 
 // Fresh profile each run: a reused persistent profile can restore a STALE
 // service worker from the code cache (an old build!) — which once sent this
@@ -48,7 +31,8 @@ const check = (ok, label) => {
 
 // A local page to capture (data: URLs are restricted; file:// needs a toggle).
 const pageHtml = `<!doctype html><meta charset="utf-8"><title>target</title>
-<body style="font:24px system-ui"><p style="padding:40px">homework text 12345</p></body>`
+<style>body{margin:0;font:24px system-ui}.capture-proof{position:fixed;left:220px;top:230px;width:140px;height:90px;background:rgb(19,135,64)}</style>
+<body><p style="padding:40px">homework text 12345</p><div class="capture-proof"></div></body>`
 
 // The same server doubles as a mock OpenAI-compatible endpoint for the AI
 // tests below: /v1/chat/completions streams two SSE deltas, and the request
@@ -101,7 +85,7 @@ const ctx = await chromium.launchPersistentContext(profile, {
   // channel 'chromium' = the full build with the NEW headless, which loads
   // extensions (the default "headless shell" does not).
   channel: 'chromium',
-  args: [`--disable-extensions-except=${distTest}`, `--load-extension=${distTest}`],
+  args: ['--enable-unsafe-extension-debugging', `--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
 })
 
 const pageErrors = []
@@ -112,6 +96,15 @@ try {
   let [sw] = ctx.serviceWorkers()
   if (!sw) sw = await ctx.waitForEvent('serviceworker')
   check(true, 'service worker started')
+  const extensionId = new URL(sw.url()).hostname
+  const browserCdp = await ctx.browser().newBrowserCDPSession()
+  const triggerAction = async (targetPage) => {
+    await targetPage.bringToFront()
+    const { targetInfos } = await browserCdp.send('Target.getTargets', { filter: [{ type: 'tab', exclude: false }, { exclude: true }] })
+    const target = targetInfos.find((item) => item.type === 'tab' && item.url === targetPage.url())
+    if (!target) throw new Error(`Could not find the browser tab for ${targetPage.url()}; targets: ${targetInfos.map((item) => `${item.type}:${item.url}`).join(' | ')}`)
+    await browserCdp.send('Extensions.triggerAction', { id: extensionId, targetId: target.targetId })
+  }
 
   // The shortcut must be registered (its physical dispatch needs a real window).
   const commands = await sw.evaluate(() => chrome.commands.getAll())
@@ -131,17 +124,10 @@ try {
   const page = await ctx.newPage()
   await page.goto(url)
   await page.bringToFront()
+  check(await page.locator('[data-study-buddy]').count() === 0, 'fresh page has no Study Buddy host or selection overlay')
 
-  // An extension page that triggers the same flow the chat window's
-  // "new selection" action will use. It must NOT be the active tab when the
-  // message is sent, or the SW would select on it instead of the target page.
-  // chrome-extension:// URLs have an opaque origin: URL.origin is the literal
-  // string "null" — so build the origin by hand.
   const chatOrigin = (await sw.evaluate(() => chrome.runtime.getURL(''))).replace(/\/$/, '')
-  const trigger = await ctx.newPage()
-  await trigger.goto(`${chatOrigin}/src/chat/chat.html`)
-  await page.bringToFront()
-  await trigger.evaluate(() => chrome.runtime.sendMessage({ type: 'START_SELECTION' }))
+  await triggerAction(page)
 
   let overlayOk = true
   try {
@@ -178,7 +164,7 @@ try {
         .catch((e) => String(e)),
     ))
   }
-  check(overlayOk, 'selection overlay appeared (START_SELECTION → injection)')
+  check(overlayOk, 'native extension action granted activeTab and started region selection')
 
   // Drag a 120x80 box at (60, 50).
   await page.mouse.move(60, 50)
@@ -190,6 +176,9 @@ try {
   // closed shadow root) — "visible" waits would never pass.
   await page.waitForSelector('[data-study-buddy="chat"]', { timeout: 5000, state: 'attached' })
   check(true, 'chat window host embedded near the selection')
+  const liveFrame = page.frames().find((frame) => frame.url().startsWith(chatOrigin))
+  await liveFrame.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+  const oldCropSrc = await liveFrame.locator('#crop').getAttribute('src')
 
   // The SW should have captured, cropped, and stored the region.
   const capture = await sw.evaluate(async () => {
@@ -217,7 +206,56 @@ try {
   })
   check(imgLoaded, 'chat page renders the captured crop')
   await chat.close()
-  await trigger.close()
+  await triggerAction(page)
+  await page.waitForSelector('[data-study-buddy="overlay"]', { timeout: 5000 })
+  await page.mouse.move(230, 240)
+  await page.mouse.down()
+  await page.mouse.move(330, 300, { steps: 4 })
+  await page.mouse.up()
+  const cleanCrop = await sw.evaluate(async (previousId) => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const captures = Object.entries(await chrome.storage.session.get())
+        .filter(([key]) => key.startsWith('capture.'))
+        .sort(([, a], [, b]) => a.ts - b.ts)
+      const id = captures.at(-1)?.[0].slice('capture.'.length)
+      if (id && id !== previousId) return id
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    return undefined
+  }, capture.id)
+  check(cleanCrop !== capture.id, 'a second native selection stores a fresh crop while the chat is open')
+  await liveFrame.waitForFunction((previous) => {
+    const img = document.getElementById('crop')
+    return img?.src !== previous && img?.naturalWidth > 0
+  }, oldCropSrc)
+  const cleanPixel = await liveFrame.evaluate(() => {
+    const img = document.getElementById('crop')
+    const canvas = document.createElement('canvas')
+    canvas.width = img.naturalWidth
+    canvas.height = img.naturalHeight
+    const context = canvas.getContext('2d')
+    context.drawImage(img, 0, 0)
+    const pixel = context.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data
+    return [...pixel].slice(0, 3)
+  })
+  check(cleanPixel[1] > 100 && cleanPixel[1] > cleanPixel[0] * 2, `capture excludes the overlapping chat panel (${cleanPixel.join(',')})`)
+
+  await triggerAction(page)
+  await page.waitForSelector('[data-study-buddy="overlay"]', { timeout: 5000 })
+  await page.keyboard.press('Escape')
+  await page.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
+  await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
+  check(page.frames().includes(liveFrame), 'Escape restores the expanded chat and retains its iframe')
+
+  await triggerAction(page)
+  await page.waitForSelector('[data-study-buddy="overlay"]', { timeout: 5000 })
+  await page.mouse.move(75, 75)
+  await page.mouse.down()
+  await page.mouse.move(76, 76)
+  await page.mouse.up()
+  await page.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
+  await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
+  check(page.frames().includes(liveFrame), 'a tiny accidental selection restores the same expanded chat')
 
   // Settings round trip: no onboarding any more — a bare chat page with no key
   // and no params shows the no-state error view, whose ⚙ Settings… button is
@@ -558,6 +596,7 @@ try {
   await embedded.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.includes('Hello'))
   const nativeState = await readSaved(embedded)
   const nativeId = nativeState.state.generation.conversationId
+  const priorAttachmentId = nativeState.conversations.find((conversation) => conversation.id === nativeId).activeAttachmentId
   const duplicate = await ctx.newPage()
   await duplicate.goto(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${nativeId}`)
   await duplicate.waitForFunction(() => document.getElementById('ask-btn')?.disabled)
@@ -639,6 +678,8 @@ try {
     check(atZero.ok && !early.ok && early.error === 'dialog.cooldown:1' && boundary.ok, 'native coordinator rejects t=9.999s and admits t=10s across windows')
   } finally { await sw.evaluate(() => { Date.now = globalThis.fixtureOriginalNow; delete globalThis.fixtureNow; delete globalThis.fixtureOriginalNow }) }
   check(JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8')).incognito === 'not_allowed', 'incognito is explicitly disabled')
+  const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
+  check(!manifest.host_permissions && !manifest.permissions.includes('<all_urls>'), 'native-action capture needs no persistent site grant')
   await racePeer.close()
 
   await page.bringToFront()
@@ -653,7 +694,9 @@ try {
   await recaptured.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
   const recaptureDb = await readSaved(recaptured)
   const recaptureDialog = recaptureDb.conversations.find(c => c.id === nativeId)
-  check(recaptureDb.state.lastConversationId === nativeId && recaptureDialog.activeAttachmentId !== capture.id && recaptureDialog.turns[0].attachmentId === capture.id, 'new capture continues the tab-selected dialog while keeping old turn attachment links')
+  const pageTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({ url: targetUrl }))[0]?.id, url)
+  const pageBinding = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${pageTabId}`)
+  check(pageBinding === nativeId && recaptureDialog.activeAttachmentId !== priorAttachmentId && recaptureDialog.turns[0].attachmentId === priorAttachmentId, 'new capture continues the tab-selected dialog while keeping old turn attachment links')
   await resetCooldown(recaptured)
   const oldCount = await recaptured.locator('.msg.assistant').count()
   await recaptured.fill('#ask-input', 'Use the newly selected task')
@@ -665,7 +708,7 @@ try {
 
   // Actual browser restart with the same isolated profile, not just page reload.
   await ctx.close()
-  const restarted = await chromium.launchPersistentContext(profile, { channel: 'chromium', args: [`--disable-extensions-except=${distTest}`, `--load-extension=${distTest}`] })
+  const restarted = await chromium.launchPersistentContext(profile, { channel: 'chromium', args: ['--enable-unsafe-extension-debugging', `--disable-extensions-except=${dist}`, `--load-extension=${dist}`] })
   await restarted.route('https://**/*', route => route.abort())
   restarted.on('page', p => p.on('pageerror', err => pageErrors.push(String(err))))
   try {
@@ -676,6 +719,8 @@ try {
     const volatile = await resumed.evaluate(() => chrome.storage.session.get())
     check(!Object.keys(volatile).some(k => k.startsWith('capture.')), 'browser restart clears session crops without losing saved Blob attachments')
     check((await readSaved(resumed)).conversations.find(c => c.id === nativeId).turns.at(-1).status === 'complete', 'full browser restart preserves transcript/status and settings')
+    const retainedSettings = (await resumed.evaluate(() => chrome.storage.local.get('settings'))).settings
+    check(retainedSettings?.uiLanguage === 'en' && retainedSettings?.answerLanguage === 'auto', 'interface and answer language survive a full browser restart')
     const privilegedEvent = restarted.waitForEvent('page')
     await resumed.evaluate(() => chrome.tabs.create({ url: 'chrome://version' }))
     const privileged = await privilegedEvent

@@ -66,6 +66,11 @@ const server = createServer((req, res) => {
         res.on('close', () => { clearInterval(interval); clearTimeout(finish) })
         return
       }
+      if (responseMode === 'long') {
+        const answer = 'A longer worked explanation with enough detail to read at normal size. Each step follows from the captured question and keeps the reasoning visible instead of compressing the result.\n\nFor the quadratic formula,\n\n$$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$\n\nThis display equation is rendered with KaTeX. The surrounding prose remains selectable and wraps within the answer column.'
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: answer } }] }) + '\n\ndata: [DONE]\n\n')
+        return
+      }
       if (responseMode === 'truncated') { res.end('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'); return }
       if (responseMode === 'interrupted') { res.end(); return }
       if (responseMode === 'provider-error') { res.end('data: {"error":{"message":"private-provider-fixture"}}\n\n'); return }
@@ -451,41 +456,66 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
   check(page.frames().includes(liveFrame), 'a tiny accidental selection restores the same expanded chat')
 
-  // Settings round trip: no onboarding any more — a bare chat page with no key
-  // and no params shows the no-state error view, whose ⚙ Settings… button is
-  // the rescue path, and Save persists. Clearing storage gives the clean state.
-  await sw.evaluate(() => chrome.storage.local.remove('settings'))
+  // Language-only Settings keep the existing development connection intact.
+  const settingsFixture = { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto' }
+  await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), settingsFixture)
   const settings = await ctx.newPage()
   await settings.goto(`${chatOrigin}/src/chat/chat.html?kind=error&message=Settings%20fixture`)
   await settings.waitForSelector('#view-error:not([hidden])')
-  check(true, 'explicit error state retains the settings rescue path')
   await settings.click('#view-error:not([hidden]) [data-goto-settings]')
   await settings.waitForSelector('#view-settings:not([hidden])')
-  check(true, 'settings view opens from the error view')
-  await settings.click('.advanced summary') // advanced block is collapsed
-  await settings.fill('#set-api-key', 'sk-test-123')
-  await settings.evaluate(() => {
-    globalThis.fixtureStorageSet = chrome.storage.local.set
-    chrome.storage.local.set = async () => { throw new Error('expected fixture write failure') }
+  const noConnectionDetails = await settings.evaluate(() => {
+    const settingsMarkup = document.getElementById('view-settings').outerHTML.toLowerCase()
+    const pageMarkup = document.documentElement.outerHTML
+    return !/(api.?key|provider|base.?url|openrouter|deepseek|model|advanced)/.test(settingsMarkup) &&
+      !pageMarkup.includes('sk-test-123') &&
+      !document.querySelector('#set-api-key,#set-provider,#set-base-url,[data-key-toggle],.advanced')
   })
+  check(noConnectionDetails, 'Settings exposes only language controls; no connection fields or stored secret appear anywhere in the DOM')
+
+  const beforeSettingsWrites = await sw.evaluate(async () => chrome.storage.local.get('settings'))
+  await settings.evaluate(() => {
+    globalThis.fixtureStorageGet = chrome.storage.local.get
+    globalThis.fixtureStorageSet = chrome.storage.local.set
+    chrome.storage.local.get = async () => { throw new Error('expected fixture read failure') }
+    globalThis.fixtureWriteCount = 0
+    globalThis.fixtureFailedWriteCount = 0
+    chrome.storage.local.set = async (...args) => { globalThis.fixtureWriteCount++; return globalThis.fixtureStorageSet(...args) }
+  })
+  await settings.selectOption('#set-ui-lang', 'ru')
   await settings.click('#set-save')
-  await settings.waitForFunction(() => !!document.getElementById('set-msg')?.textContent?.trim())
-  const saveError = await settings.locator('#set-msg').textContent()
-  check(await settings.locator('#view-settings').isVisible() && !(await settings.evaluate(() => chrome.storage.local.get('settings'))).settings, `failed settings save stays on the form without updating saved data (${saveError})`)
-  await settings.evaluate(() => { chrome.storage.local.set = globalThis.fixtureStorageSet; delete globalThis.fixtureStorageSet })
-  await settings.click('#set-save')
-  // state 'attached': an element WITH [hidden] can never be "visible" — the
-  // selector already encodes the hidden-ness we're waiting for.
-  await settings.waitForSelector('#view-settings[hidden]', { state: 'attached' })
-  const stored = (await settings.evaluate(() => chrome.storage.local.get())).settings
   check(
-    stored && stored.provider === 'openrouter' &&
-      stored.baseUrl === 'https://openrouter.ai/api/v1' &&
-      stored.apiKey === 'sk-test-123' &&
-      stored.uiLanguage === 'auto' &&
-      stored.answerLanguage === 'auto' &&
-      !('model' in stored),
-    `settings persisted with languages and no model (${JSON.stringify(stored)})`,
+    await settings.locator('#set-msg').textContent() === 'Could not read settings. Nothing was saved; please retry.' &&
+      await settings.locator('#view-settings').isVisible() &&
+      JSON.stringify(await sw.evaluate(async () => chrome.storage.local.get('settings'))) === JSON.stringify(beforeSettingsWrites) &&
+      await settings.evaluate(() => globalThis.fixtureWriteCount) === 0,
+    'Settings read failure is visible and performs no write',
+  )
+  await settings.evaluate(() => { chrome.storage.local.get = globalThis.fixtureStorageGet })
+
+  await settings.evaluate(() => { chrome.storage.local.set = async () => { globalThis.fixtureFailedWriteCount++; throw new Error('expected fixture write failure') } })
+  await settings.selectOption('#set-ans-lang', 'fr')
+  await settings.click('#set-save')
+  check(
+    await settings.locator('#set-msg').textContent() === 'Could not save settings. Existing data was kept; please retry.' &&
+      await settings.locator('#view-settings').isVisible() &&
+      JSON.stringify(await sw.evaluate(async () => chrome.storage.local.get('settings'))) === JSON.stringify(beforeSettingsWrites) &&
+      await settings.evaluate(() => globalThis.fixtureFailedWriteCount) === 1,
+    'Settings write failure stays visible and preserves the previous connection',
+  )
+  await settings.evaluate(() => { chrome.storage.local.set = globalThis.fixtureStorageSet })
+  const requestsBeforeLanguageSave = requestCount
+  await settings.click('#set-save')
+  await settings.waitForSelector('#view-settings[hidden]', { state: 'attached' })
+  const savedSettings = (await sw.evaluate(async () => chrome.storage.local.get('settings'))).settings
+  check(
+    savedSettings.provider === settingsFixture.provider &&
+      savedSettings.baseUrl === settingsFixture.baseUrl &&
+      savedSettings.apiKey === settingsFixture.apiKey &&
+      savedSettings.uiLanguage === 'ru' &&
+      savedSettings.answerLanguage === 'fr' &&
+      requestCount === requestsBeforeLanguageSave,
+    'language Save retains the stored runtime connection and sends no model request (credentials redacted)',
   )
   await settings.close()
 
@@ -531,6 +561,24 @@ try {
     }
     request.onerror = () => reject(request.error)
   }))
+  // With no development connection, an attempted task explains the state and
+  // does not open credential setup or send a request.
+  await sw.evaluate(() => chrome.storage.local.set({ settings: { provider: 'custom', baseUrl: 'http://127.0.0.1/unconfigured', apiKey: '', uiLanguage: 'en', answerLanguage: 'auto' } }))
+  const disconnected = await openCapture()
+  const beforeDisconnected = requestCount
+  await disconnected.click('.preset[data-preset="solve"]')
+  await disconnected.waitForFunction(() => !document.getElementById('operation-error')?.hidden)
+  check(
+    await disconnected.locator('#operation-error').textContent() === 'The answer service is not connected. Try again later.' &&
+      await disconnected.locator('#view-settings').isHidden() &&
+      requestCount === beforeDisconnected,
+    'missing runtime connection is a clear service error with no key prompt or provider request',
+  )
+  await disconnected.close()
+  await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), {
+    provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto',
+  })
+
   const waitReply = (p) =>
     p
       .waitForFunction(
@@ -576,6 +624,28 @@ try {
     `request carried solve params (t=${lastAiRequest?.temperature}, max_tokens=${lastAiRequest?.max_tokens})`,
   )
   await ai.close()
+
+  responseMode = 'long'
+  const longAnswer = await openCapture()
+  await longAnswer.click('.preset[data-preset="solve"]')
+  await longAnswer.waitForFunction(() => {
+    const status = [...document.querySelectorAll('.reply-status')].at(-1)?.textContent
+    return status?.includes('Complete')
+  })
+  await longAnswer.waitForSelector('.msg.assistant .katex-display .katex')
+  const longRendered = await longAnswer.evaluate(() => ({
+    textLength: document.querySelector('.msg.assistant .msg-body')?.textContent?.length ?? 0,
+    math: !!document.querySelector('.msg.assistant .katex-display .katex'),
+    answerFont: getComputedStyle(document.querySelector('.msg.assistant .msg-body')).fontSize,
+    lineHeight: getComputedStyle(document.querySelector('.msg.assistant .msg-body')).lineHeight,
+  }))
+  check(longRendered.textLength > 250 && longRendered.math && longRendered.answerFont === '16px',
+    'long answer renders wrapped prose and display LaTeX at readable answer typography (' + JSON.stringify(longRendered) + ')')
+  const longEvidence = resolve(root, '..', 'review', 'loop')
+  mkdirSync(longEvidence, { recursive: true })
+  await longAnswer.screenshot({ path: join(longEvidence, 'long-answer.png'), fullPage: true })
+  await longAnswer.close()
+  responseMode = 'normal'
 
   // RU dictionary: with uiLanguage 'ru' the NATIVE RU templates and system
   // prompt must go out (answerLanguage auto + ru UI resolves to Russian).
@@ -663,8 +733,77 @@ try {
   await rapid.close()
   responseMode = 'normal'
 
+  const layout = await openCapture()
+  await layout.setViewportSize({ width: 480, height: 564 })
+  const defaultGeometry = await layout.evaluate(() => {
+    const thread = document.querySelector('#thread').getBoundingClientRect()
+    const composer = document.querySelector('#composer').getBoundingClientRect()
+    return { width: document.documentElement.scrollWidth, thread: thread.height, composerBottom: composer.bottom, viewport: innerHeight }
+  })
+  check(defaultGeometry.width <= 480 && defaultGeometry.thread >= 300 && defaultGeometry.composerBottom <= 564,
+    'default 480×564 chat reserves a readable thread (' + JSON.stringify(defaultGeometry) + ')')
+  await layout.locator('#crop-figure').focus()
+  await layout.keyboard.press('Enter')
+  await layout.waitForFunction(() => document.querySelector('#lightbox')?.open)
+  check(await layout.locator('#lightbox-close').evaluate(button => button === document.activeElement),
+    'image preview opens as a modal and moves keyboard focus inside')
+  await layout.keyboard.press('Tab')
+  check(await layout.locator('#lightbox-close').evaluate(button => button === document.activeElement),
+    'image preview keeps keyboard focus within its modal controls')
+  await layout.keyboard.press('Escape')
+  await layout.waitForFunction(() => !document.querySelector('#lightbox')?.open)
+  check(await layout.locator('#crop-figure').evaluate(figure => figure === document.activeElement),
+    'Escape closes image preview and restores focus to the exact crop opener')
+  const beforeMoreOpen = requestCount
+  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  await layout.waitForFunction(() => document.querySelector('#more-actions')?.matches(':popover-open'))
+  await layout.screenshot({ path: join(evidence, 'more.png') })
+  const expandedMore = await layout.evaluate(() => {
+    const popover = document.querySelector('#more-actions')
+    const rect = popover.getBoundingClientRect()
+    return {
+      expanded: document.querySelector('#more-btn')?.getAttribute('aria-expanded'),
+      actions: [...popover.querySelectorAll('button')].map(button => button.textContent),
+      bounds: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      viewport: { width: innerWidth, height: innerHeight },
+    }
+  })
+  check(expandedMore.expanded === 'true' && expandedMore.actions.length === 4 &&
+    expandedMore.bounds.left >= 0 && expandedMore.bounds.top >= 0 &&
+    expandedMore.bounds.right <= 480 && expandedMore.bounds.bottom <= 564 &&
+    requestCount === beforeMoreOpen,
+  'More opens as a bounded disclosure without sending a request (' + JSON.stringify(expandedMore) + ')')
+  await layout.keyboard.press('Tab')
+  check(await layout.locator('#more-actions').evaluate(popover => popover.contains(document.activeElement)),
+    'Tab moves keyboard focus into the expanded More actions')
+  await layout.keyboard.press('Escape')
+  await layout.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
+  await layout.waitForFunction(() => document.querySelector('#more-btn')?.getAttribute('aria-expanded') === 'false')
+  check(await layout.locator('#more-btn').getAttribute('aria-expanded') === 'false', 'Escape closes More and resets its expanded state')
+  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  await layout.click('#thread')
+  await layout.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
+  check(requestCount === beforeMoreOpen, 'clicking outside More closes it without starting an action')
+  await layout.setViewportSize({ width: 320, height: 324 })
+  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  const narrowGeometry = await layout.evaluate(() => {
+    const popover = document.querySelector('#more-actions').getBoundingClientRect()
+    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, viewport: { width: innerWidth, height: innerHeight } }
+  })
+  check(narrowGeometry.width <= 320 && narrowGeometry.popover.left >= 0 && narrowGeometry.popover.top >= 0 &&
+    narrowGeometry.popover.right <= 320 && narrowGeometry.popover.bottom <= 324 &&
+    await layout.locator('#ask-input').isVisible() && await layout.locator('#ask-btn').isVisible(),
+  '320×324 viewport keeps the menu and required composer reachable (' + JSON.stringify(narrowGeometry) + ')')
+  await layout.keyboard.press('Escape')
+  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  await layout.getByRole('button', { name: 'Explain', exact: true }).click()
+  await waitSaved(layout, 'Complete')
+  check(lastAiRequest.messages.some(message => JSON.stringify(message.content).toLowerCase().includes('explain')),
+    'a task selected from More sends the explicit Explain request')
+  await layout.close()
+
   const hint = await openCapture()
-  await hint.setViewportSize({ width: 480, height: 660 })
+  await hint.setViewportSize({ width: 480, height: 564 })
   await hint.click('[data-preset="hint"]')
   await waitSaved(hint, 'Complete')
   check(lastAiRequest.max_tokens === 512 && lastAiRequest.temperature === 0.3, 'Hint UI uses its bounded one-step prompt budget')
@@ -688,13 +827,21 @@ try {
   check(await hint.locator('.msg.user').count() === 2 && lastAiRequest.max_tokens === 2048, 'explicit Regenerate preserves the source user turn and its original turn budget')
 
   const checked = await openCapture()
-  await checked.setViewportSize({ width: 480, height: 660 })
+  await checked.setViewportSize({ width: 480, height: 564 })
   await checked.click('#check-btn')
-  check(await checked.locator('#ask-form').isHidden(), 'Check shows its multiline form without a second Ask composer')
+  check(await checked.locator('#ask-form').isHidden() && await checked.locator('#thread .hint').isHidden(),
+    'Check uses the shared composer without a second Ask form or unrelated empty-state prompt')
   await checked.click('#check-submit')
   check(await checked.locator('#check-form').isVisible(), 'Check refuses an empty attempt and leaves the input visible')
   const attempt = '2(x+3)=10\n2x+3=10\nx=3.5'
   await checked.fill('#check-input', attempt)
+  const checkGeometry = await checked.evaluate(() => {
+    const thread = document.querySelector('#thread').getBoundingClientRect()
+    const form = document.querySelector('#check-form').getBoundingClientRect()
+    return { width: document.documentElement.scrollWidth, thread: thread.height, formBottom: form.bottom, viewport: innerHeight }
+  })
+  check(checkGeometry.width <= 480 && checkGeometry.thread >= 180 && checkGeometry.formBottom <= 564,
+    'Check keeps multiline input and enough dialogue in the 480×564 panel (' + JSON.stringify(checkGeometry) + ')')
   await checked.screenshot({ path: join(evidence, 'check.png') })
   await checked.click('#check-submit')
   await waitSaved(checked, 'Complete')
@@ -809,6 +956,18 @@ try {
   const clickHostButton = (text) => clickHostButtonOn(page, text)
   let embedded = await chatFrameOn(page)
   await embedded.waitForSelector('#view-capture:not([hidden])')
+  const embeddedElement = await embedded.frameElement()
+  const embeddedBounds = await embeddedElement.boundingBox()
+  const outsidePoint = embeddedBounds.x > 24
+    ? { x: Math.max(4, Math.floor(embeddedBounds.x - 8)), y: Math.max(8, Math.floor(embeddedBounds.y + 12)) }
+    : { x: Math.min(1270, Math.ceil(embeddedBounds.x + embeddedBounds.width + 8)), y: Math.max(8, Math.floor(embeddedBounds.y + 12)) }
+  const requestCountBeforeHostDismiss = requestCount
+  await embedded.getByRole('button', { name: 'More', exact: true }).click()
+  await embedded.waitForFunction(() => document.querySelector('#more-actions')?.matches(':popover-open'))
+  await page.mouse.click(outsidePoint.x, outsidePoint.y)
+  await embedded.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
+  check(requestCount === requestCountBeforeHostDismiss,
+    'a click on the host page outside the iframe dismisses More without starting an action')
   await resetCooldown(embedded)
   responseMode = 'slow'
   const nativeBefore = requestCount

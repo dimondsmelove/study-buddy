@@ -5,12 +5,11 @@
 // initial state arrives via URL params (?kind=capture&id=…); later states are
 // relayed in by the host via postMessage (no reload, the conversation survives).
 //
-// Views: capture (crop + task buttons + thread), the rare permission /
-// restricted / error states, and a settings detour. There is no onboarding:
-// a keyless build requires BYOK; a baked credential is optional and not a
-// trusted public-key protection mechanism. The
-// crop goes through the Gateway (src/shared/gateway.ts) and the answer streams
-// into the thread, rendered as Markdown + LaTeX.
+// Views: capture (crop + task actions + thread), the rare permission /
+// restricted / error states, and a settings detour. Provider configuration is
+// supplied by the development runtime; user settings only control languages.
+// The crop goes through the Gateway and the answer streams into the thread,
+// rendered as Markdown + LaTeX.
 
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -18,14 +17,13 @@ import renderMathInElement from 'katex/contrib/auto-render'
 import 'katex/dist/katex.min.css'
 
 import { ApiError } from '../shared/api'
-import { modelLabel } from '../shared/ai'
 import { createGateway } from '../shared/gateway'
 import type { ChatState, Rect } from '../shared/messages'
 import { conversationUsage, getAttachment, getConversation, getConversationState, listConversations } from '../shared/conversation-store'
 import { blobDataUrl, cooldownRemaining, requestContext, type Conversation, type ConversationState, type ReplyStatus, type Turn } from '../shared/conversations'
 import { conversationAction, GenerationConnection } from './conversation-client'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
-import { DEFAULT_SETTINGS, getSettings, normalizeBaseUrl, resolveSettings, setSettings } from '../shared/settings'
+import { DEFAULT_SETTINGS, getSettings, resolveSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
 import { checkPrompt, PROMPTS_VERSION, simplerPrompt, systemPrompt, taskPrompt, turnParams, type TaskId, type TurnKind } from '../shared/prompts'
@@ -35,9 +33,22 @@ const KINDS: Kind[] = ['capture', 'permission', 'restricted', 'error']
 
 const el = (id: string): HTMLElement => document.getElementById(id)!
 const img = document.getElementById('crop') as HTMLImageElement
-const lightbox = document.getElementById('lightbox') as HTMLDivElement
+const lightbox = document.getElementById('lightbox') as HTMLDialogElement
 const lightboxImg = lightbox.querySelector('img') as HTMLImageElement
 const thread = document.getElementById('thread') as HTMLElement
+
+let lightboxOpener: HTMLElement | undefined
+
+function closeLightbox(): void {
+  if (lightbox.open) lightbox.close()
+}
+
+function openLightbox(source: HTMLElement, src: string): void {
+  if (!src) return
+  lightboxOpener = source
+  lightboxImg.src = src
+  lightbox.showModal()
+}
 
 let uiLang: UiLang = 'en'
 let settingsCache: Settings = { ...DEFAULT_SETTINGS }
@@ -54,6 +65,12 @@ function applyI18n(): void {
   }
   for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-title]')) {
     node.title = t(uiLang, node.dataset.i18nTitle!)
+  }
+  for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-aria]')) {
+    node.setAttribute('aria-label', t(uiLang, node.dataset.i18nAria!))
+  }
+  for (const node of document.querySelectorAll<HTMLImageElement>('[data-i18n-alt]')) {
+    node.alt = t(uiLang, node.dataset.i18nAlt!)
   }
   for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-placeholder]')) {
     ;(node as HTMLInputElement).placeholder = t(uiLang, node.dataset.i18nPlaceholder!)
@@ -198,9 +215,6 @@ function setMsg(text: string): void {
 function fillSettingsForm(s: Settings): void {
   ;(el('set-ui-lang') as HTMLSelectElement).value = s.uiLanguage
   ;(el('set-ans-lang') as HTMLSelectElement).value = s.answerLanguage
-  ;(el('set-provider') as HTMLSelectElement).value = s.provider
-  ;(el('set-base-url') as HTMLInputElement).value = s.baseUrl
-  ;(el('set-api-key') as HTMLInputElement).value = s.apiKey
   setMsg('')
 }
 
@@ -214,43 +228,23 @@ function restoreView(): void {
   apply(current)
 }
 
-// Provider switching: picking the preset repairs the URL if it still shows the
-// custom default (or was left empty); a user-typed URL is left alone.
-;(el('set-provider') as HTMLSelectElement).onchange = (e) => {
-  const urlInput = el('set-base-url') as HTMLInputElement
-  if ((e.target as HTMLSelectElement).value === 'openrouter') {
-    if (urlInput.value === '' || urlInput.value === DEFAULT_SETTINGS.baseUrl) {
-      urlInput.value = 'https://openrouter.ai/api/v1'
-    }
-  } else {
-    urlInput.focus()
-    urlInput.select()
-  }
-}
-
 ;(el('set-save') as HTMLButtonElement).onclick = async () => {
-  const baseUrlInput = (el('set-base-url') as HTMLInputElement).value.trim()
-  // The URL constructor accepts e.g. "https://x" and any scheme — an http(s)
-  // check is the actual gate, not mere parseability. Empty = use the default.
-  if (baseUrlInput) {
-    try {
-      normalizeBaseUrl(baseUrlInput)
-    } catch {
-      setMsg(t(uiLang, 'err.badUrl'))
-      return
-    }
+  let existing: Settings
+  try {
+    existing = await getSettings()
+  } catch {
+    setMsg(t(uiLang, 'err.storageRead'))
+    return
   }
   try {
     await updateSettings({
-      provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
-      baseUrl: baseUrlInput,
-      apiKey: (el('set-api-key') as HTMLInputElement).value.trim(),
+      ...existing,
       uiLanguage: (el('set-ui-lang') as HTMLSelectElement).value as UiLanguage,
       answerLanguage: (el('set-ans-lang') as HTMLSelectElement).value as AnswerLanguage,
     })
     restoreView()
   } catch {
-    setMsg(t(uiLang, 'err.storage'))
+    setMsg(t(uiLang, 'err.storageWrite'))
   }
 }
 
@@ -260,16 +254,6 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-goto-setti
   btn.onclick = () => openSettings()
 }
 ;(el('settings-btn') as HTMLButtonElement).onclick = () => openSettings()
-
-// One handler for every show/hide key button.
-for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-key-toggle]')) {
-  btn.onclick = () => {
-    const input = el(btn.dataset.keyToggle!) as HTMLInputElement
-    const showKey = input.type === 'password'
-    input.type = showKey ? 'text' : 'password'
-    btn.textContent = showKey ? '🚫' : '👁'
-  }
-}
 
 // ── capture actions ──────────────────────────────────────────────────────────
 
@@ -394,7 +378,7 @@ async function renderConversation(): Promise<void> {
   const epoch = ++rendering
   const selected = conversation
   el('conversation-title').textContent = selected.title
-  lightbox.classList.remove('open')
+  if (lightbox.open) lightbox.close()
   if (selected.activeAttachmentId) {
     const url = await imageUrl(selected.activeAttachmentId)
     if (epoch !== rendering) return
@@ -415,7 +399,13 @@ async function renderConversation(): Promise<void> {
       thumbnail.alt = t(uiLang, 'dialog.attachment')
       thumbnail.src = await imageUrl(turn.attachmentId)
       if (epoch !== rendering) return
-      thumbnail.onclick = () => { lightboxImg.src = thumbnail.src; lightbox.classList.add('open') }
+      thumbnail.tabIndex = 0
+      thumbnail.setAttribute('role', 'button')
+      thumbnail.setAttribute('aria-label', t(uiLang, 'dialog.imagePreview'))
+      thumbnail.onclick = () => openLightbox(thumbnail, thumbnail.src)
+      thumbnail.onkeydown = (event) => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLightbox(thumbnail, thumbnail.src) }
+      }
       msg.wrap.appendChild(thumbnail)
     }
     if (turn.role === 'assistant') {
@@ -545,23 +535,22 @@ function clearRetryButtons(): void {
 
 function setBusy(busy: boolean): void {
   for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy
+  ;(el('more-btn') as HTMLButtonElement).disabled = busy
   for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation], #check-submit, #new-chat-btn')) b.disabled = busy
   ;(el('ask-input') as HTMLInputElement).disabled = busy
   ;(el('ask-btn') as HTMLButtonElement).disabled = busy && !inflight
   ;(el('ask-btn') as HTMLButtonElement).textContent = t(uiLang, inflight ? 'ask.stop' : 'ask.button')
 }
 
-/** With a baked key this always succeeds; the settings detour is the dev-only
- *  path when a build carries no key and none was entered. */
 async function requireSettings(): Promise<Settings | null> {
   try { await loadSettings() } catch { reportError(new Error('storage.read')); return null }
   try {
     const settings = resolveSettings(settingsCache)
     if (settings.apiKey) return settings
-    openSettings(t(uiLang, 'err.needKey'))
   } catch {
-    openSettings(t(uiLang, 'err.badUrl'))
+    // An unavailable runtime connection is reported without exposing setup fields.
   }
+  reportError(new Error('err.notConnected'))
   return null
 }
 
@@ -616,8 +605,8 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
           void persist('streaming').catch(() => { storageFailed = true; controller.abort() })
         }, 300)
       },
-      onFallback: (from, to, err) => {
-        fallbackNote = t(uiLang, 'msg.fallback', { from: modelLabel(from), to: modelLabel(to), reason: err.message })
+      onFallback: () => {
+        fallbackNote = t(uiLang, 'msg.fallback')
         const note = addMessage('note', fallbackNote)
         thread.insertBefore(note.wrap, reply!.wrap)
       },
@@ -685,10 +674,35 @@ async function regenerate(): Promise<void> {
   } finally { starting = false; updateStatus() }
 }
 
+const moreButton = el('more-btn') as HTMLButtonElement
+const moreActions = el('more-actions') as HTMLElement
+moreActions.addEventListener('beforetoggle', (event) => {
+  const opening = (event as ToggleEvent).newState === 'open'
+  moreButton.setAttribute('aria-expanded', opening ? 'true' : 'false')
+  if (!opening) return
+  const rect = moreButton.getBoundingClientRect()
+  const width = Math.min(208, innerWidth - 16)
+  const left = Math.max(8, Math.min(rect.right - width, innerWidth - width - 8))
+  const estimatedHeight = 204
+  const top = rect.bottom + estimatedHeight + 8 <= innerHeight
+    ? rect.bottom + 6
+    : Math.max(8, rect.top - estimatedHeight - 6)
+  moreActions.style.left = String(left) + 'px'
+  moreActions.style.top = String(top) + 'px'
+})
+moreActions.addEventListener('toggle', (event) => {
+  moreButton.setAttribute('aria-expanded', (event as ToggleEvent).newState === 'open' ? 'true' : 'false')
+})
+
+window.addEventListener('blur', () => {
+  if (moreActions.matches(':popover-open')) moreActions.hidePopover()
+})
+
 for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   btn.addEventListener('click', () => {
     const task = btn.dataset.preset as TaskId | undefined
     if (!task) return
+    if (moreActions.matches(':popover-open')) moreActions.hidePopover()
     // The bubble shows the button label; the full template goes to the model.
     void send(taskPrompt(task, promptCtx()), task, t(uiLang, `preset.${task}`)).catch(reportError)
   })
@@ -709,18 +723,27 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
 })
 
 el('check-btn').onclick = () => {
+  el('view-capture').dataset.composerMode = 'check'
+  el('operation-error').hidden = true
   el('check-form').hidden = false
   el('ask-form').hidden = true
   el('check-input').focus()
 }
-el('check-cancel').onclick = () => { el('check-form').hidden = true; el('ask-form').hidden = false }
+el('check-cancel').onclick = () => {
+  delete el('view-capture').dataset.composerMode
+  el('check-form').hidden = true
+  el('ask-form').hidden = false
+  el('check-btn').focus()
+}
 el('check-input').oninput = () => { el('operation-error').hidden = true }
 el('check-form').addEventListener('submit', (event) => {
   event.preventDefault()
   const attempt = (el('check-input') as HTMLTextAreaElement).value
   if (!attempt.trim()) { reportError(new Error('check.needAttempt')); return }
+  delete el('view-capture').dataset.composerMode
   el('check-form').hidden = true
   el('ask-form').hidden = false
+  ;(el('ask-input') as HTMLInputElement).focus()
   void send(checkPrompt(attempt, promptCtx()), 'check', `${t(uiLang, 'preset.check')}\n${attempt}`, attempt).catch(reportError)
 })
 
@@ -731,6 +754,7 @@ el('new-chat-btn').onclick = () => {
     releaseImages()
     ;(el('ask-input') as HTMLInputElement).value = ''
     ;(el('check-input') as HTMLTextAreaElement).value = ''
+    delete el('view-capture').dataset.composerMode
     el('check-form').hidden = true
     el('ask-form').hidden = false
     await openConversation(value.id)
@@ -814,19 +838,28 @@ chrome.runtime.onMessage.addListener((message) => {
 
 setInterval(updateStatus, 1000)
 
-// The crop shows as a thumbnail; click it for the full-size lightbox.
-// Click anywhere on the lightbox or press Esc to close.
+// The crop and attached images open in a native modal dialog. Native dialog
+// behavior keeps keyboard focus inside and returns it to the exact opener.
 {
   const figure = document.getElementById('crop-figure') as HTMLElement
-  figure.addEventListener('click', () => {
-    if (!img.src) return
-    lightboxImg.src = img.src
-    lightbox.classList.add('open')
+  figure.addEventListener('click', () => openLightbox(figure, img.src))
+  figure.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLightbox(figure, img.src) }
   })
-  lightbox.addEventListener('click', () => lightbox.classList.remove('open'))
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') lightbox.classList.remove('open')
+  lightbox.addEventListener('click', (event) => {
+    if (event.target === lightbox) closeLightbox()
   })
+  lightbox.addEventListener('keydown', (event) => {
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      ;(el('lightbox-close') as HTMLButtonElement).focus()
+    }
+  })
+  lightbox.addEventListener('close', () => {
+    if (lightboxOpener?.isConnected) lightboxOpener.focus()
+    lightboxOpener = undefined
+  })
+  ;(el('lightbox-close') as HTMLButtonElement).onclick = closeLightbox
 }
 
 // The parent is the host web page, so the host validates the sender and this

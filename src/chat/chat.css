@@ -269,6 +269,7 @@ section {
 .msg-actions button:hover:not(:disabled) { background: var(--surface-muted); color: var(--accent-hover); }
 
 #dialog-status { flex: 0 0 auto; min-height: 17px; margin: 0; color: var(--muted); font-size: 12px; }
+#app:has(#operation-error:not([hidden])) #dialog-status { display: none; }
 #composer { flex: 0 0 auto; min-width: 0; }
 #ask-form { display: flex; gap: 6px; min-width: 0; }
 #ask-input, #check-input, #set-ui-lang, #set-ans-lang {

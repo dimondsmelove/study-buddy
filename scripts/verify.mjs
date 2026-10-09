@@ -833,8 +833,27 @@ try {
     'Check uses the shared composer without a second Ask form or unrelated empty-state prompt')
   await checked.click('#check-submit')
   check(await checked.locator('#check-form').isVisible(), 'Check refuses an empty attempt and leaves the input visible')
+  const emptyAttemptFeedback = await checked.evaluate(() => {
+    const alert = document.querySelector('#operation-error')
+    const status = document.querySelector('#dialog-status')
+    return {
+      alertVisible: !alert.hidden && getComputedStyle(alert).display !== 'none',
+      statusHidden: getComputedStyle(status).display === 'none',
+      sameMessage: alert.textContent.trim() === status.textContent.trim(),
+    }
+  })
+  check(emptyAttemptFeedback.alertVisible && emptyAttemptFeedback.statusHidden && emptyAttemptFeedback.sameMessage,
+    'empty Check shows one accessible error and hides its duplicate status row (' + JSON.stringify(emptyAttemptFeedback) + ')')
   const attempt = '2(x+3)=10\n2x+3=10\nx=3.5'
   await checked.fill('#check-input', attempt)
+  const restoredCheckStatus = await checked.evaluate(() => {
+    const alert = document.querySelector('#operation-error')
+    const status = document.querySelector('#dialog-status')
+    return { alertHidden: alert.hidden, statusVisible: getComputedStyle(status).display !== 'none', text: status.textContent.trim() }
+  })
+  check(restoredCheckStatus.alertHidden && restoredCheckStatus.statusVisible &&
+    !restoredCheckStatus.text.includes('Enter your attempt'),
+    'typing clears the alert and restores the current lifecycle status (' + JSON.stringify(restoredCheckStatus) + ')')
   const checkGeometry = await checked.evaluate(() => {
     const thread = document.querySelector('#thread').getBoundingClientRect()
     const form = document.querySelector('#check-form').getBoundingClientRect()

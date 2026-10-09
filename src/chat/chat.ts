@@ -735,7 +735,10 @@ el('check-cancel').onclick = () => {
   el('ask-form').hidden = false
   el('check-btn').focus()
 }
-el('check-input').oninput = () => { el('operation-error').hidden = true }
+el('check-input').oninput = () => {
+  el('operation-error').hidden = true
+  updateStatus()
+}
 el('check-form').addEventListener('submit', (event) => {
   event.preventDefault()
   const attempt = (el('check-input') as HTMLTextAreaElement).value

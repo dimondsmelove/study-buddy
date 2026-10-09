@@ -66,6 +66,11 @@ const server = createServer((req, res) => {
         res.on('close', () => { clearInterval(interval); clearTimeout(finish) })
         return
       }
+      if (responseMode === 'long') {
+        const answer = 'A longer worked explanation with enough detail to read at normal size. Each step follows from the captured question and keeps the reasoning visible instead of compressing the result.\n\nFor the quadratic formula,\n\n$$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$\n\nThis display equation is rendered with KaTeX. The surrounding prose remains selectable and wraps within the answer column.'
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: answer } }] }) + '\n\ndata: [DONE]\n\n')
+        return
+      }
       if (responseMode === 'truncated') { res.end('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'); return }
       if (responseMode === 'interrupted') { res.end(); return }
       if (responseMode === 'provider-error') { res.end('data: {"error":{"message":"private-provider-fixture"}}\n\n'); return }
@@ -451,41 +456,66 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
   check(page.frames().includes(liveFrame), 'a tiny accidental selection restores the same expanded chat')
 
-  // Settings round trip: no onboarding any more — a bare chat page with no key
-  // and no params shows the no-state error view, whose ⚙ Settings… button is
-  // the rescue path, and Save persists. Clearing storage gives the clean state.
-  await sw.evaluate(() => chrome.storage.local.remove('settings'))
+  // Language-only Settings keep the existing development connection intact.
+  const settingsFixture = { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto' }
+  await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), settingsFixture)
   const settings = await ctx.newPage()
   await settings.goto(`${chatOrigin}/src/chat/chat.html?kind=error&message=Settings%20fixture`)
   await settings.waitForSelector('#view-error:not([hidden])')
-  check(true, 'explicit error state retains the settings rescue path')
   await settings.click('#view-error:not([hidden]) [data-goto-settings]')
   await settings.waitForSelector('#view-settings:not([hidden])')
-  check(true, 'settings view opens from the error view')
-  await settings.click('.advanced summary') // advanced block is collapsed
-  await settings.fill('#set-api-key', 'sk-test-123')
-  await settings.evaluate(() => {
-    globalThis.fixtureStorageSet = chrome.storage.local.set
-    chrome.storage.local.set = async () => { throw new Error('expected fixture write failure') }
+  const noConnectionDetails = await settings.evaluate(() => {
+    const settingsMarkup = document.getElementById('view-settings').outerHTML.toLowerCase()
+    const pageMarkup = document.documentElement.outerHTML
+    return !/(api.?key|provider|base.?url|openrouter|deepseek|model|advanced)/.test(settingsMarkup) &&
+      !pageMarkup.includes('sk-test-123') &&
+      !document.querySelector('#set-api-key,#set-provider,#set-base-url,[data-key-toggle],.advanced')
   })
+  check(noConnectionDetails, 'Settings exposes only language controls; no connection fields or stored secret appear anywhere in the DOM')
+
+  const beforeSettingsWrites = await sw.evaluate(async () => chrome.storage.local.get('settings'))
+  await settings.evaluate(() => {
+    globalThis.fixtureStorageGet = chrome.storage.local.get
+    globalThis.fixtureStorageSet = chrome.storage.local.set
+    chrome.storage.local.get = async () => { throw new Error('expected fixture read failure') }
+    globalThis.fixtureWriteCount = 0
+    globalThis.fixtureFailedWriteCount = 0
+    chrome.storage.local.set = async (...args) => { globalThis.fixtureWriteCount++; return globalThis.fixtureStorageSet(...args) }
+  })
+  await settings.selectOption('#set-ui-lang', 'ru')
   await settings.click('#set-save')
-  await settings.waitForFunction(() => !!document.getElementById('set-msg')?.textContent?.trim())
-  const saveError = await settings.locator('#set-msg').textContent()
-  check(await settings.locator('#view-settings').isVisible() && !(await settings.evaluate(() => chrome.storage.local.get('settings'))).settings, `failed settings save stays on the form without updating saved data (${saveError})`)
-  await settings.evaluate(() => { chrome.storage.local.set = globalThis.fixtureStorageSet; delete globalThis.fixtureStorageSet })
-  await settings.click('#set-save')
-  // state 'attached': an element WITH [hidden] can never be "visible" — the
-  // selector already encodes the hidden-ness we're waiting for.
-  await settings.waitForSelector('#view-settings[hidden]', { state: 'attached' })
-  const stored = (await settings.evaluate(() => chrome.storage.local.get())).settings
   check(
-    stored && stored.provider === 'openrouter' &&
-      stored.baseUrl === 'https://openrouter.ai/api/v1' &&
-      stored.apiKey === 'sk-test-123' &&
-      stored.uiLanguage === 'auto' &&
-      stored.answerLanguage === 'auto' &&
-      !('model' in stored),
-    'settings persisted with language choices and a configured development connection (credentials redacted)',
+    await settings.locator('#set-msg').textContent() === 'Could not read settings. Nothing was saved; please retry.' &&
+      await settings.locator('#view-settings').isVisible() &&
+      JSON.stringify(await sw.evaluate(async () => chrome.storage.local.get('settings'))) === JSON.stringify(beforeSettingsWrites) &&
+      await settings.evaluate(() => globalThis.fixtureWriteCount) === 0,
+    'Settings read failure is visible and performs no write',
+  )
+  await settings.evaluate(() => { chrome.storage.local.get = globalThis.fixtureStorageGet })
+
+  await settings.evaluate(() => { chrome.storage.local.set = async () => { globalThis.fixtureFailedWriteCount++; throw new Error('expected fixture write failure') } })
+  await settings.selectOption('#set-ans-lang', 'fr')
+  await settings.click('#set-save')
+  check(
+    await settings.locator('#set-msg').textContent() === 'Could not save settings. Existing data was kept; please retry.' &&
+      await settings.locator('#view-settings').isVisible() &&
+      JSON.stringify(await sw.evaluate(async () => chrome.storage.local.get('settings'))) === JSON.stringify(beforeSettingsWrites) &&
+      await settings.evaluate(() => globalThis.fixtureFailedWriteCount) === 1,
+    'Settings write failure stays visible and preserves the previous connection',
+  )
+  await settings.evaluate(() => { chrome.storage.local.set = globalThis.fixtureStorageSet })
+  const requestsBeforeLanguageSave = requestCount
+  await settings.click('#set-save')
+  await settings.waitForSelector('#view-settings[hidden]', { state: 'attached' })
+  const savedSettings = (await sw.evaluate(async () => chrome.storage.local.get('settings'))).settings
+  check(
+    savedSettings.provider === settingsFixture.provider &&
+      savedSettings.baseUrl === settingsFixture.baseUrl &&
+      savedSettings.apiKey === settingsFixture.apiKey &&
+      savedSettings.uiLanguage === 'ru' &&
+      savedSettings.answerLanguage === 'fr' &&
+      requestCount === requestsBeforeLanguageSave,
+    'language Save retains the stored runtime connection and sends no model request (credentials redacted)',
   )
   await settings.close()
 
@@ -531,6 +561,24 @@ try {
     }
     request.onerror = () => reject(request.error)
   }))
+  // With no development connection, an attempted task explains the state and
+  // does not open credential setup or send a request.
+  await sw.evaluate(() => chrome.storage.local.set({ settings: { provider: 'custom', baseUrl: 'http://127.0.0.1/unconfigured', apiKey: '', uiLanguage: 'en', answerLanguage: 'auto' } }))
+  const disconnected = await openCapture()
+  const beforeDisconnected = requestCount
+  await disconnected.click('.preset[data-preset="solve"]')
+  await disconnected.waitForFunction(() => !document.getElementById('operation-error')?.hidden)
+  check(
+    await disconnected.locator('#operation-error').textContent() === 'The answer service is not connected. Try again later.' &&
+      await disconnected.locator('#view-settings').isHidden() &&
+      requestCount === beforeDisconnected,
+    'missing runtime connection is a clear service error with no key prompt or provider request',
+  )
+  await disconnected.close()
+  await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), {
+    provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto',
+  })
+
   const waitReply = (p) =>
     p
       .waitForFunction(
@@ -576,6 +624,28 @@ try {
     `request carried solve params (t=${lastAiRequest?.temperature}, max_tokens=${lastAiRequest?.max_tokens})`,
   )
   await ai.close()
+
+  responseMode = 'long'
+  const longAnswer = await openCapture()
+  await longAnswer.click('.preset[data-preset="solve"]')
+  await longAnswer.waitForFunction(() => {
+    const status = [...document.querySelectorAll('.reply-status')].at(-1)?.textContent
+    return status?.includes('Complete')
+  })
+  await longAnswer.waitForSelector('.msg.assistant .katex-display .katex')
+  const longRendered = await longAnswer.evaluate(() => ({
+    textLength: document.querySelector('.msg.assistant .msg-body')?.textContent?.length ?? 0,
+    math: !!document.querySelector('.msg.assistant .katex-display .katex'),
+    answerFont: getComputedStyle(document.querySelector('.msg.assistant .msg-body')).fontSize,
+    lineHeight: getComputedStyle(document.querySelector('.msg.assistant .msg-body')).lineHeight,
+  }))
+  check(longRendered.textLength > 250 && longRendered.math && longRendered.answerFont === '16px',
+    'long answer renders wrapped prose and display LaTeX at readable answer typography (' + JSON.stringify(longRendered) + ')')
+  const longEvidence = resolve(root, '..', 'review', 'loop')
+  mkdirSync(longEvidence, { recursive: true })
+  await longAnswer.screenshot({ path: join(longEvidence, 'long-answer.png'), fullPage: true })
+  await longAnswer.close()
+  responseMode = 'normal'
 
   // RU dictionary: with uiLanguage 'ru' the NATIVE RU templates and system
   // prompt must go out (answerLanguage auto + ru UI resolves to Russian).

@@ -23,7 +23,7 @@ import { conversationUsage, getAttachment, getConversation, getConversationState
 import { blobDataUrl, cooldownRemaining, requestContext, type Conversation, type ConversationState, type ReplyStatus, type Turn } from '../shared/conversations'
 import { conversationAction, GenerationConnection } from './conversation-client'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
-import { DEFAULT_SETTINGS, getSettings, normalizeBaseUrl, resolveSettings, setSettings } from '../shared/settings'
+import { DEFAULT_SETTINGS, getSettings, resolveSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
 import { checkPrompt, PROMPTS_VERSION, simplerPrompt, systemPrompt, taskPrompt, turnParams, type TaskId, type TurnKind } from '../shared/prompts'
@@ -49,7 +49,6 @@ function openLightbox(source: HTMLElement, src: string): void {
   lightboxImg.src = src
   lightbox.showModal()
 }
-
 
 let uiLang: UiLang = 'en'
 let settingsCache: Settings = { ...DEFAULT_SETTINGS }
@@ -216,9 +215,6 @@ function setMsg(text: string): void {
 function fillSettingsForm(s: Settings): void {
   ;(el('set-ui-lang') as HTMLSelectElement).value = s.uiLanguage
   ;(el('set-ans-lang') as HTMLSelectElement).value = s.answerLanguage
-  ;(el('set-provider') as HTMLSelectElement).value = s.provider
-  ;(el('set-base-url') as HTMLInputElement).value = s.baseUrl
-  ;(el('set-api-key') as HTMLInputElement).value = s.apiKey
   setMsg('')
 }
 
@@ -232,43 +228,23 @@ function restoreView(): void {
   apply(current)
 }
 
-// Provider switching: picking the preset repairs the URL if it still shows the
-// custom default (or was left empty); a user-typed URL is left alone.
-;(el('set-provider') as HTMLSelectElement).onchange = (e) => {
-  const urlInput = el('set-base-url') as HTMLInputElement
-  if ((e.target as HTMLSelectElement).value === 'openrouter') {
-    if (urlInput.value === '' || urlInput.value === DEFAULT_SETTINGS.baseUrl) {
-      urlInput.value = 'https://openrouter.ai/api/v1'
-    }
-  } else {
-    urlInput.focus()
-    urlInput.select()
-  }
-}
-
 ;(el('set-save') as HTMLButtonElement).onclick = async () => {
-  const baseUrlInput = (el('set-base-url') as HTMLInputElement).value.trim()
-  // The URL constructor accepts e.g. "https://x" and any scheme — an http(s)
-  // check is the actual gate, not mere parseability. Empty = use the default.
-  if (baseUrlInput) {
-    try {
-      normalizeBaseUrl(baseUrlInput)
-    } catch {
-      setMsg(t(uiLang, 'err.badUrl'))
-      return
-    }
+  let existing: Settings
+  try {
+    existing = await getSettings()
+  } catch {
+    setMsg(t(uiLang, 'err.storageRead'))
+    return
   }
   try {
     await updateSettings({
-      provider: (el('set-provider') as HTMLSelectElement).value as Settings['provider'],
-      baseUrl: baseUrlInput,
-      apiKey: (el('set-api-key') as HTMLInputElement).value.trim(),
+      ...existing,
       uiLanguage: (el('set-ui-lang') as HTMLSelectElement).value as UiLanguage,
       answerLanguage: (el('set-ans-lang') as HTMLSelectElement).value as AnswerLanguage,
     })
     restoreView()
   } catch {
-    setMsg(t(uiLang, 'err.storage'))
+    setMsg(t(uiLang, 'err.storageWrite'))
   }
 }
 
@@ -278,16 +254,6 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-goto-setti
   btn.onclick = () => openSettings()
 }
 ;(el('settings-btn') as HTMLButtonElement).onclick = () => openSettings()
-
-// One handler for every show/hide key button.
-for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-key-toggle]')) {
-  btn.onclick = () => {
-    const input = el(btn.dataset.keyToggle!) as HTMLInputElement
-    const showKey = input.type === 'password'
-    input.type = showKey ? 'text' : 'password'
-    btn.textContent = showKey ? '🚫' : '👁'
-  }
-}
 
 // ── capture actions ──────────────────────────────────────────────────────────
 
@@ -576,17 +542,15 @@ function setBusy(busy: boolean): void {
   ;(el('ask-btn') as HTMLButtonElement).textContent = t(uiLang, inflight ? 'ask.stop' : 'ask.button')
 }
 
-/** With a baked key this always succeeds; the settings detour is the dev-only
- *  path when a build carries no key and none was entered. */
 async function requireSettings(): Promise<Settings | null> {
   try { await loadSettings() } catch { reportError(new Error('storage.read')); return null }
   try {
     const settings = resolveSettings(settingsCache)
     if (settings.apiKey) return settings
-    openSettings(t(uiLang, 'err.needKey'))
   } catch {
-    openSettings(t(uiLang, 'err.badUrl'))
+    // An unavailable runtime connection is reported without exposing setup fields.
   }
+  reportError(new Error('err.notConnected'))
   return null
 }
 

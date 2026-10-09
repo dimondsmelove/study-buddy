@@ -140,14 +140,14 @@ for (const fx of FIXTURES) {
   await p.close()
 }
 
-// 4. Settings (languages + collapsed advanced).
+// 4. Settings (interface and answer languages only).
 {
   const p = await ctx.newPage()
   await p.goto(`${origin}/src/chat/chat.html?kind=error&message=Select%20a%20region%20to%20begin.`)
   await p.waitForSelector('#view-error:not([hidden])')
   await p.click('#view-error:not([hidden]) [data-goto-settings]')
   await p.waitForSelector('#view-settings:not([hidden])')
-  await shot(p, 'settings', 'Settings', 'Language first; your own key is tucked under Advanced.')
+  await shot(p, 'settings', 'Settings', 'Interface and answer languages; connection details stay outside user settings.')
   await p.close()
 }
 

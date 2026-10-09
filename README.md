@@ -15,13 +15,14 @@ interface + answer language settings (English / Russian), task-shaped answers
 LaTeX rendering, per-answer copy / explain simpler / retry, and an automatic
 model fallback, local history/export/delete and minimize/reopen all work against
 local mock fixtures. Real tutor response quality has not been re-evaluated.
-This loop's acceptance build is **keyless** and uses BYOK for a real provider.
-Baking a shared key is technically possible but exposes it to clients and is
-not safe public distribution; TD-06 remains open. All model calls go
-through the `Gateway` seam (`src/shared/gateway.ts`) — currently a direct
-provider, later your hosted proxy for subscriptions. The answering model is
-fixed to DeepSeek (`src/shared/ai.ts`). Store copy, privacy policy, and
-screenshots live in `store/`.
+TD-06 hosted backend remains deferred; the direct-provider path is development-only, not a secured public distribution mode.
+This loop's acceptance build is keyless. The ordinary Settings screen only
+controls interface and answer languages; the direct-provider connection is
+provided by the development runtime and is not a user setup flow. That runtime
+still stores its connection locally on the device. All model calls go through
+the `Gateway` seam (`src/shared/gateway.ts`) — currently a direct provider, later
+your hosted proxy for subscriptions. The answering model is fixed to DeepSeek
+(`src/shared/ai.ts`). Store copy, privacy policy, and screenshots live in `store/`.
 
 Manual use:
 
@@ -76,8 +77,7 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 ```
 npm install
 npm run dev        # Vite + CRXJS with HMR
-npm run build      # production build → dist/ (set SB_DEFAULT_API_KEY to bake a key)
-# store build:  SB_DEFAULT_API_KEY=sk-or-... npm run build
+SB_DEFAULT_API_KEY= npm run build  # keyless production acceptance build → dist/
 npm run typecheck
 npm run contracts          # settings + SSE/JSON/fallback fixtures, synthetic fetch
 npm run contracts:storage  # real IndexedDB, rollback/recovery/GC/context/rate
@@ -96,13 +96,14 @@ npm run preview:local -- stop
 
 # manual real-provider test (demo page opens; no request is sent until you start a task):
 npm run playtest
-#   OpenRouter credentials come from ~/.config/study-buddy/credentials.json
-#   or OPENROUTER_API_KEY; the key is stored only in this device's extension settings
-#   OPENROUTER_API_KEY overrides the default OpenRouter setup; a saved custom
-#   provider, endpoint, and key remain paired and are preserved.
+#   The development runtime reads OpenRouter credentials from
+#   ~/.config/study-buddy/credentials.json or OPENROUTER_API_KEY.
+#   OPENROUTER_API_KEY overrides the default OpenRouter connection. A saved
+#   custom provider, endpoint, and key stay paired and are preserved.
+#   These local dev credentials are stored on-device and never shown in the
+#   ordinary Settings screen, which only controls the two language choices.
 #   The dedicated ~/.config/study-buddy/playtest-profile persists settings and
-#   History across restarts; it is never cleared by the script.
-#   PLAYTEST_PROFILE can point to a separate agent-owned QA profile.
+#   History across restarts; PLAYTEST_PROFILE can point to an isolated QA profile.
 
 # task quality: drive the real UI against the real API, one fixture per task:
 npm run quality

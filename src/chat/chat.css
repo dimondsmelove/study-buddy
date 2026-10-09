@@ -12,7 +12,7 @@
   --focus: #2563eb;
   --error-ink: #b42318;
   --error-surface: #fff4f2;
-  --error-line: var(--error-line);
+  --error-line: #f2b8b5;
   --accent-hover-surface: #f5f8ff;
   --accent-active-surface: #eaf0ff;
   --accent-soft-surface: #eaf1ff;
@@ -351,11 +351,14 @@ h1 { margin: 0; font-size: 18px; font-weight: 650; line-height: 1.3; }
   .preset, .more-button { padding-right: 5px; padding-left: 5px; font-size: 13px; }
 }
 @media (max-height: 440px) {
-  section { gap: 5px; padding-top: 5px; padding-bottom: 6px; }
-  #crop-figure { flex-basis: 42px; }
-  #crop { max-height: 38px; }
+  section { gap: 4px; padding-top: 4px; padding-bottom: 4px; }
+  #crop-figure { flex-basis: 44px; }
+  #crop { max-height: 40px; }
   #dialog-status { min-height: 14px; font-size: 11px; }
   #check-input { min-height: 58px; }
+}
+@media (max-height: 360px) {
+  #view-capture[data-composer-mode="check"] #presets { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }

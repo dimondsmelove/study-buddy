@@ -485,7 +485,7 @@ try {
       stored.uiLanguage === 'auto' &&
       stored.answerLanguage === 'auto' &&
       !('model' in stored),
-    `settings persisted with languages and no model (${JSON.stringify(stored)})`,
+    'settings persisted with language choices and a configured development connection (credentials redacted)',
   )
   await settings.close()
 
@@ -663,8 +663,77 @@ try {
   await rapid.close()
   responseMode = 'normal'
 
+  const layout = await openCapture()
+  await layout.setViewportSize({ width: 480, height: 564 })
+  const defaultGeometry = await layout.evaluate(() => {
+    const thread = document.querySelector('#thread').getBoundingClientRect()
+    const composer = document.querySelector('#composer').getBoundingClientRect()
+    return { width: document.documentElement.scrollWidth, thread: thread.height, composerBottom: composer.bottom, viewport: innerHeight }
+  })
+  check(defaultGeometry.width <= 480 && defaultGeometry.thread >= 300 && defaultGeometry.composerBottom <= 564,
+    'default 480×564 chat reserves a readable thread (' + JSON.stringify(defaultGeometry) + ')')
+  await layout.locator('#crop-figure').focus()
+  await layout.keyboard.press('Enter')
+  await layout.waitForFunction(() => document.querySelector('#lightbox')?.open)
+  check(await layout.locator('#lightbox-close').evaluate(button => button === document.activeElement),
+    'image preview opens as a modal and moves keyboard focus inside')
+  await layout.keyboard.press('Tab')
+  check(await layout.locator('#lightbox-close').evaluate(button => button === document.activeElement),
+    'image preview keeps keyboard focus within its modal controls')
+  await layout.keyboard.press('Escape')
+  await layout.waitForFunction(() => !document.querySelector('#lightbox')?.open)
+  check(await layout.locator('#crop-figure').evaluate(figure => figure === document.activeElement),
+    'Escape closes image preview and restores focus to the exact crop opener')
+  const beforeMoreOpen = requestCount
+  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  await layout.waitForFunction(() => document.querySelector('#more-actions')?.matches(':popover-open'))
+  await layout.screenshot({ path: join(evidence, 'more.png') })
+  const expandedMore = await layout.evaluate(() => {
+    const popover = document.querySelector('#more-actions')
+    const rect = popover.getBoundingClientRect()
+    return {
+      expanded: document.querySelector('#more-btn')?.getAttribute('aria-expanded'),
+      actions: [...popover.querySelectorAll('button')].map(button => button.textContent),
+      bounds: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      viewport: { width: innerWidth, height: innerHeight },
+    }
+  })
+  check(expandedMore.expanded === 'true' && expandedMore.actions.length === 4 &&
+    expandedMore.bounds.left >= 0 && expandedMore.bounds.top >= 0 &&
+    expandedMore.bounds.right <= 480 && expandedMore.bounds.bottom <= 564 &&
+    requestCount === beforeMoreOpen,
+  'More opens as a bounded disclosure without sending a request (' + JSON.stringify(expandedMore) + ')')
+  await layout.keyboard.press('Tab')
+  check(await layout.locator('#more-actions').evaluate(popover => popover.contains(document.activeElement)),
+    'Tab moves keyboard focus into the expanded More actions')
+  await layout.keyboard.press('Escape')
+  await layout.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
+  await layout.waitForFunction(() => document.querySelector('#more-btn')?.getAttribute('aria-expanded') === 'false')
+  check(await layout.locator('#more-btn').getAttribute('aria-expanded') === 'false', 'Escape closes More and resets its expanded state')
+  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  await layout.click('#thread')
+  await layout.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
+  check(requestCount === beforeMoreOpen, 'clicking outside More closes it without starting an action')
+  await layout.setViewportSize({ width: 320, height: 324 })
+  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  const narrowGeometry = await layout.evaluate(() => {
+    const popover = document.querySelector('#more-actions').getBoundingClientRect()
+    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, viewport: { width: innerWidth, height: innerHeight } }
+  })
+  check(narrowGeometry.width <= 320 && narrowGeometry.popover.left >= 0 && narrowGeometry.popover.top >= 0 &&
+    narrowGeometry.popover.right <= 320 && narrowGeometry.popover.bottom <= 324 &&
+    await layout.locator('#ask-input').isVisible() && await layout.locator('#ask-btn').isVisible(),
+  '320×324 viewport keeps the menu and required composer reachable (' + JSON.stringify(narrowGeometry) + ')')
+  await layout.keyboard.press('Escape')
+  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  await layout.getByRole('button', { name: 'Explain', exact: true }).click()
+  await waitSaved(layout, 'Complete')
+  check(lastAiRequest.messages.some(message => JSON.stringify(message.content).toLowerCase().includes('explain')),
+    'a task selected from More sends the explicit Explain request')
+  await layout.close()
+
   const hint = await openCapture()
-  await hint.setViewportSize({ width: 480, height: 660 })
+  await hint.setViewportSize({ width: 480, height: 564 })
   await hint.click('[data-preset="hint"]')
   await waitSaved(hint, 'Complete')
   check(lastAiRequest.max_tokens === 512 && lastAiRequest.temperature === 0.3, 'Hint UI uses its bounded one-step prompt budget')
@@ -688,13 +757,21 @@ try {
   check(await hint.locator('.msg.user').count() === 2 && lastAiRequest.max_tokens === 2048, 'explicit Regenerate preserves the source user turn and its original turn budget')
 
   const checked = await openCapture()
-  await checked.setViewportSize({ width: 480, height: 660 })
+  await checked.setViewportSize({ width: 480, height: 564 })
   await checked.click('#check-btn')
-  check(await checked.locator('#ask-form').isHidden(), 'Check shows its multiline form without a second Ask composer')
+  check(await checked.locator('#ask-form').isHidden() && await checked.locator('#thread .hint').isHidden(),
+    'Check uses the shared composer without a second Ask form or unrelated empty-state prompt')
   await checked.click('#check-submit')
   check(await checked.locator('#check-form').isVisible(), 'Check refuses an empty attempt and leaves the input visible')
   const attempt = '2(x+3)=10\n2x+3=10\nx=3.5'
   await checked.fill('#check-input', attempt)
+  const checkGeometry = await checked.evaluate(() => {
+    const thread = document.querySelector('#thread').getBoundingClientRect()
+    const form = document.querySelector('#check-form').getBoundingClientRect()
+    return { width: document.documentElement.scrollWidth, thread: thread.height, formBottom: form.bottom, viewport: innerHeight }
+  })
+  check(checkGeometry.width <= 480 && checkGeometry.thread >= 180 && checkGeometry.formBottom <= 564,
+    'Check keeps multiline input and enough dialogue in the 480×564 panel (' + JSON.stringify(checkGeometry) + ')')
   await checked.screenshot({ path: join(evidence, 'check.png') })
   await checked.click('#check-submit')
   await waitSaved(checked, 'Complete')
@@ -809,6 +886,18 @@ try {
   const clickHostButton = (text) => clickHostButtonOn(page, text)
   let embedded = await chatFrameOn(page)
   await embedded.waitForSelector('#view-capture:not([hidden])')
+  const embeddedElement = await embedded.frameElement()
+  const embeddedBounds = await embeddedElement.boundingBox()
+  const outsidePoint = embeddedBounds.x > 24
+    ? { x: Math.max(4, Math.floor(embeddedBounds.x - 8)), y: Math.max(8, Math.floor(embeddedBounds.y + 12)) }
+    : { x: Math.min(1270, Math.ceil(embeddedBounds.x + embeddedBounds.width + 8)), y: Math.max(8, Math.floor(embeddedBounds.y + 12)) }
+  const requestCountBeforeHostDismiss = requestCount
+  await embedded.getByRole('button', { name: 'More', exact: true }).click()
+  await embedded.waitForFunction(() => document.querySelector('#more-actions')?.matches(':popover-open'))
+  await page.mouse.click(outsidePoint.x, outsidePoint.y)
+  await embedded.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
+  check(requestCount === requestCountBeforeHostDismiss,
+    'a click on the host page outside the iframe dismisses More without starting an action')
   await resetCooldown(embedded)
   responseMode = 'slow'
   const nativeBefore = requestCount

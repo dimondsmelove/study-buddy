@@ -9,72 +9,83 @@
   <body>
     <main id="app">
       <p id="operation-error" role="alert" hidden></p>
-      <!-- capture state: the crop + the conversation about it -->
       <section id="view-capture" hidden>
-        <div id="capture-top">
-          <button type="button" id="new-selection-btn" class="ghost" data-i18n="capture.newSelection"></button>
-          <button type="button" id="history-btn" class="ghost" data-i18n="dialog.history"></button>
-          <button type="button" id="new-chat-btn" class="ghost" data-i18n="dialog.new"></button>
-          <button type="button" id="settings-btn" title="Settings" aria-label="Settings" data-i18n-title="capture.settings">⚙</button>
-        </div>
-        <p id="conversation-title"></p>
-        <figure id="crop-figure">
-          <img id="crop" alt="Selected region" />
+        <nav id="capture-top" data-i18n-aria="capture.tools">
+          <button type="button" id="new-selection-btn" class="icon-button" data-i18n-title="capture.newSelection" data-i18n-aria="capture.newSelection">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M9 12h6M12 9v6"/></svg>
+          </button>
+          <span id="conversation-title"></span>
+          <button type="button" id="history-btn" class="icon-button" data-i18n-title="dialog.history" data-i18n-aria="dialog.history">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18" cy="17" r="3"/><path d="M18 15.5v1.7l1 .6"/></svg>
+          </button>
+          <button type="button" id="new-chat-btn" class="icon-button" data-i18n-title="dialog.new" data-i18n-aria="dialog.new">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button type="button" id="settings-btn" class="icon-button" data-i18n-title="capture.settings" data-i18n-aria="capture.settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="m19 13.5 1.2 1-.9 1.6-1.5-.4a7 7 0 0 1-1.2.8l-.3 1.6h-2l-.6-1.5a7 7 0 0 1-1.5 0l-.8 1.3-1.7-.7.2-1.6a7 7 0 0 1-1-1.1l-1.6.1-.6-1.8 1.3-.9a7 7 0 0 1 0-1.5l-1.2-1 .9-1.6 1.5.4a7 7 0 0 1 1.2-.8l.3-1.6h2l.6 1.5a7 7 0 0 1 1.5 0l.8-1.3 1.7.7-.2 1.6a7 7 0 0 1 1 1.1l1.6-.1.6 1.8-1.3.9a7 7 0 0 1 0 1.5Z"/></svg>
+          </button>
+        </nav>
+        <figure id="crop-figure" role="button" data-i18n-title="dialog.imagePreview" data-i18n-aria="dialog.imagePreview" tabindex="0">
+          <img id="crop" data-i18n-alt="dialog.attachment" alt="Task image" />
+          <span class="crop-expand" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 4H4v5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg></span>
         </figure>
-        <div id="presets">
+        <div id="presets" data-i18n-aria="capture.actions">
+          <button type="button" class="preset primary-action" data-preset="solve" data-i18n="preset.solve"></button>
           <button type="button" class="preset" data-preset="hint" data-i18n="preset.hint"></button>
           <button type="button" class="preset" id="check-btn" data-i18n="preset.check"></button>
-          <button type="button" class="preset" data-preset="solve" data-i18n="preset.solve"></button>
+          <button type="button" id="more-btn" class="more-button" popovertarget="more-actions" aria-controls="more-actions" aria-expanded="false" data-i18n="actions.more"></button>
+        </div>
+        <div id="more-actions" popover="auto" aria-labelledby="more-btn">
           <button type="button" class="preset" data-preset="quiz" data-i18n="preset.quiz"></button>
           <button type="button" class="preset" data-preset="explain" data-i18n="preset.explain"></button>
           <button type="button" class="preset" data-preset="translate" data-i18n="preset.translate"></button>
           <button type="button" class="preset" data-preset="summarize" data-i18n="preset.summarize"></button>
         </div>
         <div id="thread" aria-live="polite"></div>
-        <form id="check-form" hidden>
-          <label for="check-input" data-i18n="preset.check"></label>
-          <textarea id="check-input" rows="3" data-i18n-placeholder="check.placeholder"></textarea>
-          <div><button id="check-cancel" type="button" class="ghost" data-i18n="settings.back"></button>
-          <button id="check-submit" type="submit" data-i18n="check.submit"></button></div>
-        </form>
         <p id="dialog-status" role="status"></p>
-        <form id="ask-form" autocomplete="off">
-          <input id="ask-input" type="text" data-i18n-placeholder="ask.placeholder" />
-          <button id="ask-btn" type="submit" data-i18n="ask.button"></button>
-        </form>
+        <div id="composer">
+          <form id="check-form" hidden>
+            <label for="check-input" data-i18n="check.label"></label>
+            <textarea id="check-input" rows="2" data-i18n-placeholder="check.placeholder"></textarea>
+            <div class="composer-actions">
+              <button id="check-cancel" type="button" class="secondary-action" data-i18n="settings.back"></button>
+              <button id="check-submit" type="submit" class="primary-action" data-i18n="check.submit"></button>
+            </div>
+          </form>
+          <form id="ask-form" autocomplete="off">
+            <input id="ask-input" type="text" data-i18n-placeholder="ask.placeholder" />
+            <button id="ask-btn" type="submit" class="primary-action" data-i18n="ask.button"></button>
+          </form>
+        </div>
       </section>
 
       <section id="view-history" hidden>
-        <h1 data-i18n="dialog.history"></h1>
+        <header class="view-heading"><h1 data-i18n="dialog.history"></h1><span class="heading-spacer"></span></header>
         <p class="set-note" data-i18n="dialog.retention"></p>
         <div id="history-list"></div>
         <p id="storage-usage"></p>
         <button id="history-back" type="button" data-i18n="settings.back"></button>
       </section>
 
-      <!-- permission state: per-site capture grant -->
       <section id="view-permission" hidden>
         <h1 data-i18n="state.permissionTitle"></h1>
         <p id="perm-text"></p>
-        <button id="perm-btn" type="button" class="primary" data-i18n="state.allow"></button>
+        <button id="perm-btn" type="button" class="primary-action" data-i18n="state.allow"></button>
         <button type="button" class="ghost-settings" data-goto-settings data-i18n="state.settingsLink"></button>
       </section>
 
-      <!-- restricted state: nothing can unblock this -->
       <section id="view-restricted" hidden>
         <h1 data-i18n="state.restrictedTitle"></h1>
         <p id="restricted-text"></p>
         <button type="button" class="ghost-settings" data-goto-settings data-i18n="state.settingsLink"></button>
       </section>
 
-      <!-- error state -->
       <section id="view-error" hidden>
         <h1 data-i18n="state.errorTitle"></h1>
         <p id="error-text"></p>
         <button type="button" class="ghost-settings" data-goto-settings data-i18n="state.settingsLink"></button>
       </section>
 
-      <!-- settings: AI connection + languages -->
       <section id="view-settings" hidden>
         <h1 data-i18n="settings.title"></h1>
         <label for="set-ui-lang" data-i18n="settings.uiLanguage"></label>
@@ -83,8 +94,6 @@
         <select id="set-ans-lang"></select>
         <label data-i18n="settings.model"></label>
         <p class="set-note" data-i18n="settings.modelInfo"></p>
-        <!-- Advanced: for running against your own endpoint/key. Hidden by
-             default — the store build ships a baked key and needs no setup. -->
         <details class="advanced">
           <summary data-i18n="settings.advanced"></summary>
           <label for="set-provider" data-i18n="settings.provider"></label>
@@ -107,11 +116,16 @@
         <p id="set-msg" role="status"></p>
         <div id="set-actions">
           <button type="button" id="set-back" data-i18n="settings.back"></button>
-          <button type="button" id="set-save" class="primary" data-i18n="settings.save"></button>
+          <button type="button" id="set-save" class="primary-action" data-i18n="settings.save"></button>
         </div>
       </section>
     </main>
-    <div id="lightbox"><img alt="Selected region" /></div>
+    <dialog id="lightbox" data-i18n-aria="dialog.imagePreview">
+      <button type="button" id="lightbox-close" class="icon-button" data-i18n-title="dialog.closePreview" data-i18n-aria="dialog.closePreview">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+      <img data-i18n-alt="dialog.attachment" alt="Task image" />
+    </dialog>
     <script type="module" src="./chat.ts"></script>
   </body>
 </html>

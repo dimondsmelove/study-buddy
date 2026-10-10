@@ -307,8 +307,20 @@ h1 { margin: 0; font-size: 18px; font-weight: 650; line-height: 1.3; }
 .heading-spacer { flex: 1; }
 .set-note { margin: 0; color: var(--muted); font-size: 13px; }
 #history-list { flex: 1; min-height: 0; overflow-y: auto; }
-.history-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--line); }
-.history-open { width: 100%; overflow-wrap: anywhere; text-align: left; }
+.history-row { display: flex; align-items: center; gap: 6px; min-height: 52px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.history-open { display: flex; flex: 1; min-width: 0; flex-direction: column; align-items: stretch; justify-content: center; gap: 1px; overflow: hidden; padding: 4px 8px; text-align: left; }
+.history-title { overflow: hidden; max-width: 100%; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.history-date { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-date { color: var(--muted); font-size: 12px; }
+.history-delete { display: grid; flex: 0 0 44px; width: 44px; min-height: 44px; place-items: center; padding: 4px; color: var(--muted); }
+.history-delete svg { width: 16px; height: 16px; }
+#delete-dialog { width: min(360px, calc(100vw - 32px)); border: 1px solid var(--line); border-radius: 12px; padding: 18px; color: var(--ink); background: var(--surface-raised); box-shadow: var(--shadow-popover); }
+#delete-dialog::backdrop { background: var(--dialog-backdrop); }
+#delete-dialog h2 { margin: 0 0 10px; font-size: 16px; }
+#delete-dialog p { margin: 0; overflow-wrap: anywhere; }
+#delete-error { margin-top: 10px !important; color: var(--error-ink); }
+.delete-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.danger-action { color: var(--error-ink); border-color: var(--error-ink); }
 #storage-usage { margin: 0; color: var(--muted); font-size: 12px; }
 #history-back { align-self: flex-start; }
 

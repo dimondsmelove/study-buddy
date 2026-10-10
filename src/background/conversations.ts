@@ -1,8 +1,8 @@
-import { attachCapture, createConversation, deleteConversation, getAttachment, getConversation, getConversationState, recoverGeneration, selectConversation, startGeneration, updateReply } from '../shared/conversation-store'
+import { attachCapture, createConversation, deleteConversation, enforceConversationLimit, getAttachment, getConversation, getConversationState, recoverGeneration, selectConversation, startGeneration, updateReply } from '../shared/conversation-store'
 import { contextImages, contextTurns, CONTEXT_LIMITS, cooldownRemaining, type Conversation, type Generation, type ReplyStatus, type Turn } from '../shared/conversations'
 import { CAPTURE_PREFIX, GENERATION_PORT, type ConversationAction, type StoredCapture } from '../shared/messages'
 
-const ready = recoverGeneration()
+const ready = recoverGeneration().then(() => enforceConversationLimit())
 void ready.catch(() => {}) // command handlers report failure; do not start a request without recovery
 let queue: Promise<unknown> = ready
 let active: { port: chrome.runtime.Port; generation: Generation; text: string; tabId?: number } | undefined
@@ -40,6 +40,7 @@ async function remember(id: string, tabId?: number): Promise<void> {
 export function restoreDialog(tabId?: number): Promise<Conversation> {
   return serialized(async () => {
     const conversation = await selectedForTab(tabId) ?? await createConversation('Study Buddy')
+    await enforceConversationLimit(conversation.id)
     await remember(conversation.id, tabId)
     return conversation
   })
@@ -61,6 +62,7 @@ export function captureDialog(imageId: string, tabId: number): Promise<Conversat
   return serialized(async () => {
     const conversation = await selectedForTab(tabId) ?? await createConversation('Study Buddy')
     const updated = await saveCapture(conversation.id, imageId)
+    await enforceConversationLimit(conversation.id)
     await remember(conversation.id, tabId)
     changed()
     return updated
@@ -74,6 +76,7 @@ export function closeDialog(conversationId: string, tabId: number): Promise<void
     if (running?.tabId === tabId && running.generation.conversationId === conversationId) {
       active = undefined
       await updateReply(running.generation, running.text, 'cancelled')
+      await enforceConversationLimit()
       running.port.disconnect()
       changed()
     }
@@ -85,13 +88,22 @@ export function closeDialog(conversationId: string, tabId: number): Promise<void
 
 async function action(message: ConversationAction, tabId?: number): Promise<Conversation | undefined> {
   if (message.action === 'create') {
-    return createConversation(message.title.slice(0, 80))
+    const created = await createConversation(message.title.slice(0, 80))
+    await enforceConversationLimit(created.id)
+    return created
+  }
+  if (message.action === 'prune') {
+    await enforceConversationLimit()
+    return undefined
   }
   const conversation = await getConversation(message.conversationId)
   if (!conversation) throw new Error('dialog.missing')
   if (message.action === 'delete') {
     if (active?.generation.conversationId === conversation.id) throw new Error('dialog.busy')
     await deleteConversation(conversation.id)
+    const session = await chrome.storage.session.get(null)
+    const staleBindings = Object.entries(session).filter(([key, value]) => key.startsWith('dialog.tab.') && value === conversation.id).map(([key]) => key)
+    if (staleBindings.length) await chrome.storage.session.remove(staleBindings)
     return undefined
   }
   await remember(conversation.id, tabId)
@@ -144,6 +156,8 @@ export function installConversationCoordinator(): void {
             conversation.turns = conversation.turns.slice(0, index + 1)
           }
           await validateContext(conversation)
+          // Prune before establishing the generation lease so failure cannot strand it.
+          await enforceConversationLimit(conversation.id)
           const generation = await startGeneration(conversation.id, user, assistant)
           active = { port, generation, text: '', tabId: port.sender?.tab?.id }
           await remember(conversation.id, port.sender?.tab?.id)
@@ -154,9 +168,13 @@ export function installConversationCoordinator(): void {
           if (active?.port !== port) throw new Error('dialog.disconnected')
           const status = message.status as ReplyStatus
           if (!['streaming', 'complete', 'truncated', 'interrupted', 'cancelled', 'provider_error', 'empty'].includes(status) || typeof message.text !== 'string') throw new Error('dialog.invalid')
-          await updateReply(active.generation, message.text, status, message.error, message.note)
+          const completedGeneration = active.generation
+          await updateReply(completedGeneration, message.text, status, message.error, message.note, typeof message.title === 'string' ? message.title : undefined)
           active.text = message.text
-          if (status !== 'streaming') active = undefined
+          if (status !== 'streaming') {
+            active = undefined
+            await enforceConversationLimit()
+          }
           changed()
           return
         }
@@ -174,6 +192,7 @@ export function installConversationCoordinator(): void {
         const lost = active
         active = undefined
         await updateReply(lost.generation, lost.text, 'interrupted')
+        await enforceConversationLimit()
         changed()
       }).catch(() => {})
     })

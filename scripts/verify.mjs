@@ -879,17 +879,34 @@ try {
   await checked.waitForFunction(() => document.getElementById('storage-usage')?.textContent?.includes('MiB'))
   await checked.screenshot({ path: join(evidence, 'history.png') })
   const row = checked.locator('.history-row').filter({ hasText: '2(x+3)=10' })
-  const download = checked.waitForEvent('download')
-  await row.getByRole('button', { name: 'Export JSON' }).click()
-  const json = JSON.parse(readFileSync(await (await download).path(), 'utf8'))
-  check(json.schema === 1 && json.conversation.id === checkedId && Object.values(json.attachments)[0]?.startsWith('data:image/png') && !JSON.stringify(json).includes('sk-test-123'), 'JSON export includes transcript/images and excludes settings/key')
-  checked.once('dialog', d => d.dismiss())
-  await row.getByRole('button', { name: 'Delete', exact: true }).click()
-  check((await readSaved(checked)).conversations.some(c => c.id === checkedId), 'cancelled delete preserves the conversation')
-  checked.once('dialog', d => d.accept())
-  await row.getByRole('button', { name: 'Delete', exact: true }).click()
+  const rowGeometry = await row.evaluate(node => {
+    const open = node.querySelector('.history-open').getBoundingClientRect()
+    const remove = node.querySelector('.history-delete').getBoundingClientRect()
+    return { children: node.children.length, title: node.querySelector('.history-title')?.textContent, date: node.querySelector('.history-date')?.textContent, deleteSize: [remove.width, remove.height], sameRow: Math.abs((open.top + open.height / 2) - (remove.top + remove.height / 2)) < 4 }
+  })
+  check(rowGeometry.children === 2 && rowGeometry.title?.startsWith('2(x+3)=10') && !rowGeometry.title.includes('\n') && !!rowGeometry.date && rowGeometry.sameRow && rowGeometry.deleteSize[0] >= 44 && rowGeometry.deleteSize[1] >= 44, 'history keeps a readable title/date and 44px delete target on one row (' + JSON.stringify(rowGeometry) + ')')
+  check(!(await checked.locator('#settings-btn').count()) && !(await row.getByRole('button', { name: /Export/ }).count()), 'History has no gear or JSON export control')
+  await row.locator('.history-delete').click()
+  await checked.locator('#delete-dialog[open]').waitFor()
+  await checked.click('#delete-cancel')
+  check((await readSaved(checked)).conversations.some(c => c.id === checkedId) && await row.locator('.history-delete').evaluate(button => document.activeElement === button), 'cancel keeps the conversation and restores focus to its Delete opener')
+  await row.locator('.history-delete').click()
+  await sw.evaluate(() => {
+    const original = IDBObjectStore.prototype.delete
+    IDBObjectStore.prototype.delete = function (...args) {
+      if (this.name === 'conversations') {
+        IDBObjectStore.prototype.delete = original
+        throw new DOMException('expected synthetic delete failure', 'QuotaExceededError')
+      }
+      return original.apply(this, args)
+    }
+  })
+  await checked.click('#delete-confirm')
+  await checked.locator('#delete-error:not([hidden])').waitFor()
+  check(await checked.locator('#delete-dialog').evaluate(dialog => dialog.open) && await checked.locator('#delete-error').textContent() === "Couldn't delete this chat. Try again." && (await readSaved(checked)).conversations.some(c => c.id === checkedId), 'delete write failure shows a safe retry message inside the dialog and preserves the target')
+  await checked.click('#delete-confirm')
   await checked.waitForFunction(() => !document.querySelector('#history-list')?.textContent?.includes('2(x+3)=10'))
-  check(!(await readSaved(checked)).conversations.some(c => c.id === checkedId), 'confirmed deletion removes the selected conversation')
+  check(!(await readSaved(checked)).conversations.some(c => c.id === checkedId) && await checked.evaluate(() => document.activeElement?.id === 'history-back' || document.activeElement?.classList.contains('history-open')), 'in-app confirmation deletes the selected conversation and focuses a safe remaining target')
 
   for (const [mode, label, status] of [['truncated', 'Length limit', 'truncated'], ['interrupted', 'Interrupted', 'interrupted'], ['provider-error', 'Provider error', 'provider_error']]) {
     responseMode = mode
@@ -922,11 +939,8 @@ try {
   await quota.click('#history-btn')
   const quotaDb = await readSaved(quota)
   const quotaId = quotaDb.state.lastConversationId
-  const quotaRow = quota.locator('.history-row').filter({ has: quota.locator('.history-open').filter({ hasText: 'Hint' }) }).first()
-  const quotaDownload = quota.waitForEvent('download')
-  await quotaRow.getByRole('button', { name: 'Export JSON' }).click()
-  const quotaJson = JSON.parse(readFileSync(await (await quotaDownload).path(), 'utf8'))
-  check(quotaJson.conversation.id === quotaId && quotaJson.conversation.turns.at(-1).text.startsWith('Hello'), 'export rescues the latest visible partial after a failed write')
+  const quotaRow = quota.locator('.history-row:has(.history-open[data-conversation="' + quotaId + '"])')
+  check(await quotaRow.count() === 1 && quotaDb.conversations.find(c => c.id === quotaId).turns.at(-1).status === 'interrupted', 'failed write remains in History with its interrupted partial status and no export affordance')
   await quota.close()
   responseMode = 'normal'
   await hint.close()
@@ -1090,7 +1104,9 @@ try {
     'capture after Close creates a fresh dialog while preserving the old transcript and image')
   await embedded.click('#history-btn')
   const historyOpen = embedded.locator('.history-row .history-open')
-  const oldRowText = `${oldConversation.title} · ${oldConversation.turns.length} ·`
+  const oldRowText = ['Study Buddy', 'New chat', 'Hint', 'Check', 'Solve', 'Explain', 'Translate', 'Summarize'].includes(oldConversation.title)
+    ? oldConversation.turns.find(turn => turn.role === 'assistant' && turn.text)?.text.split(/\r?\n/)[0] || 'New chat'
+    : oldConversation.title
   const oldHistoryRow = historyOpen.filter({ hasText: oldRowText }).first()
   await oldHistoryRow.waitFor()
   await oldHistoryRow.click()
@@ -1100,7 +1116,7 @@ try {
   const selectedClosedId = await tabBinding()
   check(selectedClosedId === nativeId, `History opens the closed saved conversation (${oldConversation.id})`)
   await embedded.click('#history-btn')
-  const nextRowText = `${nextConversation.title} · ${nextConversation.turns.length} ·`
+  const nextRowText = ['Study Buddy', 'New chat', 'Hint', 'Check', 'Solve', 'Explain', 'Translate', 'Summarize'].includes(nextConversation.title) ? 'New chat' : nextConversation.title
   const nextHistoryRow = embedded.locator('.history-row .history-open').filter({ hasText: nextRowText }).first()
   await nextHistoryRow.waitFor()
   await nextHistoryRow.click()
@@ -1233,7 +1249,7 @@ try {
       request.onerror = () => reject(request.error)
     })
     db.close()
-    return rows.sort((a, b) => b.updatedAt - a.updatedAt).map(conversation => ({
+    return rows.sort((a, b) => Math.max(...b.turns.map(turn => turn.createdAt), b.createdAt) - Math.max(...a.turns.map(turn => turn.createdAt), a.createdAt)).map(conversation => ({
       id: conversation.id,
       title: conversation.title,
       turnCount: conversation.turns.length,
@@ -1243,8 +1259,7 @@ try {
   if (historyTargetIndex < 0) throw new Error('Could not locate the saved History target conversation.')
   await boundDismissFrame.waitForFunction((expected) => {
     const visible = [...document.querySelectorAll('.history-row .history-open')]
-    return visible.length === expected.length && expected.every((row, index) =>
-      visible[index]?.textContent?.startsWith(`${row.title} · ${row.turnCount} ·`))
+    return visible.length === expected.length && expected.every((row, index) => visible[index]?.dataset.conversation === row.id)
   }, historyOrder)
   await boundDismissFrame.locator('.history-row .history-open').nth(historyTargetIndex).click()
   const selectedHistoryBinding = await sw.evaluate(async ({ key, expected }) => {

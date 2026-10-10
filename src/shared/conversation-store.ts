@@ -1,4 +1,5 @@
-import type { Attachment, Conversation, ConversationState, Generation, Turn } from './conversations'
+import { normalizeGeneratedTitle } from './title'
+import { conversationActivityAt, type Attachment, type Conversation, type ConversationState, type Generation, type Turn } from './conversations'
 
 const DATABASE = 'study-buddy-conversations'
 let connection: Promise<IDBDatabase> | undefined
@@ -51,7 +52,7 @@ export function getConversation(id: string): Promise<Conversation | undefined> {
 export function listConversations(): Promise<Conversation[]> {
   return transaction(['conversations'], 'readonly', (tx, done) => {
     const request = tx.objectStore('conversations').getAll()
-    request.onsuccess = () => done((request.result as Conversation[]).sort((a, b) => b.updatedAt - a.updatedAt))
+    request.onsuccess = () => done((request.result as Conversation[]).sort((a, b) => conversationActivityAt(b) - conversationActivityAt(a) || b.createdAt - a.createdAt))
   })
 }
 
@@ -129,7 +130,7 @@ export function startGeneration(conversationId: string, user: Turn | null, assis
   })
 }
 
-export function updateReply(generation: Generation, text: string, status: Turn['status'], error?: string, note?: string): Promise<void> {
+export function updateReply(generation: Generation, text: string, status: Turn['status'], error?: string, note?: string, generatedTitle?: string): Promise<void> {
   return transaction(['conversations', 'state'], 'readwrite', (tx, done) => {
     const store = tx.objectStore('conversations')
     const request = store.get(generation.conversationId)
@@ -141,6 +142,8 @@ export function updateReply(generation: Generation, text: string, status: Turn['
       turn.status = status
       turn.error = error
       turn.note = note ?? turn.note
+      const title = generatedTitle && conversation.titleGeneratedAt === undefined ? normalizeGeneratedTitle(generatedTitle) : undefined
+      if (title) { conversation.title = title; conversation.titleGeneratedAt = Date.now() }
       conversation.updatedAt = Date.now()
       store.put(conversation)
       if (status !== 'streaming') {
@@ -191,11 +194,55 @@ export function deleteConversation(id: string): Promise<void> {
       get.onsuccess = () => {
         const value = get.result as ConversationState | undefined
         if (value?.lastConversationId === id) {
-          value.lastConversationId = (request.result as Conversation[]).sort((a, b) => b.updatedAt - a.updatedAt)[0]?.id
+          value.lastConversationId = (request.result as Conversation[]).sort((a, b) => conversationActivityAt(b) - conversationActivityAt(a) || b.createdAt - a.createdAt)[0]?.id
           state.put(value)
         }
       }
       done(undefined)
+    }
+  })
+}
+
+/** Keep the newest 20 message-active chats and any current writer in one transaction. */
+export function enforceConversationLimit(protectedConversationId?: string, limit = 20): Promise<void> {
+  return transaction(['conversations', 'attachments', 'state'], 'readwrite', (tx, done) => {
+    const store = tx.objectStore('conversations')
+    const all = store.getAll()
+    all.onsuccess = () => {
+      const rows = all.result as Conversation[]
+      const stateStore = tx.objectStore('state')
+      const stateRequest = stateStore.get('state')
+      stateRequest.onsuccess = () => {
+        const state = stateRequest.result as ConversationState | undefined
+        const protectedIds = new Set([state?.generation?.conversationId, protectedConversationId].filter((id): id is string => !!id))
+        const ordered = rows.sort((a, b) => conversationActivityAt(b) - conversationActivityAt(a) || b.createdAt - a.createdAt)
+        const keep = new Set(ordered.slice(0, limit).map((row) => row.id))
+        for (const id of protectedIds) if (rows.some((row) => row.id === id)) keep.add(id)
+        while (keep.size > limit) {
+          const oldest = [...ordered].reverse().find((row) => keep.has(row.id) && !protectedIds.has(row.id))
+          if (!oldest) break
+          keep.delete(oldest.id)
+        }
+        const removed = rows.filter((row) => !keep.has(row.id))
+        for (const row of removed) store.delete(row.id)
+        if (removed.length && state) {
+          const removedIds = new Set(removed.map((row) => row.id))
+          if (state.lastConversationId && removedIds.has(state.lastConversationId)) {
+            state.lastConversationId = ordered.find((row) => keep.has(row.id))?.id
+            stateStore.put(state)
+          }
+        }
+        if (!removed.length) { done(undefined); return }
+        const referenced = new Set<string>()
+        for (const row of rows.filter((item) => keep.has(item.id))) {
+          if (row.activeAttachmentId) referenced.add(row.activeAttachmentId)
+          for (const turn of row.turns) if (turn.attachmentId) referenced.add(turn.attachmentId)
+        }
+        const attachments = tx.objectStore('attachments')
+        const keys = attachments.getAllKeys()
+        keys.onsuccess = () => { for (const key of keys.result) if (!referenced.has(String(key))) attachments.delete(key) }
+        done(undefined)
+      }
     }
   })
 }

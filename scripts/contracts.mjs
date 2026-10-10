@@ -37,6 +37,13 @@ function load(file) {
 }
 
 const settings = load('src/shared/settings.ts')
+const i18n = load('src/shared/i18n.ts')
+assert.equal(i18n.t('en', 'dialog.deleteError'), "Couldn't delete this chat. Try again.")
+assert.equal(i18n.t('ru', 'dialog.deleteError'), 'Не удалось удалить чат. Попробуйте ещё раз.')
+assert.equal(i18n.t('en', 'dialog.denied'), 'This action is unavailable.')
+assert.equal(i18n.t('ru', 'dialog.denied'), 'Это действие недоступно.')
+assert.equal(settings.DEFAULT_SETTINGS.uiLanguage, 'en')
+assert.equal(settings.DEFAULT_SETTINGS.answerLanguage, 'en')
 const defaults = { apiKey: 'fixture-baked-key', baseUrl: 'https://default.test/v1/' }
 assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: ' byok ', baseUrl: 'https://custom.test/v1/' }, defaults).apiKey, 'byok')
 const effective = settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: '', baseUrl: '' }, defaults)
@@ -63,6 +70,48 @@ assert.deepEqual(stored.settings, previousSettings)
 assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: '', baseUrl: '  ' }, defaults).apiKey, 'fixture-baked-key')
 assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: 'byok', baseUrl: 'https://custom.test' }, { apiKey: 'baked', baseUrl: 'invalid default' }).apiKey, 'byok')
 console.log('SETTINGS CONTRACTS OK — defaults, BYOK, custom isolation, malformed/legacy records, storage failure')
+
+const titles = load('src/shared/title.ts')
+const envelope = '[[STUDY_BUDDY_TITLE]]Linear equations\nSolve 2x + 3 = 7.'
+for (let boundary = 0; boundary <= envelope.length; boundary++) {
+  const parser = titles.createResponseTitleParser()
+  const shown = parser.push(envelope.slice(0, boundary)) + parser.push(envelope.slice(boundary))
+  const tail = parser.finish()
+  assert.equal(shown + tail.text, 'Solve 2x + 3 = 7.')
+  assert.equal(tail.title ?? parser.title, 'Linear equations')
+}
+{
+  const parser = titles.createResponseTitleParser()
+  const text = 'ordinary answer 😀'
+  assert.equal(parser.push(text.slice(0, 4)) + parser.push(text.slice(4)), text)
+  assert.equal(parser.finish().text, '')
+  assert.equal(parser.title, undefined)
+}
+for (const value of ['', 'x'.repeat(81)]) {
+  const parser = titles.createResponseTitleParser()
+  assert.equal(parser.push(`[[STUDY_BUDDY_TITLE]]${value}\nanswer`), 'answer')
+  assert.equal(parser.title, undefined)
+}
+{
+  const candidate = 'x'.repeat(700)
+  const parser = titles.createResponseTitleParser()
+  parser.push(`[[STUDY_BUDDY_TITLE]]${candidate}`)
+  assert.equal(parser.finish().text, candidate)
+}
+for (const partial of ['[[STUDY_BUDDY_TIT', '[[STUDY_BUDDY_TITLE]]Linear equations']) {
+  const parser = titles.createResponseTitleParser()
+  assert.equal(parser.push(partial), '')
+  const tail = parser.finish()
+  assert.equal(tail.text, partial.startsWith('[[STUDY_BUDDY_TITLE]]') ? 'Linear equations' : '')
+  assert.equal(tail.title, undefined)
+}
+const fallbackTitle = titles.normalizeGeneratedTitle('  Linear equations\n')
+assert.equal(fallbackTitle, 'Linear equations')
+const display = load('src/shared/conversations.ts').conversationDisplayTitle
+assert.equal(display({ title: 'Solve', createdAt: 1, turns: [{ role: 'user', input: 'A question about fractions', createdAt: 2 }] }, 'New chat'), 'A question about fractions')
+assert.equal(display({ title: 'Study Buddy', createdAt: 1, turns: [{ role: 'assistant', text: 'Answer\nFactor x² - 9.', createdAt: 2 }] }, 'New chat'), 'Factor x² - 9.')
+assert.equal(display({ title: 'Hint', createdAt: 1, turns: [{ role: 'assistant', text: 'Answer: 84 km/h', createdAt: 2 }] }, 'New chat'), 'Answer: 84 km/h')
+assert.equal(display({ title: 'Проверить попытку', createdAt: 1, turns: [{ role: 'assistant', text: 'Ответ\nДелим обе части на 2.', createdAt: 2 }] }, 'Новый чат'), 'Делим обе части на 2.')
 
 const api = load('src/shared/api.ts')
 const ai = load('src/shared/ai.ts')

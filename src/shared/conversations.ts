@@ -25,6 +25,7 @@ export interface Turn {
 export interface Conversation {
   id: string
   title: string
+  titleGeneratedAt?: number
   createdAt: number
   updatedAt: number
   activeAttachmentId?: string
@@ -48,6 +49,35 @@ export interface ConversationState {
   lastConversationId?: string
   lastStartedAt: number
   generation?: Generation
+}
+
+/** Prefer the persisted model title, then useful local content for legacy records. */
+export function conversationDisplayTitle(conversation: Conversation, fallback: string): string {
+  if (conversation.titleGeneratedAt !== undefined && conversation.title.trim()) return conversation.title
+  const generic = new Set(['study buddy', 'new chat', 'solve', 'hint', 'check', 'explain', 'translate', 'summarize', 'multiple choice', 'выбор ответа', 'ask', 'check my attempt', 'проверить попытку', 'quiz', 'summary', 'конспект', 'решить', 'подсказка', 'проверить', 'объяснить', 'перевести', 'краткое содержание', 'новый чат'])
+  if (conversation.title.trim() && !generic.has(conversation.title.trim().toLocaleLowerCase())) return excerpt(conversation.title)
+  const explicit = [...conversation.turns].reverse().find((turn) => turn.role === 'user' && turn.input?.trim())?.input?.trim()
+  if (explicit) return excerpt(explicit)
+  const answer = conversation.turns.find((turn) => turn.role === 'assistant' && !!turn.text.trim())?.text
+  if (answer) {
+    const line = answer.split(/\r?\n/).map((value) => value.trim()).find((value) => {
+      const heading = value.replace(/^#{1,6}\s*/, '').replace(/^\*\*(.*?)\*\*:?$/, '$1').replace(/:$/, '').trim().toLocaleLowerCase()
+      return value && !['answer', 'solution', 'explanation', 'ответ', 'решение', 'объяснение'].includes(heading)
+    })
+    if (line) return excerpt(line.replace(/^#{1,6}\s*/, '').replace(/^[-*]\s*/, ''))
+  }
+  return fallback
+}
+
+function excerpt(value: string): string {
+  const text = value.replace(/\s+/g, ' ').trim()
+  const chars = Array.from(text)
+  return chars.length > 80 ? `${chars.slice(0, 77).join('')}…` : text
+}
+
+/** Message activity ignores capture previews, selections and streamed delta saves. */
+export function conversationActivityAt(conversation: Conversation): number {
+  return conversation.turns.reduce((latest, turn) => Math.max(latest, turn.createdAt), conversation.createdAt)
 }
 
 export const CONTEXT_LIMITS = { turns: 12, text: 32_000, images: 2, imageBytes: 4 * 1024 * 1024 }

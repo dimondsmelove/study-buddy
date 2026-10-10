@@ -1,24 +1,25 @@
 # Study Buddy
 
-Select any question on your screen and get a step-by-step answer in your
-language. Built for studying — hint, check an attempt, solve, quiz, explain,
+Select any question on your screen and get a step-by-step answer in English
+by default. Built for studying — hint, check an attempt, solve, quiz, explain,
 translate, summarize.
 
 Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
 selection → pick a task or ask your own question. The answer streams in beside
-the page, in your language. The toolbar icon also starts region selection; chat
+the page, in English by default. The toolbar icon also starts region selection; chat
 opens after a successful crop and continues the conversation selected for that tab.
 
 **Status: MVP.** Region selection → screenshot → crop → chat window,
-interface + answer language settings (English / Russian), task-shaped answers
+English interface and answer defaults, task-shaped answers
 (Hint / Check / Solve / Quiz / Explain / Translate / Summarize + free-form Ask), Markdown +
 LaTeX rendering, per-answer copy / explain simpler / retry, and an automatic
-model fallback, local history/export/delete and minimize/reopen all work against
-local mock fixtures. Real tutor response quality has not been re-evaluated.
+model fallback, compact local history/delete and minimize/reopen work against
+local mock fixtures. One real-provider Solve fixture passed (84 km/h and a
+clean topic title); broader tutor response quality has not been re-evaluated.
 TD-06 hosted backend remains deferred; the direct-provider path is development-only, not a secured public distribution mode.
-This loop's acceptance build is keyless. The ordinary Settings screen only
-controls interface and answer languages; the direct-provider connection is
-provided by the development runtime and is not a user setup flow. That runtime
+This loop's acceptance build is keyless. The settings gear is commented out;
+retained language settings contain no connection fields. The direct-provider
+connection is provided by the development runtime and is not a user setup flow. That runtime
 still stores its connection locally on the device. All model calls go through
 the `Gateway` seam (`src/shared/gateway.ts`) — currently a direct provider, later
 your hosted proxy for subscriptions. The answering model is fixed to DeepSeek
@@ -56,10 +57,15 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   and ours can't leak out.
 - The API key, settings and panel size live in `chrome.storage.local`. The last
   eight transient crops live in `chrome.storage.session`; saved transcripts and
-  image Blobs live in extension-origin IndexedDB until explicit deletion.
-- History provides JSON export (including images) and confirmed deletion.
-  Shared images are kept until no remaining conversation references them.
-  Storage failure is visible; copy/export unsaved text before leaving the page.
+  image Blobs live in extension-origin IndexedDB. History keeps at most 20 chats,
+  ordered by their latest message (creation for empty chats); older chats are
+  automatically deleted, including existing history when the worker starts.
+- History shows a topic title and a short date/time, with a delete icon in the
+  same row and an in-app confirmation dialog. Shared images remain while any
+  retained conversation references them. Copy unsaved text before leaving.
+- New topics are generated with the first answer, without a separate request;
+  existing chats use readable stored content as a fallback. Topic metadata is
+  separate from answer text and provider conversation context.
 - Minimize keeps the iframe/stream alive. Close saves and cancels; navigation
   or writer loss retains the latest committed partial as interrupted, without
   automatic paid resume. One local generation is admitted across windows.
@@ -101,9 +107,12 @@ npm run playtest
 #   OPENROUTER_API_KEY overrides the default OpenRouter connection. A saved
 #   custom provider, endpoint, and key stay paired and are preserved.
 #   These local dev credentials are stored on-device and never shown in the
-#   ordinary Settings screen, which only controls the two language choices.
+#   interface. The settings gear is hidden; the language form is retained.
 #   The dedicated ~/.config/study-buddy/playtest-profile persists settings and
 #   History across restarts; PLAYTEST_PROFILE can point to an isolated QA profile.
+#   New profiles default to English; saved language choices survive restarts.
+#   PLAYTEST_UI_LANGUAGE=en PLAYTEST_ANSWER_LANGUAGE=en npm run playtest
+#   explicitly switches an existing test profile while preserving its connection.
 
 # task quality: drive the real UI against the real API, one fixture per task:
 npm run quality

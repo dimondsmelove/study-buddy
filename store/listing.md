@@ -1,6 +1,6 @@
 # Chrome Web Store listing (draft)
 
-> Local client wording reconciled on 2026-10-07; **not ready for submission**.
+> Local client wording reconciled on 2026-10-10; **not ready for submission**.
 > Public gateway/budget controls, support contact/privacy URL and real AI quality
 > remain open. Existing store screenshots predate the local-dialog UI.
 
@@ -23,8 +23,8 @@ conflicts before submitting):
 
 Pick one:
 
-1. `Select a task, ask for a hint or check your attempt. Local saved chats, export, no account. Bring your own AI key.`
-2. `Snip a question and study it step by step: hints, checking, solving, translation. Local history. Your own AI key required.`
+1. `Select a task, ask for a hint or check your attempt. Your latest 20 chats stay on this device. No account.`
+2. `Snip a question for hints, checking, solving or translation. English by default. Your latest 20 chats stay local.`
 
 ## Detailed description
 
@@ -41,18 +41,22 @@ beside your selection — without switching tabs or copy-pasting into a chat.
 - **Check my attempt** — enter your multiline work and request the first substantive error plus a correcting hint.
 - **Quiz** — the correct option, why it's correct, and why the other options are wrong.
 - **Explain** — the gist in one sentence, then step by step, then the key terms.
-- **Translate** — turn any text in the selection into your language.
+- **Translate** — translate selected text into English by default; a typed question can explicitly request another language.
 - **Summarize** — the 3–5 key points.
 - **Ask** — anything else, in your own words.
 
-**Your language.** Answers follow the language you write in; the interface and
-the preset actions can be set to English or Russian.
+**English by default.** The interface and answer language default to English.
+Previously saved language choices remain available in private development
+profiles; the settings gear is currently hidden.
 
 **Local dialogs, no account or analytics.** Text and selected images are saved
-on the device until explicit deletion, with History/export/delete. Questions,
+on the device for up to 20 chats, ordered by the latest message. Older chats
+are automatically deleted; History provides topic titles, readable times and
+manual deletion. Questions,
 attempts, instructions and bounded prior context are sent directly to your
-chosen provider. The local acceptance build requires your own key; a public
-shared-key release is not authorized or protected by the local UX interval.
+configured provider. The private development launcher supplies the connection;
+the ordinary interface does not ask for or expose a provider key. A public
+shared-key release still requires the deferred hosted gateway.
 
 **Study alongside web content.** Select a region on a supported regular web
 page. Compatibility with individual learning platforms and PDF viewers has not
@@ -66,7 +70,7 @@ partial failures do not silently restart a model operation.
 **How to start**
 
 1. Add the extension and pin it.
-2. Press **Ctrl+Shift+Y**, drag a box around a question. The toolbar icon restores a chat.
+2. Press **Ctrl+Shift+Y**, drag a box around a question. The toolbar icon also starts selection.
 3. Pick an action — or type your own question.
 
 Minimize keeps an answer running; Close saves and cancels. Saved history is

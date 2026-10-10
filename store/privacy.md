@@ -1,6 +1,6 @@
 # Study Buddy — Privacy Policy
 
-_Last updated: 2026-10-07 · draft; not a release/compliance certification_
+_Last updated: 2026-10-10 · draft; not a release/compliance certification_
 
 Study Buddy is a browser extension that lets you select a region of a web page
 and ask an AI model about it. This policy explains exactly what leaves your
@@ -12,31 +12,35 @@ chosen provider.
 
 - We run **no servers** and have **no accounts**.
 - There is **no analytics or telemetry** in this client.
-- This local acceptance build has no built-in key; a real provider requires BYOK.
+- This local acceptance build has no built-in key. The private development
+  launcher supplies a provider connection stored locally on the device; users
+  are not asked to enter a key in the ordinary interface.
 - Selected images, typed questions/attempts, generated instructions and bounded
   prior conversation text go **directly to your chosen AI endpoint**. Nothing
   passes through a project-operated proxy in this version.
-- Saved dialogs/images stay on your device until you explicitly delete them.
+- Up to 20 chats and their referenced images stay on your device, ordered by
+  their latest message (creation for empty chats). Older chats are automatically
+  deleted, including existing history on startup; manual deletion is available.
   Incognito use is disabled. No cloud sync or student profile is created.
 
 ## What is stored, and where
 
 | Data | Where | Lifetime |
 |---|---|---|
-| Language settings (and, if you optionally set one, your own endpoint/key) | `chrome.storage.local` on your device | until you clear it / remove the extension |
+| Language settings and the private development endpoint/key | `chrome.storage.local` on your device | until you clear it / remove the extension |
 | The cropped screenshot of your selection | `chrome.storage.session` (RAM-backed) | until the browser session ends; at most the last 8 captures are kept |
-| Saved conversation text, generated replies/statuses and selected image Blobs | extension-origin IndexedDB on this device | until History → Delete, clearing extension data or removing the extension; browser storage can fail or be evicted |
+| Saved conversation text, generated replies/statuses and selected image Blobs | extension-origin IndexedDB on this device | until automatic removal beyond the newest 20 chats, History → Delete, clearing extension data or removing the extension; browser storage can fail or be evicted |
 | Local generation timestamp and writer recovery metadata | IndexedDB | retained locally with the extension; not a user identity or telemetry |
 
-History offers JSON export including selected images, a storage usage display,
-and confirmed deletion. Images referenced by another conversation are kept.
-Exported files are independent copies; deleting a dialog does not remove them.
+History offers a storage usage display and an in-app deletion confirmation.
+Images referenced by another retained conversation are kept. JSON export is
+not offered. Copied text is independent of the local saved chat.
 Transient capture copies can remain until the session cache is pruned or the
 browser session ends. If storage fails, the latest visible answer may be
-unsaved: copy/export before closing or navigating.
+unsaved: copy before closing or navigating.
 
-Your key is stored locally, never synchronized to a cloud account, and excluded
-from conversation exports. A key baked into another build is still present in
+The private development key is stored locally, never synchronized to a cloud
+account, and excluded from conversation records and the ordinary settings UI. A key baked into another build is still present in
 that build and extractable; it is not protected server-side.
 
 ## What is sent, and to whom
@@ -45,7 +49,8 @@ When you ask a question, the extension sends **the cropped image of the region
 you selected**, your question/attempt, a bounded selection of past turns, and
 generated task/system instructions **directly from
 your browser to the AI endpoint** (by default `https://openrouter.ai/api/v1`).
-The keyless acceptance build authenticates with your own key. It is subject to the privacy policy of that
+The private development connection authenticates with a runtime key. Requests
+are subject to the privacy policy of that
 provider (e.g. OpenRouter and the model vendor behind the chosen model). Study
 Buddy does not proxy or transmit telemetry about this request. Source turns and
 replies are retained locally as described above. Provider retention is governed

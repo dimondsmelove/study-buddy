@@ -20,13 +20,14 @@ import { ApiError } from '../shared/api'
 import { createGateway } from '../shared/gateway'
 import type { ChatState, Rect } from '../shared/messages'
 import { conversationUsage, getAttachment, getConversation, getConversationState, listConversations } from '../shared/conversation-store'
-import { blobDataUrl, cooldownRemaining, requestContext, type Conversation, type ConversationState, type ReplyStatus, type Turn } from '../shared/conversations'
+import { conversationActivityAt, conversationDisplayTitle, cooldownRemaining, requestContext, type Conversation, type ConversationState, type ReplyStatus, type Turn } from '../shared/conversations'
 import { conversationAction, GenerationConnection } from './conversation-client'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, resolveSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
-import { checkPrompt, PROMPTS_VERSION, simplerPrompt, systemPrompt, taskPrompt, turnParams, type TaskId, type TurnKind } from '../shared/prompts'
+import { createResponseTitleParser } from '../shared/title'
+import { checkPrompt, firstAnswerTitleInstruction, PROMPTS_VERSION, simplerPrompt, systemPrompt, taskPrompt, turnParams, type TaskId, type TurnKind } from '../shared/prompts'
 
 type Kind = 'capture' | 'permission' | 'restricted' | 'error'
 const KINDS: Kind[] = ['capture', 'permission', 'restricted', 'error']
@@ -253,7 +254,7 @@ function restoreView(): void {
 for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-goto-settings]')) {
   btn.onclick = () => openSettings()
 }
-;(el('settings-btn') as HTMLButtonElement).onclick = () => openSettings()
+// Settings is intentionally unavailable in the current UI. Keep its handler disabled with the commented-out control.
 
 // ── capture actions ──────────────────────────────────────────────────────────
 
@@ -377,7 +378,7 @@ async function renderConversation(): Promise<void> {
   if (!conversation) return
   const epoch = ++rendering
   const selected = conversation
-  el('conversation-title').textContent = selected.title
+  el('conversation-title').textContent = conversationDisplayTitle(selected, t(uiLang, 'dialog.new'))
   if (lightbox.open) lightbox.close()
   if (selected.activeAttachmentId) {
     const url = await imageUrl(selected.activeAttachmentId)
@@ -559,6 +560,10 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
   if (!conversation) return false
   const selectedId = conversation.id
   const promptContext = { answerLanguage: settings.answerLanguage, uiLang: source.locale }
+  const requestTitle = !!user && conversation.turns.length === 0 && conversation.titleGeneratedAt === undefined
+  const titleParser = requestTitle ? createResponseTitleParser() : undefined
+  let generatedTitle: string | undefined
+  let titleParserFinished = false
   const assistant: Turn = { id: crypto.randomUUID(), role: 'assistant', text: '', kind: source.kind, status: 'streaming', replyTo: source.id, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION }
   const controller = new AbortController()
   let lost = false
@@ -572,7 +577,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
   let timer: ReturnType<typeof setTimeout> | undefined
   let storageFailed = false
   const persist = (final: ReplyStatus) => {
-    write = write.then(() => connection.request({ action: 'update', text: acc, status: final, error, note: fallbackNote }))
+    write = write.then(() => connection.request({ action: 'update', text: acc, status: final, error, note: fallbackNote, title: generatedTitle }))
     return write
   }
   starting = true
@@ -592,11 +597,13 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     const context = await requestContext({ ...conversation, turns: conversation.turns.slice(0, index + 1) }, async (id) => (await getAttachment(id))?.data)
     if (context.omitted) addMessage('note', t(uiLang, 'context.omitted', { count: context.omitted }))
     const result = await createGateway(settings).ask({
-      messages: [{ role: 'system', content: systemPrompt(promptContext) }, ...context.messages],
+      messages: [{ role: 'system', content: systemPrompt(promptContext) + (requestTitle ? `\n\n${firstAnswerTitleInstruction(promptContext)}` : '') }, ...context.messages],
       ...turnParams(source.kind),
       signal: controller.signal,
       onDelta: (delta) => {
-        acc += delta
+        acc += titleParser ? titleParser.push(delta) : delta
+        generatedTitle = titleParser?.title ?? generatedTitle
+        if (generatedTitle && conversation) el('conversation-title').textContent = conversationDisplayTitle({ ...conversation, title: generatedTitle, titleGeneratedAt: Date.now() }, t(uiLang, 'dialog.new'))
         reply!.raw = acc
         reply!.body.textContent = acc
         scrollThread()
@@ -611,7 +618,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
         thread.insertBefore(note.wrap, reply!.wrap)
       },
     })
-    acc = result.text
+    if (!titleParser) acc = result.text
     status = result.status
   } catch (err) {
     if (!reply) { reportError(err); return false }
@@ -620,6 +627,15 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
   } finally {
     if (timer) clearTimeout(timer)
     if (reply) {
+      if (titleParser && !titleParserFinished) {
+        const tail = titleParser.finish()
+        titleParserFinished = true
+        acc += tail.text
+        generatedTitle = tail.title ?? generatedTitle
+        reply.body.textContent = acc || '…'
+        reply.raw = acc
+      }
+      if (titleParser && status === 'complete' && !acc.trim()) status = 'empty'
       if (lost) storageFailed = true
       try { if (!storageFailed) await persist(status) } catch { storageFailed = true }
       const savedTurn = { ...assistant, text: acc, status, error, note: fallbackNote }
@@ -764,25 +780,27 @@ el('new-chat-btn').onclick = () => {
   }).catch(reportError)
 }
 
-async function exportConversation(value: Conversation): Promise<void> {
-  const attachments: Record<string, string> = {}
-  const ids = new Set(value.turns.map((turn) => turn.attachmentId).filter((id): id is string => !!id))
-  if (value.activeAttachmentId) ids.add(value.activeAttachmentId)
-  for (const id of ids) {
-    const image = await getAttachment(id)
-    if (!image) throw new Error('context.imageMissing')
-    attachments[id] = await blobDataUrl(image.data)
-  }
-  const exported = { ...value, turns: value.turns.map((turn) => unsaved.get(turn.id) ?? turn) }
-  const url = URL.createObjectURL(new Blob([JSON.stringify({ schema: 1, conversation: exported, attachments }, null, 2)], { type: 'application/json' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `study-buddy-${value.id}.json`
-  link.click()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+let deletingConversationId: string | undefined
+let deletingHistoryIndex = 0
+
+function formatHistoryDate(timestamp: number): string {
+  const date = new Date(timestamp)
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  yesterday.setDate(yesterday.getDate() - 1)
+  const label = day === today
+    ? t(uiLang, 'dialog.today')
+    : day === yesterday.getTime()
+      ? t(uiLang, 'dialog.yesterday')
+      : date.toLocaleDateString(uiLang, { month: 'short', day: 'numeric', ...(date.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) })
+  return `${label} · ${date.toLocaleTimeString(uiLang, { hour: '2-digit', minute: '2-digit' })}`
 }
 
 async function showHistory(): Promise<void> {
+  await conversationAction({ action: 'prune' })
+  if (conversation && !await getConversation(conversation.id)) { conversation = undefined; releaseImages() }
   show('history')
   const rows = await listConversations()
   const list = el('history-list')
@@ -792,28 +810,67 @@ async function showHistory(): Promise<void> {
     wrap.className = 'history-row'
     const open = document.createElement('button')
     open.className = 'history-open'
-    open.textContent = `${row.title} · ${row.turns.length} · ${new Date(row.updatedAt).toLocaleString(uiLang)}`
+    open.dataset.conversation = row.id
+    const title = document.createElement('span')
+    title.className = 'history-title'
+    const displayTitle = conversationDisplayTitle(row, t(uiLang, 'dialog.new'))
+    title.textContent = displayTitle
+    const date = document.createElement('span')
+    date.className = 'history-date'
+    date.textContent = formatHistoryDate(conversationActivityAt(row))
+    open.append(title, date)
     open.disabled = !!inflight || starting
     open.onclick = () => { releaseImages(); void openConversation(row.id).catch(reportError) }
-    const download = document.createElement('button')
-    download.textContent = t(uiLang, 'dialog.export')
-    download.onclick = () => void exportConversation(row).catch(reportError)
     const remove = document.createElement('button')
-    remove.textContent = t(uiLang, 'dialog.delete')
+    remove.className = 'history-delete'
+    remove.type = 'button'
+    remove.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6m4-6v6M6 7l1 14h10l1-14M9 7V4h6v3"/></svg>'
+    remove.setAttribute('aria-label', t(uiLang, 'dialog.deleteChat', { title: displayTitle }))
     remove.disabled = profileState.generation?.conversationId === row.id
     remove.onclick = () => {
-      if (!confirm(t(uiLang, 'dialog.deleteConfirm', { title: row.title }))) return
-      void conversationAction({ action: 'delete', conversationId: row.id }).then(async () => {
-        if (conversation?.id === row.id) { conversation = undefined; releaseImages() }
-        await showHistory()
-      }).catch(reportError)
+      deletingHistoryIndex = [...list.children].indexOf(wrap)
+      deletingConversationId = row.id
+      el('delete-error').textContent = ''
+      el('delete-error').hidden = true
+      el('delete-message').textContent = t(uiLang, 'dialog.deleteConfirm', { title: displayTitle })
+      ;(el('delete-dialog') as HTMLDialogElement).showModal()
     }
-    wrap.append(open, download, remove)
+    wrap.append(open, remove)
     list.appendChild(wrap)
   }
   if (!rows.length) list.textContent = t(uiLang, 'dialog.empty')
   el('storage-usage').textContent = t(uiLang, 'dialog.usage', { size: ((await conversationUsage()) / 1024 / 1024).toFixed(2) })
 }
+
+;(el('delete-cancel') as HTMLButtonElement).onclick = () => (el('delete-dialog') as HTMLDialogElement).close()
+;(el('delete-dialog') as HTMLDialogElement).addEventListener('cancel', (event) => {
+  if ((el('delete-confirm') as HTMLButtonElement).disabled) event.preventDefault()
+})
+;(el('delete-confirm') as HTMLButtonElement).onclick = async () => {
+  const id = deletingConversationId
+  if (!id) return
+  const button = el('delete-confirm') as HTMLButtonElement
+  button.disabled = true
+  ;(el('delete-cancel') as HTMLButtonElement).disabled = true
+  try {
+    await conversationAction({ action: 'delete', conversationId: id })
+    if (conversation?.id === id) { conversation = undefined; releaseImages() }
+    deletingConversationId = undefined
+    ;(el('delete-dialog') as HTMLDialogElement).close()
+    await showHistory()
+    const next = el('history-list').querySelectorAll<HTMLButtonElement>('.history-open')[Math.min(deletingHistoryIndex, el('history-list').querySelectorAll('.history-open').length - 1)]
+    ;(next ?? el('history-back') as HTMLButtonElement).focus()
+  } catch (err) {
+    const key = err instanceof Error ? err.message : 'storage.write'
+    const knownErrors = ['dialog.busy', 'dialog.missing', 'dialog.denied', 'dialog.disconnected']
+    el('delete-error').textContent = t(uiLang, knownErrors.includes(key) ? key : 'dialog.deleteError')
+    el('delete-error').hidden = false
+  } finally {
+    button.disabled = false
+    ;(el('delete-cancel') as HTMLButtonElement).disabled = false
+  }
+}
+;(el('delete-dialog') as HTMLDialogElement).addEventListener('close', () => { deletingConversationId = undefined })
 
 el('history-btn').onclick = () => void showHistory().catch(reportError)
 el('history-back').onclick = () => {

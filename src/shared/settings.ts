@@ -47,8 +47,8 @@ export const DEFAULT_SETTINGS: Settings = {
   provider: 'openrouter',
   baseUrl: 'https://openrouter.ai/api/v1',
   apiKey: '',
-  uiLanguage: 'auto',
-  answerLanguage: 'auto',
+  uiLanguage: 'en',
+  answerLanguage: 'en',
 }
 
 const UI_LANGUAGES: UiLanguage[] = ['auto', 'en', 'ru']

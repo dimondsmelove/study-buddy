@@ -11,7 +11,7 @@ import { checkEn, simplerEn, taskPromptsEn } from './tasks.en'
 import { checkRu, simplerRu, taskPromptsRu } from './tasks.ru'
 
 /** Bump on any prompt-text or parameter change; logged/verifiable. */
-export const PROMPTS_VERSION = '2026-10-07.1'
+export const PROMPTS_VERSION = '2026-10-10.1'
 
 export type TaskId = 'solve' | 'quiz' | 'explain' | 'translate' | 'summarize' | 'hint'
 /** Everything that starts a turn: a task button, a free question, "simpler", or checking an attempt. */
@@ -44,6 +44,12 @@ export function systemPrompt(ctx: PromptContext): string {
   return isRussian(ctx)
     ? buildSystemPromptRu(ruLanguageName(ctx), ctx.answerLanguage !== 'auto')
     : buildSystemPrompt(targetLanguageName(ctx), ctx.answerLanguage !== 'auto')
+}
+
+export function firstAnswerTitleInstruction(ctx: PromptContext): string {
+  return isRussian(ctx)
+    ? 'Перед ответом выведи первую строку строго в формате [[STUDY_BUDDY_TITLE]]Краткая тема. Название — короткое, по сути задания, не более 80 символов. Затем на следующей строке дай обычный ответ. Не добавляй пояснений к метаданным.'
+    : 'Before the answer, emit a first line exactly as [[STUDY_BUDDY_TITLE]]Short topic title. Keep the title concise and specific to the task, at most 80 characters. Then give the normal answer on the next line. Do not explain the metadata.'
 }
 
 export function taskPrompt(task: TaskId, ctx: PromptContext): string {

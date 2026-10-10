@@ -30,7 +30,12 @@ function load(file) {
 
 const prompts = load('src/shared/prompts/index.ts')
 const i18n = load('src/shared/i18n.ts')
-assert.equal(prompts.PROMPTS_VERSION, '2026-10-07.1')
+assert.equal(prompts.PROMPTS_VERSION, '2026-10-10.1')
+for (const ctx of [{ answerLanguage: 'en', uiLang: 'en' }, { answerLanguage: 'ru', uiLang: 'ru' }]) {
+  const instruction = prompts.firstAnswerTitleInstruction(ctx)
+  assert(instruction.includes('[[STUDY_BUDDY_TITLE]]'))
+  assert(instruction.includes('80'))
+}
 
 const attempts = [
   '  2x + 3 = 7\n2x = 10\nx = 5\n',

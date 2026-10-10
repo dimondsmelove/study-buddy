@@ -92,6 +92,7 @@ export type ConversationAction =
   | { action: 'select'; conversationId: string }
   | { action: 'attach'; conversationId: string; imageId: string }
   | { action: 'delete'; conversationId: string }
+  | { action: 'prune' }
 
 export type ConversationResponse<T> = { ok: true; value: T } | { ok: false; error: string }
 export const GENERATION_PORT = 'study-buddy-generation'

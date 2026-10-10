@@ -77,6 +77,10 @@ console.log(sum) // expected 6</code></pre></section>
    shape the ecosystem rather than freezing it at a chosen point.</p></section>
 </main>`
 
+const uiLanguageOverride = process.env.PLAYTEST_UI_LANGUAGE?.trim()
+const answerLanguageOverride = process.env.PLAYTEST_ANSWER_LANGUAGE?.trim()
+if (uiLanguageOverride && !['en', 'ru', 'auto'].includes(uiLanguageOverride)) throw new Error('PLAYTEST_UI_LANGUAGE must be en, ru or auto.')
+if (answerLanguageOverride && !['auto', 'en', 'ru', 'uk', 'de', 'fr', 'es', 'it', 'pt', 'pl', 'tr', 'zh', 'ja'].includes(answerLanguageOverride)) throw new Error('PLAYTEST_ANSWER_LANGUAGE is not a supported answer language.')
 const headless = process.env.PLAYTEST_HEADLESS === '1'
 const server = createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -149,7 +153,7 @@ try {
     }
   }, DEFAULT_BASE_URL)
   const credentials = existing.customConnection || (existing.hasKey && !envKey) ? undefined : openRouterCredentials()
-  const merged = await sw.evaluate(async ({ defaultBaseUrl, envKey, credentials }) => {
+  const merged = await sw.evaluate(async ({ defaultBaseUrl, envKey, credentials, uiLanguageOverride, answerLanguageOverride }) => {
     const saved = (await chrome.storage.local.get('settings')).settings ?? {}
     const endpoint = typeof saved.baseUrl === 'string' ? saved.baseUrl.trim().replace(/\/+$/, '') : ''
     const savedApiKey = typeof saved.apiKey === 'string' ? saved.apiKey.trim() : ''
@@ -157,8 +161,8 @@ try {
     const customConnection = saved.provider === 'custom' || !!(endpoint && endpoint !== defaultBaseUrl)
     const settings = {
       ...saved,
-      uiLanguage: typeof saved.uiLanguage === 'string' ? saved.uiLanguage : 'auto',
-      answerLanguage: typeof saved.answerLanguage === 'string' ? saved.answerLanguage : 'auto',
+      uiLanguage: uiLanguageOverride || (typeof saved.uiLanguage === 'string' ? saved.uiLanguage : 'en'),
+      answerLanguage: answerLanguageOverride || (typeof saved.answerLanguage === 'string' ? saved.answerLanguage : 'en'),
     }
     if (customConnection) {
       if (!settings.provider) settings.provider = 'custom'
@@ -174,7 +178,7 @@ try {
     await chrome.storage.local.set({ settings })
     const source = envKey ? 'OPENROUTER_API_KEY' : savedApiKey ? 'saved OpenRouter connection' : 'credentials file'
     return { ok: true, provider: 'openrouter', source }
-  }, { defaultBaseUrl: DEFAULT_BASE_URL, envKey, credentials })
+  }, { defaultBaseUrl: DEFAULT_BASE_URL, envKey, credentials, uiLanguageOverride, answerLanguageOverride })
   if (!merged.ok) throw new Error(merged.error)
 
   const page = await ctx.newPage()

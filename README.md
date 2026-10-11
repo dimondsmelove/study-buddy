@@ -8,6 +8,8 @@ Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
 selection → pick a task or ask your own question. The answer streams in beside
 the page, in English by default. The toolbar icon also starts region selection; chat
 opens after a successful crop and continues the conversation selected for that tab.
+Right-click the toolbar icon → **Show history** to return to a saved chat without
+selecting another region. Opening History creates no chat and makes no model request.
 
 **Status: MVP.** Region selection → screenshot → crop → chat window,
 English interface and answer defaults, task-shaped answers
@@ -28,7 +30,8 @@ your hosted proxy for subscriptions. The answering model is fixed to DeepSeek
 Manual use:
 
 ```
-Ctrl+Shift+Y or toolbar icon  →  drag a box around a question  →  Solve / Quiz / …  →  read
+Ctrl+Shift+Y or left-click toolbar icon  →  drag a box around a question  →  Solve / Quiz / …  →  read
+Right-click toolbar icon  →  Show history  →  choose a saved chat  →  continue
 ```
 
 ## Roadmap
@@ -60,6 +63,10 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   image Blobs live in extension-origin IndexedDB. History keeps at most 20 chats,
   ordered by their latest message (creation for empty chats); older chats are
   automatically deleted, including existing history when the worker starts.
+- After Close, the icon’s **Show history** menu opens the saved list; choose a
+  chat to restore its transcript and images. A new capture after Close starts a
+  fresh chat. History reuses an open or minimized panel and falls back to a
+  detached window on privileged pages, without asking for capture permission.
 - History shows a topic title and a short date/time, with a delete icon in the
   same row and an in-app confirmation dialog. Shared images remain while any
   retained conversation references them. Copy unsaved text before leaving.

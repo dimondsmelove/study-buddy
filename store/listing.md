@@ -1,6 +1,6 @@
 # Chrome Web Store listing (draft)
 
-> Local client wording reconciled on 2026-10-10; **not ready for submission**.
+> Local client wording reconciled on 2026-10-11; **not ready for submission**.
 > Public gateway/budget controls, support contact/privacy URL and real AI quality
 > remain open. Existing store screenshots predate the local-dialog UI.
 
@@ -73,6 +73,10 @@ partial failures do not silently restart a model operation.
 2. Press **Ctrl+Shift+Y**, drag a box around a question. The toolbar icon also starts selection.
 3. Pick an action — or type your own question.
 
+Right-click the toolbar icon → **Show history**, then choose a saved chat to
+continue without selecting another region. Opening History does not make an AI
+request.
+
 Minimize keeps an answer running; Close saves and cancels. Saved history is
 separate from the bounded provider context. Model accuracy is not guaranteed;
 the new Hint/Check contracts have been verified with fixtures, not real AI.
@@ -90,12 +94,14 @@ the new Hint/Check contracts have been verified with fixtures, not real AI.
 - [ ] Small promo tile 440×280 (optional)
 - [ ] Store category, language, and privacy-policy URL
 - [ ] Privacy policy published (see `store/privacy.md`); paste it into the CWS privacy tab
-- [ ] Justify each permission in the CWS form (`activeTab`, `scripting`, `storage`, optional `<all_urls>`)
+- [ ] Justify each permission in the CWS form (`activeTab`, `scripting`, `storage`, `contextMenus`, optional `<all_urls>`)
 
 ## Permission justifications (for the CWS form)
 
-- `activeTab` — capture the visible tab only after the user asks for a selection.
-- `scripting` — inject the on-demand selection overlay (no declared content script).
+- `activeTab` — capture the visible tab after the user asks for a selection, or
+  show local History on the tab after an explicit toolbar context-menu action.
+- `contextMenus` — Show history in the toolbar icon’s right-click menu only.
+- `scripting` — inject the selection overlay or History host on demand (no declared content script).
 - `storage` — keep settings/key/panel size locally and transient crops in session;
   saved transcripts and images use extension-origin IndexedDB.
 - optional `host_permissions <all_urls>` — requested per site only when a capture

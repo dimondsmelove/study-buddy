@@ -1,6 +1,6 @@
 # Study Buddy — Privacy Policy
 
-_Last updated: 2026-10-10 · draft; not a release/compliance certification_
+_Last updated: 2026-10-11 · draft; not a release/compliance certification_
 
 Study Buddy is a browser extension that lets you select a region of a web page
 and ask an AI model about it. This policy explains exactly what leaves your
@@ -65,13 +65,17 @@ is UX, not a trusted spending/abuse control. Public shared-key release is blocke
 on TD-06 and budget/hosting decisions.
 
 No other page content is read or transmitted. The extension does not scan pages
-in the background; the selection overlay is injected only when you start a
-capture, and the screenshot is taken only after you finish dragging a region.
+in the background; the selection overlay and chat host are injected only when you start a
+capture or explicitly open History. Opening History does not take a screenshot
+or send a model request; a screenshot is taken only after you finish dragging
+a region.
 
 ## Permissions and why they exist
 
-- **activeTab** — to capture the visible tab, only after you ask for a selection.
-- **scripting** — to inject the selection overlay on demand. There is no
+- **activeTab** — to capture the visible tab after you ask for a selection, or
+  to show saved History on the tab after you choose it from the toolbar menu.
+- **contextMenus** — to provide Show history in the toolbar icon’s right-click menu.
+- **scripting** — to inject the selection overlay or History host on demand. There is no
   always-on content script.
 - **storage** — to keep your settings/panel size (local) and transient captures
   (session); saved conversations use IndexedDB.

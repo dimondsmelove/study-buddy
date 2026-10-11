@@ -661,18 +661,31 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
   actions.appendChild(toggle)
 
   const copy = iconButton('copy', t(uiLang, 'msg.copy'))
+  let copyFeedbackTimer: ReturnType<typeof setTimeout> | undefined
   copy.onclick = async () => {
+    const feedback = document.createElement('span')
+    feedback.className = 'msg-copy-feedback'
+    feedback.setAttribute('role', 'status')
+    feedback.setAttribute('aria-live', 'polite')
     try {
       await navigator.clipboard.writeText(msg.raw)
+      feedback.textContent = t(uiLang, 'msg.copied')
+      copy.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS.copied}</svg>`
+      copy.title = t(uiLang, 'msg.copied')
+      copy.setAttribute('aria-label', t(uiLang, 'msg.copied'))
     } catch {
-      return // clipboard blocked; leave the icon alone
+      feedback.textContent = t(uiLang, 'msg.copyFailed')
     }
-    copy.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS.copied}</svg>`
-    copy.title = t(uiLang, 'msg.copied')
-    setTimeout(() => {
+    actions.querySelector('.msg-copy-feedback')?.remove()
+    actions.appendChild(feedback)
+    if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer)
+    copyFeedbackTimer = setTimeout(() => {
+      feedback.remove()
       copy.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS.copy}</svg>`
       copy.title = t(uiLang, 'msg.copy')
-    }, 1200)
+      copy.setAttribute('aria-label', t(uiLang, 'msg.copy'))
+      copyFeedbackTimer = undefined
+    }, 1400)
   }
   actionItems.appendChild(copy)
 

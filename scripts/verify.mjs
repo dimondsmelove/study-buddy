@@ -637,6 +637,7 @@ try {
 
   responseMode = 'long'
   const longAnswer = await openCapture()
+  await longAnswer.setViewportSize({ width: 480, height: 568 })
   await longAnswer.click('.preset[data-preset="solve"]')
   await longAnswer.waitForFunction(() => {
     const status = [...document.querySelectorAll('.reply-status')].at(-1)?.textContent
@@ -651,6 +652,20 @@ try {
   }))
   check(longRendered.textLength > 250 && longRendered.math && longRendered.answerFont === '16px',
     'long answer renders wrapped prose and display LaTeX at readable answer typography (' + JSON.stringify(longRendered) + ')')
+  await longAnswer.locator('.msg.assistant').last().hover()
+  const longActionGeometry = await longAnswer.locator('.msg.assistant').last().evaluate(message => {
+    const body = message.querySelector('.msg-body').getBoundingClientRect()
+    const tray = message.querySelector('.msg-actions').getBoundingClientRect()
+    const buttons = [...message.querySelectorAll('.msg-actions .msg-action-items button')].map(button => {
+      const r = button.getBoundingClientRect()
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, radius: getComputedStyle(button).borderRadius }
+    })
+    const container = message.querySelector('.msg-actions')
+    return { bodyBottom: body.bottom, trayTop: tray.top, trayBottom: tray.bottom, messageBottom: message.getBoundingClientRect().bottom, trayRadius: getComputedStyle(container).borderRadius, buttons }
+  })
+  check(longActionGeometry.trayTop >= longActionGeometry.bodyBottom && longActionGeometry.trayBottom <= longActionGeometry.messageBottom &&
+    longActionGeometry.buttons.length >= 2 && longActionGeometry.buttons.every(button => button.radius === longActionGeometry.trayRadius && button.left >= 0 && button.right <= 480),
+    'long answer reserves a non-overlapping action row with rounded buttons inside the tray (' + JSON.stringify(longActionGeometry) + ')')
   const longEvidence = resolve(root, '..', 'review', 'loop')
   mkdirSync(longEvidence, { recursive: true })
   await longAnswer.screenshot({ path: join(longEvidence, 'long-answer.png'), fullPage: true })
@@ -905,7 +920,11 @@ try {
   const mobileActionMenu = layout.locator('.msg.assistant').last().locator('.msg-actions')
   check(await mobileActionMenu.locator('.msg-actions-toggle').isVisible() && await mobileActionMenu.locator('.msg-actions-toggle').evaluate(button => button.getBoundingClientRect().width >= 44 && button.getBoundingClientRect().height >= 44), 'narrow no-hover layout keeps a persistent 44px answer-action menu trigger')
   await mobileActionMenu.locator('.msg-actions-toggle').click()
-  check(await mobileActionMenu.locator('.msg-actions-toggle').getAttribute('aria-expanded') === 'true' && await mobileActionMenu.locator('.msg-action-items button').count() >= 2 && await mobileActionMenu.locator('.msg-action-items').isVisible(), 'touch action menu opens its labeled actions on demand')
+  check(await mobileActionMenu.locator('.msg-actions-toggle').getAttribute('aria-expanded') === 'true' &&
+    await mobileActionMenu.locator('.msg-action-items').isVisible() &&
+    await mobileActionMenu.locator('.msg-action-items button[aria-label="Copy"]').isVisible() &&
+    await mobileActionMenu.locator('.msg-action-items button[aria-label="Explain simpler"]').isVisible(),
+    'touch ellipsis opens visible Copy and Simpler actions')
   await mobileActionMenu.locator('.msg-actions-toggle').press('Escape')
   check(await mobileActionMenu.locator('.msg-actions-toggle').getAttribute('aria-expanded') === 'false', 'Escape closes the touch action menu')
   await sw.evaluate(async () => {
@@ -955,8 +974,28 @@ try {
   await answerActions.locator('.msg-action-items button').first().focus()
   await hint.waitForFunction(() => getComputedStyle(document.querySelector('.msg.assistant:last-of-type .msg-actions')).opacity === '1')
   const focusedActions = await answerActions.evaluate(node => getComputedStyle(node).opacity)
+  const desktopActionState = await answerActions.evaluate(node => ({
+    toggleDisplay: getComputedStyle(node.querySelector('.msg-actions-toggle')).display,
+    itemsDisplay: getComputedStyle(node.querySelector('.msg-action-items')).display,
+    labels: [...node.querySelectorAll('.msg-action-items button')].map(button => button.getAttribute('aria-label')),
+  }))
   const actionLabel = await answerActions.locator('.msg-actions-toggle').getAttribute('aria-label')
+  const expectedDesktopActionLabels = ['msg.copy', 'msg.simpler', 'msg.retry'].map(key => i18nModule.exports.t('en', key))
   check(hiddenActions === '0' && hoveredActions === '1' && focusedActions === '1' && answerActionLabels.includes(actionLabel), 'answer action tray floats, reveals on hover/focus, and retains its localized label (' + JSON.stringify({ hiddenActions, hoveredActions, focusedActions, actionLabel }) + ')')
+  check(desktopActionState.toggleDisplay === 'none' && desktopActionState.itemsDisplay === 'flex' &&
+    JSON.stringify(desktopActionState.labels) === JSON.stringify(expectedDesktopActionLabels),
+    'desktop answer tray hides its redundant menu toggle and shows only Copy, Simpler, and Retry (' + JSON.stringify(desktopActionState) + ')')
+  await answerActions.locator('.msg-action-items button[aria-label="Copy"]').click()
+  await hint.waitForSelector('.msg-copy-feedback')
+  const copyFeedback = await hint.evaluate(() => ({
+    text: document.querySelector('.msg-copy-feedback')?.textContent,
+    role: document.querySelector('.msg-copy-feedback')?.getAttribute('role'),
+    live: document.querySelector('.msg-copy-feedback')?.getAttribute('aria-live'),
+    label: document.querySelector('.msg-action-items button[aria-label="Copied"]')?.getAttribute('aria-label'),
+  }))
+  check(copyFeedback.text === 'Copied' && copyFeedback.role === 'status' && copyFeedback.live === 'polite' && copyFeedback.label === 'Copied',
+    'Copy confirms a successful clipboard write with a short accessible toast (' + JSON.stringify(copyFeedback) + ')')
+  await hint.waitForSelector('.msg-copy-feedback', { state: 'detached', timeout: 2500 })
   await resetCooldown(hint)
   await hint.fill('#ask-input', 'What is the next step?')
   await hint.click('#ask-btn')

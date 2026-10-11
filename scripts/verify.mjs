@@ -864,6 +864,21 @@ try {
   })
   await layout.reload()
   await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
+  await layout.fill('#ask-input', 'Compare the saved images')
+  await layout.setViewportSize({ width: 480, height: 568 })
+  await layout.waitForFunction(() => !document.querySelector('#context-warning').hidden)
+  const wideRussian = await layout.evaluate(() => {
+    const count = document.querySelector('#context-summary-text')
+    const warning = document.querySelector('#context-warning')
+    return {
+      text: count.textContent, fullLabel: count.getAttribute('aria-label'),
+      fits: count.scrollWidth <= count.clientWidth, fontSize: parseFloat(getComputedStyle(count).fontSize),
+      warning: warning.textContent, warningVisible: !warning.hidden,
+    }
+  })
+  check(wideRussian.fits && wideRussian.text.includes('сообщ.') && wideRussian.text.includes('изобр.') &&
+    wideRussian.fullLabel.includes('В следующем ответе:') && wideRussian.warningVisible && wideRussian.warning.includes('Исключено:') && wideRussian.fontSize >= 12,
+  '480px Russian warning preserves a 12px readable count label or uses the compact full-count fallback (' + JSON.stringify(wideRussian) + ')')
   const narrowRussian = await narrowContext('ru')
   check(narrowRussian.countsFit && narrowRussian.count.includes('сообщ.') && narrowRussian.count.includes('изобр.') &&
     narrowRussian.warningVisible && narrowRussian.warning.includes('исключ.') && !narrowRussian.overflow &&

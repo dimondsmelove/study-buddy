@@ -11,7 +11,7 @@ SHA-256: 0b28eaf6f2682604a9cf49ad80225c983e0fd1d95be5cba3a98d1d26f8dc4b40.
 Tokenizer config SHA-256:
 6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547.
 
-This is a client-side estimate, not an exact OpenRouter/provider prompt count:
+DeepSeek documents a 1,024-token post-resize image upper bound in its Vision guide: https://api-docs.deepseek.com/guides/vision. The client reserves that bound per image because image dimensions are not available synchronously during projection.\n\nThis is a client-side estimate, not an exact OpenRouter/provider prompt count:
 provider prompt templates, image preprocessing, and fallback model tokenizers
 can differ. The projection includes system instructions and text, adds an
 image-token estimate, and leaves headroom. Actual usage returned by OpenRouter

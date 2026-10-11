@@ -20,6 +20,7 @@ export interface Turn {
   /** Explicit input, independently of the generated tutor instruction. */
   input?: string
   replyTo?: string
+  usage?: { model?: string; promptTokens?: number; completionTokens?: number; cost?: number }
 }
 
 export interface Conversation {
@@ -83,7 +84,7 @@ export function conversationActivityAt(conversation: Conversation): number {
 export const CONTEXT_LIMITS = {
   inputTokens: 200_000,
   estimateHeadroom: 20_000,
-  imageTokenEstimate: 2_048,
+  imageTokenEstimate: 1_024,
   imageBytes: 4 * 1024 * 1024,
 }
 export const GENERATION_INTERVAL = 10_000

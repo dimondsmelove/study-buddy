@@ -804,6 +804,78 @@ try {
   await waitSaved(layout, 'Complete')
   check(lastAiRequest.messages.some(message => JSON.stringify(message.content).toLowerCase().includes('explain')),
     'a task selected from More sends the explicit Explain request')
+  const seedExtraImages = () => layout.evaluate(() => new Promise((resolve, reject) => {
+    const conversationId = new URL(location.href).searchParams.get('conversation')
+    const open = indexedDB.open('study-buddy-conversations', 1)
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const db = open.result
+      const tx = db.transaction(['conversations', 'attachments'], 'readwrite')
+      const conversations = tx.objectStore('conversations')
+      const request = conversations.get(conversationId)
+      request.onsuccess = () => {
+        const conversation = request.result
+        const ids = [crypto.randomUUID(), crypto.randomUUID()]
+        for (const [index, id] of ids.entries()) {
+          const createdAt = Date.now() + index
+          tx.objectStore('attachments').put({ id, data: new Blob(['fixture ' + index], { type: 'image/png' }), createdAt })
+          conversation.turns.push({ id, role: 'user', text: '', kind: 'capture', attachmentId: id, createdAt, locale: 'en', promptVersion: 'capture' })
+        }
+        conversation.activeAttachmentId = ids.at(-1)
+        conversations.put(conversation)
+        tx.oncomplete = () => { db.close(); resolve() }
+      }
+      tx.onerror = () => reject(tx.error)
+    }
+  }))
+  await seedExtraImages()
+  await layout.reload()
+  await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
+  const narrowContext = async (language) => {
+    await layout.fill('#ask-input', 'Compare the saved images')
+    await layout.setViewportSize({ width: 320, height: 324 })
+    await layout.waitForFunction(() => !document.querySelector('#context-warning').hidden)
+    return layout.evaluate(() => {
+      const count = document.querySelector('#context-summary-text')
+      const warning = document.querySelector('#context-warning')
+      const details = document.querySelector('#context-details-btn')
+      const selection = document.querySelector('#new-selection-btn')
+      const rect = node => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height } }
+      return {
+        count: count.textContent, fullLabel: count.getAttribute('aria-label'),
+        countsFit: count.scrollWidth <= count.clientWidth,
+        warning: warning.textContent, warningVisible: !warning.hidden,
+        bounds: { summary: rect(document.querySelector('#context-summary')), count: rect(count), warning: rect(warning), details: rect(details), selection: rect(selection), ask: rect(document.querySelector('#ask-input')), send: rect(document.querySelector('#ask-btn')) },
+        overflow: document.documentElement.scrollWidth > innerWidth,
+      }
+    }).then(result => ({ language, ...result }))
+  }
+  const narrowEnglish = await narrowContext('en')
+  check(narrowEnglish.countsFit && narrowEnglish.count.includes('msgs') && narrowEnglish.count.includes('imgs') &&
+    narrowEnglish.warningVisible && narrowEnglish.warning.includes('omitted') && !narrowEnglish.overflow &&
+    narrowEnglish.bounds.summary.height >= 60 && narrowEnglish.bounds.summary.height <= 62 && narrowEnglish.bounds.count.bottom <= narrowEnglish.bounds.details.top &&
+    narrowEnglish.bounds.warning.top >= narrowEnglish.bounds.details.top && narrowEnglish.bounds.warning.bottom <= narrowEnglish.bounds.summary.bottom &&
+    narrowEnglish.bounds.details.height === 44 && narrowEnglish.bounds.selection.height === 44 &&
+    narrowEnglish.bounds.ask.bottom <= 324 && narrowEnglish.bounds.send.bottom <= 324,
+  '320×324 English context counts and exclusions share a reachable second row with 44px controls (' + JSON.stringify(narrowEnglish) + ')')
+  await sw.evaluate(async () => {
+    const { settings } = await chrome.storage.local.get('settings')
+    await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'ru' } })
+  })
+  await layout.reload()
+  await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
+  const narrowRussian = await narrowContext('ru')
+  check(narrowRussian.countsFit && narrowRussian.count.includes('сообщ.') && narrowRussian.count.includes('изобр.') &&
+    narrowRussian.warningVisible && narrowRussian.warning.includes('исключ.') && !narrowRussian.overflow &&
+    narrowRussian.bounds.summary.height >= 60 && narrowRussian.bounds.summary.height <= 62 && narrowRussian.bounds.count.bottom <= narrowRussian.bounds.details.top &&
+    narrowRussian.bounds.warning.top >= narrowRussian.bounds.details.top && narrowRussian.bounds.warning.bottom <= narrowRussian.bounds.summary.bottom &&
+    narrowRussian.bounds.details.height === 44 && narrowRussian.bounds.selection.height === 44 &&
+    narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324,
+  '320×324 Russian context counts and exclusions share a reachable second row with 44px controls (' + JSON.stringify(narrowRussian) + ')')
+  await sw.evaluate(async () => {
+    const { settings } = await chrome.storage.local.get('settings')
+    await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'en' } })
+  })
   await layout.close()
 
   const hint = await openCapture()

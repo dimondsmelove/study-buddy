@@ -382,10 +382,17 @@ h1 { margin: 0; font-size: 18px; font-weight: 650; line-height: 1.3; }
 }
 
 @media (max-width: 360px) {
-  #context-summary { gap: 4px; }
-  #context-summary-text { font-size: 10px; }
-  #context-warning { font-size: 10px; }
-  .selection-button { padding-right: 6px; padding-left: 6px; font-size: 11px; }
+  #context-summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-rows: auto 44px;
+    gap: 0 4px;
+  }
+  #context-summary-text { grid-column: 1 / -1; grid-row: 1; font-size: 12px; }
+  #context-warning { grid-column: 1; grid-row: 2; font-size: 12px; }
+  #context-details-btn { grid-column: 2; grid-row: 2; }
+  #new-selection-btn { grid-column: 3; grid-row: 2; }
+  .selection-button { padding-right: 6px; padding-left: 6px; font-size: 12px; }
   .selection-wide { display: none; }
 }
 .selection-narrow { display: none; }

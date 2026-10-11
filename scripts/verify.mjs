@@ -2,7 +2,7 @@
 // capture flow:
 //   START_SELECTION → overlay injection → drag a region → captureVisibleTab →
 //   crop → chrome.storage.session → chat window host embedded in the page →
-//   the chat page renders the crop.
+//   the chat page renders the capture image message.
 //
 // The toolbar path is invoked through Chromium's native extension action so
 // activeTab is granted by the same browser gesture as a real click. The
@@ -207,7 +207,7 @@ try {
   await page.waitForSelector('[data-study-buddy="chat"]', { timeout: 5000, state: 'attached' })
   check(true, 'chat window host embedded near the selection')
   const liveFrame = await chatFrameOn(page)
-  await liveFrame.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+  await liveFrame.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
 
   // The SW should have captured, cropped, and stored the region.
   const capture = await sw.evaluate(async () => {
@@ -227,15 +227,15 @@ try {
   // The chat page must render the crop when opened with this capture id.
   const chat = await ctx.newPage()
   await chat.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}`)
-  await chat.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+  await chat.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
   const imgLoaded = await chat.evaluate(async () => {
-    const img = document.getElementById('crop')
+    const img = document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)
     await img.decode().catch(() => {})
     return img.naturalWidth > 0
   })
   check(imgLoaded, 'chat page renders the captured crop')
   await chat.close()
-  const beforeCleanSelection = await liveFrame.locator('#crop').getAttribute('src')
+  const beforeCleanSelection = await liveFrame.locator('.turn-image').last().getAttribute('src')
   await triggerAction(page)
   await page.waitForSelector('[data-study-buddy="overlay"]', { timeout: 5000 })
   await page.mouse.move(230, 240)
@@ -267,11 +267,11 @@ try {
     `new crop matches its 100×60 selection (${cleanCapture?.width}×${cleanCapture?.height})`)
   const exactCleanImage = cleanSizeMatchesSelection
     && await liveFrame.waitForFunction(({ previous, width, height }) => {
-      const img = document.getElementById('crop')
+      const img = document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)
       return img?.src !== previous && img.complete && img.naturalWidth === width && img.naturalHeight === height
     }, { previous: beforeCleanSelection, width: cleanCapture.width, height: cleanCapture.height }, { timeout: 5000 }).then(() => true, () => false)
   const cleanPixel = exactCleanImage ? await liveFrame.evaluate(async ({ dataUrl }) => {
-    const img = document.getElementById('crop')
+    const img = document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)
     await img.decode()
     const expected = new Image()
     expected.src = dataUrl
@@ -298,7 +298,7 @@ try {
     return { width: canvas.width, height: canvas.height, x, y, pixel, matchesCapture }
   }, cleanCapture) : undefined
   check(Boolean(exactCleanImage && cleanPixel?.matchesCapture),
-    'chat renders the exact newly selected crop at its stored dimensions')
+    'chat renders the exact newly selected image message at its stored dimensions')
   const sampleInBounds = Boolean(cleanPixel
     && cleanPixel.x >= 0 && cleanPixel.y >= 0
     && cleanPixel.x < cleanPixel.width && cleanPixel.y < cleanPixel.height)
@@ -362,7 +362,7 @@ try {
   check(Boolean(selectedAlert && !selectedAlert.hidden && selectedAlert.style.includes('display: flex')),
     'Escape restores the visible error notice with the previous chat state')
 
-  const priorToastSrc = await liveFrame.locator('#crop').getAttribute('src')
+  const priorToastSrc = await liveFrame.locator('.turn-image').last().getAttribute('src')
   const beforeToastCaptureId = await sw.evaluate(async () => Object.entries(await chrome.storage.session.get())
     .filter(([key]) => key.startsWith('capture.')).sort(([, a], [, b]) => a.ts - b.ts).at(-1)?.[0].slice('capture.'.length))
   await triggerAction(page)
@@ -394,7 +394,7 @@ try {
   check(Boolean(toastCapture && Math.abs(toastCapture.width - toastWidth) <= 2 && Math.abs(toastCapture.height - 120) <= 2),
     'retry crop dimensions match the selection containing the prior notice border')
   await liveFrame.waitForFunction(({ previous, width, height }) => {
-    const img = document.getElementById('crop')
+    const img = document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)
     return img?.src !== previous && img.complete && img.naturalWidth === width && img.naturalHeight === height
   }, { previous: priorToastSrc, width: toastCapture.width, height: toastCapture.height })
   const devicePixelRatio = await page.evaluate(() => window.devicePixelRatio)
@@ -403,7 +403,7 @@ try {
     y: Math.round((noticeScreenPoint.y - 20) * devicePixelRatio),
   }
   const toastCropPixel = toastCapture ? await liveFrame.evaluate(async ({ x, y, dataUrl, width, height }) => {
-    const img = document.getElementById('crop')
+    const img = document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)
     await img.decode()
     const expected = new Image()
     expected.src = dataUrl
@@ -540,7 +540,7 @@ try {
     if (!fresh.ok) throw new Error(fresh.error)
     await p.goto(`${chatOrigin}/src/chat/chat.html?kind=capture&id=${capture.id}&conversation=${fresh.value.id}`)
     await p.waitForFunction(() => {
-      const i = document.getElementById('crop')
+      const i = document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)
       return !!i?.src && i.naturalWidth > 0
     })
     // Test-owned database only: reset between independent scenarios. The real
@@ -597,10 +597,12 @@ try {
   await ai.click('.preset[data-preset="solve"]')
   const reply = await waitReply(ai)
   check(reply === 'Hello world', `assistant reply streamed into the thread (${reply ?? 'no reply'})`)
-  const firstUser = lastAiRequest?.messages?.find((m) => m.role === 'user')
+  const userMessages = lastAiRequest?.messages?.filter((m) => m.role === 'user') ?? []
+  const firstUser = userMessages.find((m) => Array.isArray(m.content) && m.content.some(part => part?.type === 'text'))
+  const imageMessage = userMessages.find((m) => Array.isArray(m.content) && m.content.some(part => part?.type === 'image_url'))
   const sentImage =
-    Array.isArray(firstUser?.content) &&
-    firstUser.content.some((p) => p?.type === 'image_url' && typeof p.image_url?.url === 'string' && p.image_url.url.startsWith('data:image/png'))
+    Array.isArray(imageMessage?.content) &&
+    imageMessage.content.some((p) => p?.type === 'image_url' && typeof p.image_url?.url === 'string' && p.image_url.url.startsWith('data:image/png'))
   check(sentImage, 'request carried the crop as an image_url data URL')
   check(lastAiRequest?.model === PRIMARY, `request used the fixed primary model (${lastAiRequest?.model ?? 'MISSING'})`)
   // Prompt regression: the system prompt carries the grounding rules, the
@@ -614,7 +616,7 @@ try {
       sysMsg.content.includes('Ground every answer in the image'),
     'system prompt carries the grounding rules',
   )
-  const solveText = Array.isArray(firstUser?.content) ? firstUser.content[0]?.text : null
+  const solveText = Array.isArray(firstUser?.content) ? firstUser.content.find(part => part?.type === 'text')?.text : null
   check(
     typeof solveText === 'string' && solveText.startsWith('Solve the problem shown in the image'),
     `solve prompt sent as expected (${String(solveText ?? '').slice(0, 40)}…)`,
@@ -656,8 +658,8 @@ try {
   const aiRu = await openCapture()
   await aiRu.click('.preset[data-preset="solve"]')
   await waitReply(aiRu)
-  const ruUser = lastAiRequest?.messages?.find((m) => m.role === 'user')
-  const ruText = Array.isArray(ruUser?.content) ? ruUser.content[0]?.text : null
+  const ruUser = lastAiRequest?.messages?.find((m) => m.role === 'user' && Array.isArray(m.content) && m.content.some(part => part?.type === 'text'))
+  const ruText = Array.isArray(ruUser?.content) ? ruUser.content.find(part => part?.type === 'text')?.text : null
   check(
     typeof ruText === 'string' && ruText.startsWith('Реши задачу, показанную на изображении'),
     `RU dictionary selected for ru UI (${String(ruText ?? '').slice(0, 30)}…)`,
@@ -709,7 +711,7 @@ try {
   await settingsReadFailure.evaluate(() => { chrome.storage.local.get = async () => { throw new Error('expected fixture read failure') } })
   await settingsReadFailure.click('[data-preset="hint"]')
   await settingsReadFailure.waitForFunction(() => !document.getElementById('operation-error')?.hidden)
-  check(requestCount === beforeReadFailure && await settingsReadFailure.locator('.msg').count() === 0, 'failed settings read is visible and cannot silently switch to defaults or start a request')
+  check(requestCount === beforeReadFailure && await settingsReadFailure.locator('.msg').count() === 1 && await settingsReadFailure.locator('.turn-image').count() === 1, 'failed settings read is visible and cannot silently switch to defaults or start a request')
   await settingsReadFailure.close()
 
   const rapid = await openCapture()
@@ -726,7 +728,7 @@ try {
     for (const kind of ['hint', 'solve']) document.querySelector(`[data-preset="${kind}"]`).dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
   await rapid.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.includes('Hello'))
-  check(requestCount === beforeRapid + 1 && await rapid.locator('.msg.user').count() === 1 && await rapid.locator('#ask-btn').textContent() === 'Stop' && !await rapid.locator('#ask-btn').isDisabled(), 'rapid same-page events reserve one start before settings resolve and retain its Stop controller')
+  check(requestCount === beforeRapid + 1 && await rapid.locator('.msg.user').count() === 2 && await rapid.locator('#ask-btn').textContent() === 'Stop' && !await rapid.locator('#ask-btn').isDisabled(), 'rapid same-page events reserve one start before settings resolve and retain its Stop controller')
   await rapid.click('#ask-btn')
   await waitSaved(rapid, 'Stopped')
   check((await readSaved(rapid)).conversations.find(c => c.id === (rapid.url().match(/conversation=([^&]+)/)?.[1])).turns.at(-1).status === 'cancelled', 'the surviving same-page request can still be cancelled and saved')
@@ -742,7 +744,7 @@ try {
   })
   check(defaultGeometry.width <= 480 && defaultGeometry.thread >= 300 && defaultGeometry.composerBottom <= 564,
     'default 480×564 chat reserves a readable thread (' + JSON.stringify(defaultGeometry) + ')')
-  await layout.locator('#crop-figure').focus()
+  await layout.locator('.turn-image').last().focus()
   await layout.keyboard.press('Enter')
   await layout.waitForFunction(() => document.querySelector('#lightbox')?.open)
   check(await layout.locator('#lightbox-close').evaluate(button => button === document.activeElement),
@@ -752,8 +754,8 @@ try {
     'image preview keeps keyboard focus within its modal controls')
   await layout.keyboard.press('Escape')
   await layout.waitForFunction(() => !document.querySelector('#lightbox')?.open)
-  check(await layout.locator('#crop-figure').evaluate(figure => figure === document.activeElement),
-    'Escape closes image preview and restores focus to the exact crop opener')
+  check(await layout.locator('.turn-image').last().evaluate(figure => figure === document.activeElement),
+    'Escape closes image preview and restores focus to the exact image opener')
   const beforeMoreOpen = requestCount
   await layout.getByRole('button', { name: 'More', exact: true }).click()
   await layout.waitForFunction(() => document.querySelector('#more-actions')?.matches(':popover-open'))
@@ -788,10 +790,12 @@ try {
   await layout.getByRole('button', { name: 'More', exact: true }).click()
   const narrowGeometry = await layout.evaluate(() => {
     const popover = document.querySelector('#more-actions').getBoundingClientRect()
-    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, viewport: { width: innerWidth, height: innerHeight } }
+    const summary = document.querySelector('#context-summary-text')
+    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, summary: { text: summary.textContent, label: summary.getAttribute('aria-label'), fits: summary.scrollWidth <= summary.clientWidth }, viewport: { width: innerWidth, height: innerHeight } }
   })
   check(narrowGeometry.width <= 320 && narrowGeometry.popover.left >= 0 && narrowGeometry.popover.top >= 0 &&
     narrowGeometry.popover.right <= 320 && narrowGeometry.popover.bottom <= 324 &&
+    narrowGeometry.summary.fits && narrowGeometry.summary.text.includes('imgs') && narrowGeometry.summary.label.includes('images') &&
     await layout.locator('#ask-input').isVisible() && await layout.locator('#ask-btn').isVisible(),
   '320×324 viewport keeps the menu and required composer reachable (' + JSON.stringify(narrowGeometry) + ')')
   await layout.keyboard.press('Escape')
@@ -800,6 +804,78 @@ try {
   await waitSaved(layout, 'Complete')
   check(lastAiRequest.messages.some(message => JSON.stringify(message.content).toLowerCase().includes('explain')),
     'a task selected from More sends the explicit Explain request')
+  const seedExtraImages = () => layout.evaluate(() => new Promise((resolve, reject) => {
+    const conversationId = new URL(location.href).searchParams.get('conversation')
+    const open = indexedDB.open('study-buddy-conversations', 1)
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const db = open.result
+      const tx = db.transaction(['conversations', 'attachments'], 'readwrite')
+      const conversations = tx.objectStore('conversations')
+      const request = conversations.get(conversationId)
+      request.onsuccess = () => {
+        const conversation = request.result
+        const ids = [crypto.randomUUID(), crypto.randomUUID()]
+        for (const [index, id] of ids.entries()) {
+          const createdAt = Date.now() + index
+          tx.objectStore('attachments').put({ id, data: new Blob(['fixture ' + index], { type: 'image/png' }), createdAt })
+          conversation.turns.push({ id, role: 'user', text: '', kind: 'capture', attachmentId: id, createdAt, locale: 'en', promptVersion: 'capture' })
+        }
+        conversation.activeAttachmentId = ids.at(-1)
+        conversations.put(conversation)
+        tx.oncomplete = () => { db.close(); resolve() }
+      }
+      tx.onerror = () => reject(tx.error)
+    }
+  }))
+  await seedExtraImages()
+  await layout.reload()
+  await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
+  const narrowContext = async (language) => {
+    await layout.fill('#ask-input', 'Compare the saved images')
+    await layout.setViewportSize({ width: 320, height: 324 })
+    await layout.waitForFunction(() => !document.querySelector('#context-warning').hidden)
+    return layout.evaluate(() => {
+      const count = document.querySelector('#context-summary-text')
+      const warning = document.querySelector('#context-warning')
+      const details = document.querySelector('#context-details-btn')
+      const selection = document.querySelector('#new-selection-btn')
+      const rect = node => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height } }
+      return {
+        count: count.textContent, fullLabel: count.getAttribute('aria-label'),
+        countsFit: count.scrollWidth <= count.clientWidth,
+        warning: warning.textContent, warningVisible: !warning.hidden,
+        bounds: { summary: rect(document.querySelector('#context-summary')), count: rect(count), warning: rect(warning), details: rect(details), selection: rect(selection), ask: rect(document.querySelector('#ask-input')), send: rect(document.querySelector('#ask-btn')) },
+        overflow: document.documentElement.scrollWidth > innerWidth,
+      }
+    }).then(result => ({ language, ...result }))
+  }
+  const narrowEnglish = await narrowContext('en')
+  check(narrowEnglish.countsFit && narrowEnglish.count.includes('msgs') && narrowEnglish.count.includes('imgs') &&
+    narrowEnglish.warningVisible && narrowEnglish.warning.includes('omitted') && !narrowEnglish.overflow &&
+    narrowEnglish.bounds.summary.height >= 60 && narrowEnglish.bounds.summary.height <= 62 && narrowEnglish.bounds.count.bottom <= narrowEnglish.bounds.details.top &&
+    narrowEnglish.bounds.warning.top >= narrowEnglish.bounds.details.top && narrowEnglish.bounds.warning.bottom <= narrowEnglish.bounds.summary.bottom &&
+    narrowEnglish.bounds.details.height === 44 && narrowEnglish.bounds.selection.height === 44 &&
+    narrowEnglish.bounds.ask.bottom <= 324 && narrowEnglish.bounds.send.bottom <= 324,
+  '320×324 English context counts and exclusions share a reachable second row with 44px controls (' + JSON.stringify(narrowEnglish) + ')')
+  await sw.evaluate(async () => {
+    const { settings } = await chrome.storage.local.get('settings')
+    await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'ru' } })
+  })
+  await layout.reload()
+  await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
+  const narrowRussian = await narrowContext('ru')
+  check(narrowRussian.countsFit && narrowRussian.count.includes('сообщ.') && narrowRussian.count.includes('изобр.') &&
+    narrowRussian.warningVisible && narrowRussian.warning.includes('исключ.') && !narrowRussian.overflow &&
+    narrowRussian.bounds.summary.height >= 60 && narrowRussian.bounds.summary.height <= 62 && narrowRussian.bounds.count.bottom <= narrowRussian.bounds.details.top &&
+    narrowRussian.bounds.warning.top >= narrowRussian.bounds.details.top && narrowRussian.bounds.warning.bottom <= narrowRussian.bounds.summary.bottom &&
+    narrowRussian.bounds.details.height === 44 && narrowRussian.bounds.selection.height === 44 &&
+    narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324,
+  '320×324 Russian context counts and exclusions share a reachable second row with 44px controls (' + JSON.stringify(narrowRussian) + ')')
+  await sw.evaluate(async () => {
+    const { settings } = await chrome.storage.local.get('settings')
+    await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'en' } })
+  })
   await layout.close()
 
   const hint = await openCapture()
@@ -812,7 +888,7 @@ try {
   check(hintDb.conversations.find(c => c.id === hintId).turns.at(-1).status === 'complete', 'completion status committed to IndexedDB')
   await hint.reload()
   await waitSaved(hint, 'Complete')
-  check(await hint.locator('.msg.user').count() === 1, 'reload restores the saved conversation without duplicate turns')
+  check(await hint.locator('.msg.user').count() === 2, 'reload restores the capture image and prompt without duplicate turns')
   await hint.screenshot({ path: join(evidence, 'dialog.png') })
   await resetCooldown(hint)
   await hint.fill('#ask-input', 'What is the next step?')
@@ -821,10 +897,11 @@ try {
   await waitSaved(hint, 'Complete')
   check(lastAiRequest.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length === 1, 'attachment sent once across multiple turns')
   await resetCooldown(hint)
+  const usersBeforeRetry = await hint.locator('.msg.user').count()
   await hint.click('[data-retry]')
   await hint.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 3)
   await waitSaved(hint, 'Complete')
-  check(await hint.locator('.msg.user').count() === 2 && lastAiRequest.max_tokens === 2048, 'explicit Regenerate preserves the source user turn and its original turn budget')
+  check(await hint.locator('.msg.user').count() === usersBeforeRetry && lastAiRequest.max_tokens === 2048, 'explicit Regenerate preserves the source user turn and its original turn budget')
 
   const checked = await openCapture()
   await checked.setViewportSize({ width: 480, height: 564 })
@@ -834,16 +911,16 @@ try {
   await checked.click('#check-submit')
   check(await checked.locator('#check-form').isVisible(), 'Check refuses an empty attempt and leaves the input visible')
   const emptyAttemptFeedback = await checked.evaluate(() => {
-    const alert = document.querySelector('#operation-error')
+    const alert = document.querySelector('#composer-error')
     const status = document.querySelector('#dialog-status')
     return {
       alertVisible: !alert.hidden && getComputedStyle(alert).display !== 'none',
-      statusHidden: getComputedStyle(status).display === 'none',
-      sameMessage: alert.textContent.trim() === status.textContent.trim(),
+      operationErrorHidden: document.querySelector('#operation-error').hidden,
+      statusDifferent: alert.textContent.trim() !== status.textContent.trim(),
     }
   })
-  check(emptyAttemptFeedback.alertVisible && emptyAttemptFeedback.statusHidden && emptyAttemptFeedback.sameMessage,
-    'empty Check shows one accessible error and hides its duplicate status row (' + JSON.stringify(emptyAttemptFeedback) + ')')
+  check(emptyAttemptFeedback.alertVisible && emptyAttemptFeedback.operationErrorHidden && emptyAttemptFeedback.statusDifferent,
+    'empty Check shows one accessible composer error without duplicating the lifecycle status (' + JSON.stringify(emptyAttemptFeedback) + ')')
   const attempt = '2(x+3)=10\n2x+3=10\nx=3.5'
   await checked.fill('#check-input', attempt)
   const restoredCheckStatus = await checked.evaluate(() => {
@@ -866,7 +943,7 @@ try {
   await waitSaved(checked, 'Complete')
   const checkedDb = await readSaved(checked)
   const checkedId = checkedDb.state.lastConversationId
-  check(checkedDb.conversations.find(c => c.id === checkedId).turns[0].input === attempt, 'raw multiline student attempt saved independently of its template')
+  check(checkedDb.conversations.find(c => c.id === checkedId).turns.find(turn => turn.id === checkedDb.conversations.find(c => c.id === checkedId).turns.at(-1).replyTo)?.input === attempt, 'raw multiline student attempt saved independently of its template')
   check(lastAiRequest.max_tokens === 1024 && lastAiRequest.messages.some(m => Array.isArray(m.content) && m.content.some(p => p.text?.includes(attempt))), 'Check serializes the actual attempt and its budget')
   const beforeCooldown = requestCount
   await checked.fill('#ask-input', 'Too soon')
@@ -1083,7 +1160,7 @@ try {
   await page.mouse.up()
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
   embedded = await chatFrameOn(page)
-  await embedded.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+  await embedded.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
   const afterFreshCapture = await readSaved(embedded)
   const nextConversationId = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${pageTabId}`)
   const oldConversation = afterFreshCapture.conversations.find(c => c.id === nativeId)
@@ -1141,8 +1218,8 @@ try {
   await duplicate.click('#check-btn')
   await duplicate.fill('#check-input', 'Previous task attempt\nsecond line')
   await duplicate.click('#new-chat-btn')
-  await duplicate.waitForFunction(() => document.querySelectorAll('.msg').length === 0 && document.getElementById('crop-figure')?.hidden)
-  check((await readSaved(duplicate)).state.lastConversationId !== nativeId, 'New chat creates a distinct empty conversation without a hidden prior image')
+  await duplicate.waitForFunction(() => document.querySelectorAll('.msg').length === 0 && document.querySelector('.turn-image') === null)
+  check((await readSaved(duplicate)).state.lastConversationId !== nativeId, 'New chat creates a distinct empty conversation without a prior image message')
   check(await duplicate.locator('#ask-input').inputValue() === '' && await duplicate.locator('#check-input').inputValue() === '' && await duplicate.locator('#check-form').isHidden(), 'New chat also clears drafts and the previous task attempt form')
   await duplicate.setViewportSize({ width: 340, height: 620 })
   await duplicate.click('#check-btn')
@@ -1212,7 +1289,7 @@ try {
   await earlyClosePage.mouse.up()
   await earlyClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
   const earlyCaptureFrame = await chatFrameOn(earlyClosePage)
-  await earlyCaptureFrame.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+  await earlyCaptureFrame.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
   const earlyCaptureId = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${earlyCloseTabId}`)
   check(typeof earlyCaptureId === 'string' && earlyCaptureId !== nativeId,
     'the next toolbar capture after Close during boot creates a fresh conversation')
@@ -1530,11 +1607,11 @@ try {
   await page.mouse.up()
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
   const recaptured = await chatFrameOn(page)
-  await recaptured.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+  await recaptured.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
   const recaptureDb = await readSaved(recaptured)
   const recaptureDialog = recaptureDb.conversations.find(c => c.id === nextConversationId)
   const pageBinding = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${pageTabId}`)
-  check(pageBinding === nextConversationId && recaptureDialog.activeAttachmentId !== nextAttachmentId && recaptureDialog.turns[0].attachmentId === nextAttachmentId, 'new capture continues the tab-selected dialog while keeping old turn attachment links')
+  check(pageBinding === nextConversationId && recaptureDialog.activeAttachmentId !== nextAttachmentId && recaptureDialog.turns.some(turn => turn.kind === 'capture' && turn.attachmentId === nextAttachmentId) && recaptureDialog.turns.some(turn => turn.kind === 'capture' && turn.attachmentId === recaptureDialog.activeAttachmentId), 'new capture continues the tab-selected dialog while keeping old turn attachment links')
   await resetCooldown(recaptured)
   const oldCount = await recaptured.locator('.msg.assistant').count()
   await recaptured.fill('#ask-input', 'Use the newly selected task')
@@ -1645,7 +1722,7 @@ try {
     const resumed = await restarted.newPage()
     await resumed.goto(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${nextConversationId}`)
     await waitSaved(resumed, 'Stopped')
-    await resumed.waitForFunction(() => document.getElementById('crop')?.naturalWidth > 0)
+    await resumed.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
     const volatile = await resumed.evaluate(() => chrome.storage.session.get())
     check(!Object.keys(volatile).some(k => k.startsWith('capture.')), 'browser restart clears session crops without losing saved Blob attachments')
     check((await readSaved(resumed)).conversations.find(c => c.id === nextConversationId).turns.at(-1).status === 'cancelled', 'full browser restart preserves the cancelled transcript/status and settings')

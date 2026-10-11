@@ -20,7 +20,7 @@ import { ApiError } from '../shared/api'
 import { createGateway } from '../shared/gateway'
 import type { ChatState, Rect } from '../shared/messages'
 import { conversationUsage, getAttachment, getConversation, getConversationState, listConversations } from '../shared/conversation-store'
-import { conversationActivityAt, conversationDisplayTitle, cooldownRemaining, requestContext, type Conversation, type ConversationState, type ReplyStatus, type Turn } from '../shared/conversations'
+import { CONTEXT_LIMITS, contextProjection, conversationActivityAt, conversationDisplayTitle, cooldownRemaining, requestContext, type ContextProjection, type Conversation, type ConversationState, type ReplyStatus, type Turn } from '../shared/conversations'
 import { conversationAction, GenerationConnection } from './conversation-client'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, resolveSettings, setSettings } from '../shared/settings'
@@ -33,12 +33,14 @@ type Kind = 'capture' | 'permission' | 'restricted' | 'error'
 const KINDS: Kind[] = ['capture', 'permission', 'restricted', 'error']
 
 const el = (id: string): HTMLElement => document.getElementById(id)!
-const img = document.getElementById('crop') as HTMLImageElement
 const lightbox = document.getElementById('lightbox') as HTMLDialogElement
 const lightboxImg = lightbox.querySelector('img') as HTMLImageElement
 const thread = document.getElementById('thread') as HTMLElement
 
 let lightboxOpener: HTMLElement | undefined
+let contextPreview: ContextProjection | undefined
+let previewKind: TurnKind | undefined
+let previewUpdate = 0
 
 function closeLightbox(): void {
   if (lightbox.open) lightbox.close()
@@ -331,6 +333,7 @@ let inflight: AbortController | null = null
 
 function reportError(err: unknown): void {
   const key = err instanceof Error ? err.message : 'storage.write'
+  if (['check.needAttempt', 'context.text', 'context.imageMissing', 'context.imageLarge'].includes(key)) { setComposerError(key); return }
   const cooldown = key.startsWith('dialog.cooldown:')
   el('dialog-status').textContent = cooldown ? t(uiLang, 'dialog.cooldown', { seconds: key.split(':')[1] }) : t(uiLang, key.startsWith('storage.') ? 'dialog.storageError' : key)
   el('operation-error').textContent = el('dialog-status').textContent
@@ -379,41 +382,61 @@ async function openConversation(id: string): Promise<void> {
   await renderConversation()
 }
 
+async function appendTurnImage(message: Msg, turn: Turn, epoch?: number): Promise<void> {
+  if (!turn.attachmentId) return
+  const thumbnail = document.createElement('img')
+  thumbnail.className = 'turn-image'
+  thumbnail.alt = t(uiLang, 'dialog.attachment')
+  try { thumbnail.src = await imageUrl(turn.attachmentId) }
+  catch {
+    const missing = document.createElement('span')
+    missing.className = 'turn-image-missing'
+    missing.textContent = t(uiLang, 'context.imageMissing')
+    message.wrap.appendChild(missing)
+    return
+  }
+  if (epoch !== undefined && epoch !== rendering) return
+  thumbnail.tabIndex = 0
+  thumbnail.setAttribute('role', 'button')
+  thumbnail.setAttribute('aria-label', t(uiLang, 'dialog.imagePreview'))
+  thumbnail.onclick = () => openLightbox(thumbnail, thumbnail.src)
+  thumbnail.onkeydown = (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLightbox(thumbnail, thumbnail.src) }
+  }
+  message.wrap.appendChild(thumbnail)
+}
+
+async function appendNewCaptureTurns(selected: Conversation): Promise<void> {
+  for (const turn of selected.turns) {
+    if (turn.kind !== 'capture' || [...thread.querySelectorAll<HTMLElement>('[data-turn]')].some((node) => node.dataset.turn === turn.id)) continue
+    const message = addMessage('user', '')
+    message.wrap.dataset.turn = turn.id
+    await appendTurnImage(message, turn)
+  }
+}
+
 async function renderConversation(): Promise<void> {
   if (!conversation) return
   const epoch = ++rendering
   const selected = conversation
   el('conversation-title').textContent = conversationDisplayTitle(selected, t(uiLang, 'dialog.new'))
   if (lightbox.open) lightbox.close()
-  if (selected.activeAttachmentId) {
-    const url = await imageUrl(selected.activeAttachmentId)
-    if (epoch !== rendering) return
-    img.src = url
-    el('crop-figure').hidden = false
-  } else {
-    img.removeAttribute('src')
-    el('crop-figure').hidden = true
+  if (inflight || starting) {
+    await appendNewCaptureTurns(selected)
+    await updateContextPreview(null)
+    await refreshStatus()
+    return
   }
-  if (inflight || starting) { await refreshStatus(); return }
+  const displayedImages = new Set<string>()
   thread.replaceChildren()
   for (const turn of selected.turns) {
     const msg = addMessage(turn.role, turn.role === 'user' ? turn.display ?? turn.text : turn.text)
     msg.wrap.dataset.turn = turn.id
-    if (turn.role === 'user' && turn.attachmentId) {
-      const thumbnail = document.createElement('img')
-      thumbnail.className = 'turn-image'
-      thumbnail.alt = t(uiLang, 'dialog.attachment')
-      thumbnail.src = await imageUrl(turn.attachmentId)
-      if (epoch !== rendering) return
-      thumbnail.tabIndex = 0
-      thumbnail.setAttribute('role', 'button')
-      thumbnail.setAttribute('aria-label', t(uiLang, 'dialog.imagePreview'))
-      thumbnail.onclick = () => openLightbox(thumbnail, thumbnail.src)
-      thumbnail.onkeydown = (event) => {
-        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLightbox(thumbnail, thumbnail.src) }
-      }
-      msg.wrap.appendChild(thumbnail)
+    if (turn.role === 'user' && turn.attachmentId && !displayedImages.has(turn.attachmentId)) {
+      await appendTurnImage(msg, turn, epoch)
+      displayedImages.add(turn.attachmentId)
     }
+    if (epoch !== rendering) return
     if (turn.role === 'assistant') {
       if (turn.note) {
         const note = addMessage('note', turn.note)
@@ -424,10 +447,18 @@ async function renderConversation(): Promise<void> {
       status.className = 'reply-status'
       status.textContent = t(uiLang, `reply.${turn.status ?? 'interrupted'}`) + (turn.error ? ` — ${turn.error}` : '')
       msg.wrap.appendChild(status)
-      addActions(msg, turn.id === selected.turns.at(-1)?.id)
+      addActions(msg, turn.id === [...selected.turns].reverse().find((item) => item.kind !== 'capture')?.id)
     }
   }
+  if (selected.activeAttachmentId && !displayedImages.has(selected.activeAttachmentId)) {
+    const legacyImage: Turn = { id: `legacy-${selected.activeAttachmentId}`, role: 'user', text: '', kind: 'capture', attachmentId: selected.activeAttachmentId, createdAt: selected.createdAt, locale: uiLang, promptVersion: 'legacy' }
+    const msg = addMessage('user', '')
+    msg.wrap.dataset.turn = legacyImage.id
+    await appendTurnImage(msg, legacyImage, epoch)
+  }
+  if (epoch !== rendering) return
   ensureHint()
+  await updateContextPreview()
   await refreshStatus()
 }
 
@@ -442,6 +473,159 @@ function updateStatus(): void {
   const text = profileState.generation ? t(uiLang, 'reply.streaming') : wait ? t(uiLang, 'dialog.cooldown', { seconds: Math.ceil(wait / 1000) }) : t(uiLang, 'dialog.saved')
   if (!unsaved.size) el('dialog-status').textContent = text
   if (window.parent !== window) window.parent.postMessage({ source: 'study-buddy-chat', action: 'status', text, lang: uiLang }, '*')
+}
+
+function setContextSummary(projection: ContextProjection): void {
+  const node = el('context-summary-text')
+  const params = { messages: projection.turns.length, images: projection.images.size }
+  const full = t(uiLang, 'context.next', params)
+  const compactViewport = window.matchMedia('(max-width: 360px)').matches
+  const warning = el('context-warning')
+  const excludedCount = projection.entries.filter((entry) => !entry.included).length
+  warning.textContent = excludedCount ? t(uiLang, compactViewport ? 'context.exclusionsCompact' : 'context.exclusions', { count: excludedCount }) : ''
+  warning.hidden = !excludedCount
+  node.textContent = full
+  if (compactViewport || node.scrollWidth > node.clientWidth) node.textContent = t(uiLang, 'context.nextCompact', params)
+  node.setAttribute('aria-label', full)
+}
+
+function setComposerError(key?: string): void {
+  const node = el('composer-error')
+  node.textContent = key ? t(uiLang, key) : ''
+  node.hidden = !key
+}
+
+function previewTurn(): Turn | undefined {
+  const checkMode = !(el('check-form') as HTMLFormElement).hidden
+  let kind = previewKind
+  let input: string | undefined
+  let text: string
+  let display: string
+  if (kind) {
+    if (kind === 'check') {
+      input = (el('check-input') as HTMLTextAreaElement).value
+      if (!input.trim()) return undefined
+      text = checkPrompt(input, promptCtx())
+      display = `${t(uiLang, 'preset.check')}\n${input}`
+    } else {
+      text = taskPrompt(kind as TaskId, promptCtx())
+      display = t(uiLang, `preset.${kind}`)
+    }
+  } else if (checkMode) {
+    kind = 'check'
+    input = (el('check-input') as HTMLTextAreaElement).value
+    if (!input.trim()) return undefined
+    text = checkPrompt(input, promptCtx())
+    display = `${t(uiLang, 'preset.check')}\n${input}`
+  } else {
+    const ask = (el('ask-input') as HTMLInputElement).value
+    if (!ask.trim()) return undefined
+    kind = 'ask'
+    input = ask
+    text = ask
+    display = ask
+  }
+  return { id: 'context-preview-draft', role: 'user', text, display, input, kind: kind as TurnKind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: conversation?.activeAttachmentId }
+}
+
+async function updateContextPreview(override?: Turn | null): Promise<void> {
+  const sequence = ++previewUpdate
+  const selected = conversation
+  if (!selected) return
+  const draft = override === undefined ? previewTurn() : override ?? undefined
+  const turns = draft && !selected.turns.some((turn) => turn.id === draft.id) ? [...selected.turns, draft] : selected.turns
+  let projection: ContextProjection
+  try {
+    projection = contextProjection({ ...selected, turns })
+  } catch (err) {
+    const key = err instanceof Error ? err.message : 'context.text'
+    contextPreview = undefined
+    setComposerError(key.startsWith('context.') ? key : 'context.text')
+    el('context-summary-text').textContent = t(uiLang, window.matchMedia('(max-width: 360px)').matches ? 'context.nextCompact' : 'context.next', { messages: '—', images: '—' })
+    return
+  }
+  contextPreview = projection
+  setContextSummary(projection)
+  setComposerError()
+  for (const id of projection.images) {
+    const attachment = await getAttachment(id)
+    if (sequence !== previewUpdate) return
+    if (!attachment) { setComposerError('context.imageMissing'); return }
+    if (attachment.data.size > CONTEXT_LIMITS.imageBytes) { setComposerError('context.imageLarge'); return }
+  }
+}
+
+let contextPreviewTimer: ReturnType<typeof setTimeout> | undefined
+window.addEventListener('resize', () => {
+  if (contextPreview) setContextSummary(contextPreview)
+})
+
+function queueContextPreview(): void {
+  if (contextPreviewTimer) clearTimeout(contextPreviewTimer)
+  contextPreviewTimer = setTimeout(() => { contextPreviewTimer = undefined; void updateContextPreview() }, 120)
+}
+
+async function showContextDetails(): Promise<void> {
+  await updateContextPreview()
+  const projection = contextPreview
+  if (!projection) return
+  el('context-dialog-limits').textContent = t(uiLang, 'context.limits')
+  const list = el('context-dialog-list')
+  list.replaceChildren()
+  let hasExcluded = false
+  for (const entry of projection.entries) {
+    const turn = entry.turn
+    const row = document.createElement('div')
+    row.className = 'context-entry'
+    row.dataset.turnId = turn.id
+    row.dataset.included = String(entry.included)
+    const text = document.createElement('div')
+    text.className = 'context-entry-text'
+    const label = turn.kind === 'capture' ? t(uiLang, 'context.imageMessage') : turn.role === 'assistant' ? t(uiLang, 'context.assistant') : t(uiLang, 'context.user')
+    const excerpt = turn.display || turn.input || turn.text
+    text.textContent = `${label}: ${excerpt ? excerpt.replace(/\s+/g, ' ').slice(0, 180) : t(uiLang, 'context.imageMessage')}`
+    text.title = turn.id
+    const state = document.createElement('span')
+    state.className = 'context-entry-state'
+    state.textContent = t(uiLang, entry.included ? 'context.included' : 'context.excluded')
+    row.append(text, state)
+    if (!entry.included) {
+      hasExcluded = true
+      const reason = document.createElement('div')
+      reason.className = 'context-entry-reason'
+      reason.textContent = t(uiLang, `context.reason.${entry.reason ?? 'messages'}`)
+      row.appendChild(reason)
+    }
+    if (entry.imageState) {
+      const imageState = document.createElement('div')
+      imageState.className = 'context-entry-reason'
+      imageState.textContent = t(uiLang, `context.image.${entry.imageState}`)
+      row.appendChild(imageState)
+      if (entry.imageState !== 'otherTurn') {
+        try {
+          const thumbnail = document.createElement('img')
+          thumbnail.alt = t(uiLang, 'dialog.attachment')
+          thumbnail.src = await imageUrl(turn.attachmentId!)
+          thumbnail.tabIndex = 0
+          thumbnail.setAttribute('role', 'button')
+          thumbnail.setAttribute('aria-label', t(uiLang, 'dialog.imagePreview'))
+          thumbnail.onclick = () => openLightbox(thumbnail, thumbnail.src)
+          thumbnail.onkeydown = (event) => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLightbox(thumbnail, thumbnail.src) }
+          }
+          row.appendChild(thumbnail)
+        } catch { /* Missing blobs are reported beside the composer before send. */ }
+      }
+    }
+    list.appendChild(row)
+  }
+  if (!hasExcluded) {
+    const included = document.createElement('p')
+    included.className = 'context-entry-reason'
+    included.textContent = t(uiLang, 'context.noItems')
+    list.appendChild(included)
+  }
+  ;(el('context-dialog') as HTMLDialogElement).showModal()
 }
 
 /** Prompt context from the current settings (answer language + resolved UI). */
@@ -475,7 +659,7 @@ function addMessage(role: 'user' | 'assistant' | 'error' | 'note', text: string)
   const body = document.createElement('div')
   body.className = 'msg-body'
   body.textContent = text
-  wrap.appendChild(body)
+  if (text) wrap.appendChild(body)
   thread.appendChild(wrap)
   scrollThread()
   return { wrap, body, raw: text }
@@ -565,7 +749,8 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
   if (!conversation) return false
   const selectedId = conversation.id
   const promptContext = { answerLanguage: settings.answerLanguage, uiLang: source.locale }
-  const requestTitle = !!user && conversation.turns.length === 0 && conversation.titleGeneratedAt === undefined
+  if (source.kind === 'capture') throw new Error('dialog.invalid')
+  const requestTitle = !!user && !conversation.turns.some((turn) => turn.role === 'user' && turn.kind !== 'capture') && conversation.titleGeneratedAt === undefined
   const titleParser = requestTitle ? createResponseTitleParser() : undefined
   let generatedTitle: string | undefined
   let titleParserFinished = false
@@ -599,7 +784,11 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     reply.wrap.dataset.turn = assistant.id
     await refreshStatus()
     const index = conversation.turns.findIndex((turn) => turn.id === source.id)
-    const context = await requestContext({ ...conversation, turns: conversation.turns.slice(0, index + 1) }, async (id) => (await getAttachment(id))?.data)
+    const contextConversation = { ...conversation, turns: conversation.turns.slice(0, index + 1) }
+    const projection = contextProjection(contextConversation)
+    contextPreview = projection
+    setContextSummary(projection)
+    const context = await requestContext(contextConversation, async (id) => (await getAttachment(id))?.data, projection)
     if (context.omitted) addMessage('note', t(uiLang, 'context.omitted', { count: context.omitted }))
     const result = await createGateway(settings).ask({
       messages: [{ role: 'system', content: systemPrompt(promptContext) + (requestTitle ? `\n\n${firstAnswerTitleInstruction(promptContext)}` : '') }, ...context.messages],
@@ -658,7 +847,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     starting = false
     connection.close()
     conversation = await getConversation(selectedId).catch(() => conversation)
-    await refreshStatus().catch(reportError)
+    if (!storageFailed) await renderConversation().catch(reportError)
     scrollThread()
   }
   return true
@@ -676,6 +865,9 @@ async function send(prompt: string, kind: TurnKind = 'ask', display?: string, in
     const text = kind === 'ask' ? prompt : kind === 'check' ? checkPrompt(input!, promptCtx()) : kind === 'simpler' ? simplerPrompt(promptCtx()) : taskPrompt(kind, promptCtx())
     const label = kind === 'ask' ? display : kind === 'check' ? `${t(uiLang, 'preset.check')}\n${input}` : kind === 'simpler' ? t(uiLang, 'msg.simpler') : t(uiLang, `preset.${kind}`)
     const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: conversation.activeAttachmentId }
+    previewKind = undefined
+    await updateContextPreview(user)
+    if (!el('composer-error').hidden) return false
     generationDone = streamReply(settings, user, user)
     return await generationDone
   } finally { starting = false; updateStatus() }
@@ -683,7 +875,7 @@ async function send(prompt: string, kind: TurnKind = 'ask', display?: string, in
 
 async function regenerate(): Promise<void> {
   if (inflight || starting || !conversation) return
-  const last = [...conversation.turns].reverse().find((turn) => turn.role === 'user')
+  const last = [...conversation.turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
   if (!last) return
   starting = true
   setBusy(true)
@@ -720,6 +912,11 @@ window.addEventListener('blur', () => {
 })
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
+  const task = btn.dataset.preset as TaskId | undefined
+  btn.addEventListener('focus', () => { if (task) { previewKind = task; queueContextPreview() } })
+  btn.addEventListener('pointerenter', () => { if (task) { previewKind = task; queueContextPreview() } })
+  btn.addEventListener('blur', () => { if (previewKind === task) { previewKind = undefined; queueContextPreview() } })
+  btn.addEventListener('pointerleave', () => { if (previewKind === task) { previewKind = undefined; queueContextPreview() } })
   btn.addEventListener('click', () => {
     const task = btn.dataset.preset as TaskId | undefined
     if (!task) return
@@ -729,6 +926,7 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   })
 }
 
+;(el('ask-input') as HTMLInputElement).addEventListener('input', () => { setComposerError(); queueContextPreview() })
 ;(el('ask-form') as HTMLFormElement).addEventListener('submit', (e) => {
   e.preventDefault()
   // While a request is in flight the same button doubles as Stop.
@@ -739,36 +937,48 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   const input = el('ask-input') as HTMLInputElement
   const question = input.value
   if (question.trim()) void send(question).then((accepted) => {
-    if (accepted && input.value === question) input.value = ''
+    if (accepted && input.value === question) { input.value = ''; queueContextPreview() }
   }).catch(reportError)
 })
 
 el('check-btn').onclick = () => {
   el('view-capture').dataset.composerMode = 'check'
+  previewKind = 'check'
   el('operation-error').hidden = true
+  setComposerError()
   el('check-form').hidden = false
   el('ask-form').hidden = true
   el('check-input').focus()
 }
 el('check-cancel').onclick = () => {
   delete el('view-capture').dataset.composerMode
+  previewKind = undefined
   el('check-form').hidden = true
   el('ask-form').hidden = false
   el('check-btn').focus()
+  queueContextPreview()
 }
 el('check-input').oninput = () => {
   el('operation-error').hidden = true
+  setComposerError()
+  queueContextPreview()
   updateStatus()
 }
 el('check-form').addEventListener('submit', (event) => {
   event.preventDefault()
   const attempt = (el('check-input') as HTMLTextAreaElement).value
   if (!attempt.trim()) { reportError(new Error('check.needAttempt')); return }
-  delete el('view-capture').dataset.composerMode
-  el('check-form').hidden = true
-  el('ask-form').hidden = false
-  ;(el('ask-input') as HTMLInputElement).focus()
-  void send(checkPrompt(attempt, promptCtx()), 'check', `${t(uiLang, 'preset.check')}\n${attempt}`, attempt).catch(reportError)
+  void send(checkPrompt(attempt, promptCtx()), 'check', `${t(uiLang, 'preset.check')}\n${attempt}`, attempt).then((accepted) => {
+    const input = el('check-input') as HTMLTextAreaElement
+    if (!accepted || input.value !== attempt) return
+    input.value = ''
+    delete el('view-capture').dataset.composerMode
+    previewKind = undefined
+    el('check-form').hidden = true
+    el('ask-form').hidden = false
+    ;(el('ask-input') as HTMLInputElement).focus()
+    queueContextPreview()
+  }).catch(reportError)
 })
 
 el('new-chat-btn').onclick = () => {
@@ -778,6 +988,8 @@ el('new-chat-btn').onclick = () => {
     releaseImages()
     ;(el('ask-input') as HTMLInputElement).value = ''
     ;(el('check-input') as HTMLTextAreaElement).value = ''
+    previewKind = undefined
+    setComposerError()
     delete el('view-capture').dataset.composerMode
     el('check-form').hidden = true
     el('ask-form').hidden = false
@@ -878,6 +1090,9 @@ async function showHistory(): Promise<void> {
 ;(el('delete-dialog') as HTMLDialogElement).addEventListener('close', () => { deletingConversationId = undefined })
 
 el('history-btn').onclick = () => void showHistory().catch(reportError)
+el('context-details-btn').onclick = () => void showContextDetails().catch(reportError)
+el('context-dialog-close').onclick = () => (el('context-dialog') as HTMLDialogElement).close()
+;(el('context-dialog') as HTMLDialogElement).addEventListener('click', (event) => { if (event.target === el('context-dialog')) (el('context-dialog') as HTMLDialogElement).close() })
 el('history-back').onclick = () => {
   if (conversation) { show('capture'); return }
   if (historyEntry) {
@@ -897,10 +1112,10 @@ chrome.runtime.onMessage.addListener((message) => {
   const epoch = opening
   void (async () => {
     await refreshStatus()
-    if (epoch !== opening || !conversation || inflight || starting || unsaved.size) return
+    if (epoch !== opening || !conversation || unsaved.size) return
     const selectedId = conversation.id
     const latest = await getConversation(selectedId)
-    if (epoch !== opening || conversation?.id !== selectedId || inflight || starting || unsaved.size) return
+    if (epoch !== opening || conversation?.id !== selectedId || unsaved.size) return
     if (latest) { conversation = latest; await renderConversation() }
     else { conversation = undefined; await showHistory() }
   })().catch(reportError)
@@ -911,11 +1126,6 @@ setInterval(updateStatus, 1000)
 // The crop and attached images open in a native modal dialog. Native dialog
 // behavior keeps keyboard focus inside and returns it to the exact opener.
 {
-  const figure = document.getElementById('crop-figure') as HTMLElement
-  figure.addEventListener('click', () => openLightbox(figure, img.src))
-  figure.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLightbox(figure, img.src) }
-  })
   lightbox.addEventListener('click', (event) => {
     if (event.target === lightbox) closeLightbox()
   })

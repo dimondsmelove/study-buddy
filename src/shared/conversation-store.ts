@@ -133,7 +133,7 @@ export function startGeneration(conversationId: string, user: Turn | null, assis
   })
 }
 
-export function updateReply(generation: Generation, text: string, status: Turn['status'], error?: string, note?: string, generatedTitle?: string): Promise<void> {
+export function updateReply(generation: Generation, text: string, status: Turn['status'], error?: string, note?: string, generatedTitle?: string, usage?: Turn['usage']): Promise<void> {
   return transaction(['conversations', 'state'], 'readwrite', (tx, done) => {
     const store = tx.objectStore('conversations')
     const request = store.get(generation.conversationId)
@@ -145,6 +145,7 @@ export function updateReply(generation: Generation, text: string, status: Turn['
       turn.status = status
       turn.error = error
       turn.note = note ?? turn.note
+      turn.usage = usage ?? turn.usage
       const title = generatedTitle && conversation.titleGeneratedAt === undefined ? normalizeGeneratedTitle(generatedTitle) : undefined
       if (title) { conversation.title = title; conversation.titleGeneratedAt = Date.now() }
       conversation.updatedAt = Date.now()

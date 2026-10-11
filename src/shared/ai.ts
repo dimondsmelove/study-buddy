@@ -14,14 +14,14 @@ import type { Settings } from './settings'
 /** Primary model. */
 export const MODEL_PRIMARY = 'deepseek/deepseek-v4-flash-vision-exp'
 /** Tried in order when the primary (or a previous fallback) is unavailable. */
-export const MODEL_FALLBACKS = ['google/gemini-2.5-flash-lite', 'openai/gpt-5-nano']
+export const MODEL_FALLBACKS = ['google/gemini-3.1-flash-lite', 'openai/gpt-5-nano']
 /** The full chain, primary first. */
 export const MODEL_CHAIN = [MODEL_PRIMARY, ...MODEL_FALLBACKS]
 
 /** Friendly names for the UI (fallback notices). */
 const MODEL_LABELS: Record<string, string> = {
   [MODEL_PRIMARY]: 'DeepSeek',
-  'google/gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite',
+  'google/gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
   'openai/gpt-5-nano': 'GPT-5 Nano',
 }
 
@@ -54,7 +54,7 @@ export async function askWithFallback(opts: AskOpts): Promise<CompletionResult> 
     const next = MODEL_CHAIN[i + 1]
     let emitted = false
     try {
-      return await chatCompletion({
+      const result = await chatCompletion({
         settings: opts.settings,
         model,
         messages: opts.messages,
@@ -66,6 +66,7 @@ export async function askWithFallback(opts: AskOpts): Promise<CompletionResult> 
           opts.onDelta?.(delta)
         },
       })
+      return { ...result, model: result.model ?? model }
     } catch (err) {
       lastError = err
       // `isRetryable` already excludes 'aborted'; `emitted` guards the

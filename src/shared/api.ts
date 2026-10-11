@@ -28,6 +28,8 @@ export interface CompletionResult {
   text: string
   status: 'complete' | 'truncated' | 'interrupted' | 'empty'
   finishReason?: string
+  model?: string
+  usage?: { promptTokens?: number; completionTokens?: number; cost?: number }
 }
 
 /** Every failure from this module is an ApiError. `message` is written for the
@@ -145,6 +147,7 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<Completi
         model,
         messages,
         stream: true,
+        stream_options: { include_usage: true },
         ...(temperature !== undefined ? { temperature } : {}),
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
       }),
@@ -160,8 +163,12 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<Completi
   // shapes: event-stream means a live stream, anything JSON-shaped means the
   // server ignored stream:true and answered in one piece.
   const contentType = res.headers.get('content-type') ?? ''
-  if (contentType.toLowerCase().includes('text/event-stream')) return streamSSE(res, onDelta, signal)
-  return wholeJson(res, onDelta, signal)
+  if (contentType.toLowerCase().includes('text/event-stream')) {
+    const result = await streamSSE(res, onDelta, signal)
+    return { ...result, model: result.model ?? model }
+  }
+  const result = await wholeJson(res, onDelta, signal)
+  return { ...result, model: result.model ?? model }
 }
 
 // SSE events are separated by blank lines. Buffer both UTF-8 and lines: a
@@ -181,6 +188,8 @@ async function streamSSE(
   let done = false
   let malformed = false
   let finishReason: string | undefined
+  let usage: CompletionResult['usage']
+  let reportedModel: string | undefined
 
   const dispatch = (): void => {
     const payload = data.join('\n').trim()
@@ -205,6 +214,8 @@ async function streamSSE(
       return
     }
     if (body.error !== undefined && body.error !== null) throw providerError()
+    usage = readUsage(body.usage) ?? usage
+    if (typeof body.model === 'string') reportedModel = body.model
     if (!Array.isArray(body.choices)) {
       malformed = true
       return
@@ -281,16 +292,28 @@ async function streamSSE(
     // connection open until GC; cancel() never has a useful throw here.
     void reader.cancel().catch(() => {})
   }
-  return completionResult(text, finishReason, done, malformed)
+  return { ...completionResult(text, finishReason, done, malformed), ...(reportedModel ? { model: reportedModel } : {}), ...(usage ? { usage } : {}) }
 }
 
 interface CompletionBody {
   error?: unknown
+  model?: unknown
+  usage?: unknown
   choices?: Array<{
     delta?: { content?: unknown }
     message?: { content?: unknown }
     finish_reason?: unknown
   }>
+}
+
+function readUsage(value: unknown): CompletionResult['usage'] | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const usage = value as Record<string, unknown>
+  const promptTokens = typeof usage.prompt_tokens === 'number' && Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : undefined
+  const completionTokens = typeof usage.completion_tokens === 'number' && Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : undefined
+  const cost = typeof usage.cost === 'number' && Number.isFinite(usage.cost) ? usage.cost : undefined
+  if (promptTokens === undefined && completionTokens === undefined && cost === undefined) return undefined
+  return { promptTokens, completionTokens, cost }
 }
 
 function providerError(): ApiError {
@@ -339,7 +362,8 @@ async function wholeJson(
   const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined
   if (finishReason === 'error' || finishReason === 'content_filter') throw providerError()
   if (text === null) throw new ApiError('The API response had no message content.', 'response')
-  return completionResult(text, finishReason)
+  const usage = readUsage(body?.usage)
+  return { ...completionResult(text, finishReason), ...(typeof body?.model === 'string' ? { model: body.model } : {}), ...(usage ? { usage } : {}) }
 }
 
 // Content arrives as a string, or as an array of typed parts — the same shape

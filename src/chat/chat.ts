@@ -770,11 +770,12 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
   let status: ReplyStatus = 'interrupted'
   let error: string | undefined
   let fallbackNote: string | undefined
+  let usage: Turn['usage']
   let write: Promise<unknown> = Promise.resolve()
   let timer: ReturnType<typeof setTimeout> | undefined
   let storageFailed = false
   const persist = (final: ReplyStatus) => {
-    write = write.then(() => connection.request({ action: 'update', text: acc, status: final, error, note: fallbackNote, title: generatedTitle }))
+    write = write.then(() => connection.request({ action: 'update', text: acc, status: final, error, note: fallbackNote, title: generatedTitle, usage }))
     return write
   }
   starting = true
@@ -822,6 +823,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     })
     if (!titleParser) acc = result.text
     status = result.status
+    usage = { model: result.model, ...result.usage }
   } catch (err) {
     if (!reply) { reportError(err); return false }
     status = lost || storageFailed ? 'interrupted' : controller.signal.aborted ? 'cancelled' : err instanceof ApiError && ['network', 'interrupted', 'response'].includes(err.kind) ? 'interrupted' : 'provider_error'
@@ -840,7 +842,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
       if (titleParser && status === 'complete' && !acc.trim()) status = 'empty'
       if (lost) storageFailed = true
       try { if (!storageFailed) await persist(status) } catch { storageFailed = true }
-      const savedTurn = { ...assistant, text: acc, status, error, note: fallbackNote }
+      const savedTurn = { ...assistant, text: acc, status, error, note: fallbackNote, usage }
       renderAnswer(reply.body, acc)
       reply.raw = acc
       const note = document.createElement('div')

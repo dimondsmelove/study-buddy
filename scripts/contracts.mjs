@@ -159,8 +159,9 @@ const complete = (extra = {}) => api.chatCompletion({
 })
 const ask = (extra = {}) => ai.askWithFallback({ settings: fixtureSettings, messages, ...extra })
 const plain = (value) => JSON.parse(JSON.stringify(value))
-const expected = (text, status, finishReason) => ({
+const expected = (text, status, finishReason, model = 'fixture-model', usage) => ({
   text, status, ...(finishReason !== undefined ? { finishReason } : {}),
+  ...(model ? { model } : {}), ...(usage ? { usage } : {}),
 })
 const sensitive = [fixtureSettings.apiKey, fixtureSettings.baseUrl, messages[0].content, 'fixture-authorization']
 function safeError(error, kind, status) {
@@ -258,8 +259,9 @@ await contract('whole JSON tracks terminal status and flattens only existing typ
     ['partial', undefined, expected('partial', 'interrupted')],
   ]) {
     const deltas = []
-    stubFetch(() => jsonResponse({ choices: [{ message: { content }, finish_reason: reason }] }))
-    assert.deepEqual(plain(await complete({ onDelta: (value) => deltas.push(value) })), result)
+    stubFetch(() => jsonResponse({ model: 'routed-json-model', usage: { prompt_tokens: 12, completion_tokens: 4 }, choices: [{ message: { content }, finish_reason: reason }] }))
+    const expectedResult = { ...result, model: 'routed-json-model', usage: { promptTokens: 12, completionTokens: 4 } }
+    assert.deepEqual(plain(await complete({ onDelta: (value) => deltas.push(value) })), expectedResult)
     assert.equal(deltas.join(''), result.text)
   }
   for (const response of [
@@ -317,7 +319,7 @@ await contract('404/429/503 before any delta fall back once with the same per-tu
       ? jsonResponse({ error: { message: 'fixture unavailable' } }, status)
       : streamResponse(delta('fallback') + finish('stop') + done))
     const result = await ask({ temperature: 0.2, maxTokens: 321, onFallback: (...args) => switches.push(args) })
-    assert.deepEqual(plain(result), expected('fallback', 'complete', 'stop'))
+    assert.deepEqual(plain(result), expected('fallback', 'complete', 'stop', ai.MODEL_CHAIN[1]))
     assert.equal(requests.length, 2)
     assert.equal(switches.length, 1)
     assert.deepEqual(requests.map((request) => request.body.model), plain(ai.MODEL_CHAIN.slice(0, 2)))
@@ -326,6 +328,7 @@ await contract('404/429/503 before any delta fall back once with the same per-tu
       assert.equal(request.body.max_tokens, 321)
       assert.deepEqual(request.body.messages, messages)
       assert.equal(request.body.stream, true)
+      assert.deepEqual(request.body.stream_options, { include_usage: true })
     }
   }
   const requests = stubFetch(() => jsonResponse({}, 503))
@@ -364,7 +367,7 @@ await contract('no fallback for partial output, network, abort, parse or HTTP 20
 await contract('Gateway exposes CompletionResult and passes turn parameters to the existing model chain', async () => {
   const requests = stubFetch(() => streamResponse(delta('bounded') + finish('length')))
   const result = await gateway.createGateway(fixtureSettings).ask({ messages, temperature: 0, maxTokens: 99 })
-  assert.deepEqual(plain(result), expected('bounded', 'truncated', 'length'))
+  assert.deepEqual(plain(result), expected('bounded', 'truncated', 'length', ai.MODEL_PRIMARY))
   assert.equal(requests[0].body.temperature, 0)
   assert.equal(requests[0].body.max_tokens, 99)
 })

@@ -169,7 +169,7 @@ export function installConversationCoordinator(): void {
           const status = message.status as ReplyStatus
           if (!['streaming', 'complete', 'truncated', 'interrupted', 'cancelled', 'provider_error', 'empty'].includes(status) || typeof message.text !== 'string') throw new Error('dialog.invalid')
           const completedGeneration = active.generation
-          await updateReply(completedGeneration, message.text, status, message.error, message.note, typeof message.title === 'string' ? message.title : undefined)
+          await updateReply(completedGeneration, message.text, status, message.error, message.note, typeof message.title === 'string' ? message.title : undefined, message.usage as Turn['usage'])
           active.text = message.text
           if (status !== 'streaming') {
             active = undefined

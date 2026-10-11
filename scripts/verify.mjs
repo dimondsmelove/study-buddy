@@ -667,20 +667,58 @@ try {
     const tray = message.querySelector('.msg-actions').getBoundingClientRect()
     const buttons = [...message.querySelectorAll('.msg-actions .msg-action-items button')].map(button => {
       const r = button.getBoundingClientRect()
-      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, radius: getComputedStyle(button).borderRadius }
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height, radius: getComputedStyle(button).borderRadius }
     })
     const container = message.querySelector('.msg-actions')
-    return { contentBottom: content?.bottom, bodyTop: body.top, bodyBottom: body.bottom, trayTop: tray.top, trayBottom: tray.bottom, messageBottom: message.getBoundingClientRect().bottom, trayRadius: getComputedStyle(container).borderRadius, buttons }
+    return {
+      contentBottom: content?.bottom,
+      bodyTop: body.top,
+      bodyBottom: body.bottom,
+      trayTop: tray.top,
+      trayBottom: tray.bottom,
+      trayMidpoint: (tray.top + tray.bottom) / 2,
+      trayHeight: tray.height,
+      messageBottom: message.getBoundingClientRect().bottom,
+      trayRadius: getComputedStyle(container).borderRadius,
+      buttons,
+    }
   })
-  check(longActionGeometry.contentBottom !== undefined && longActionGeometry.trayTop >= longActionGeometry.contentBottom &&
-    longActionGeometry.trayBottom <= longActionGeometry.bodyBottom && longActionGeometry.trayTop >= longActionGeometry.bodyTop &&
-    longActionGeometry.buttons.length >= 2 && longActionGeometry.buttons.every(button => button.radius === longActionGeometry.trayRadius && button.left >= 0 && button.right <= 480),
-    'long answer reserves a non-overlapping action row with rounded buttons inside the tray (' + JSON.stringify(longActionGeometry) + ')')
+  check(longActionGeometry.contentBottom !== undefined &&
+    longActionGeometry.trayTop - longActionGeometry.contentBottom >= 8 &&
+    Math.abs(longActionGeometry.trayMidpoint - longActionGeometry.bodyBottom) <= 2 &&
+    longActionGeometry.trayBottom > longActionGeometry.bodyBottom &&
+    longActionGeometry.trayHeight < 40 &&
+    longActionGeometry.buttons.length >= 2 &&
+    longActionGeometry.buttons.every(button => button.width < 36 && button.height < 36 &&
+      button.radius === longActionGeometry.trayRadius && button.left >= 0 && button.right <= 480),
+    'long answer keeps text clear of a compact tray centered on the bubble edge (' + JSON.stringify(longActionGeometry) + ')')
   const longEvidence = resolve(root, '..', 'review', 'loop')
   mkdirSync(longEvidence, { recursive: true })
   await longAnswer.screenshot({ path: join(longEvidence, 'long-answer.png'), fullPage: true })
-  await longAnswer.close()
+
   responseMode = 'normal'
+  await resetCooldown(longAnswer)
+  await longAnswer.reload()
+  await longAnswer.waitForFunction(() => {
+    const image = document.querySelector('.turn-image')
+    return !!image?.src && image.naturalWidth > 0 &&
+      [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete')
+  })
+  await longAnswer.fill('#ask-input', 'Continue with the next step.')
+  await longAnswer.click('#ask-btn')
+  await longAnswer.waitForFunction(() => {
+    const assistants = [...document.querySelectorAll('.msg.assistant')]
+    return assistants.length === 2 && assistants.at(-1)?.querySelector('.reply-status')?.textContent?.includes('Complete')
+  })
+  const traySpacing = await longAnswer.locator('.msg.assistant').first().evaluate(message => {
+    const tray = message.querySelector('.msg-actions').getBoundingClientRect()
+    const messages = [...message.parentElement.querySelectorAll('.msg')]
+    const next = messages[messages.indexOf(message) + 1]?.getBoundingClientRect()
+    return { trayBottom: tray.bottom, nextMessageTop: next?.top, gap: next ? next.top - tray.bottom : null }
+  })
+  check(traySpacing.gap !== null && traySpacing.gap >= 8,
+    'next message clears the tray that extends beyond its bubble (' + JSON.stringify(traySpacing) + ')')
+  await longAnswer.close()
 
   // RU dictionary: with uiLanguage 'ru' the NATIVE RU templates and system
   // prompt must go out (answerLanguage auto + ru UI resolves to Russian).

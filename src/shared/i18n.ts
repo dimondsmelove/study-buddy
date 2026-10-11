@@ -48,6 +48,7 @@ const EN: Dict = {
   'dialog.busy': 'Another answer is running. Stop it in its window or wait.',
   'dialog.disconnected': 'The writer disconnected. The answer was interrupted.',
   'dialog.cooldown': 'Next request in {seconds}s',
+  'dialog.cooldownShort': '{seconds}s',
   'dialog.attachment': 'Task image',
   'dialog.imagePreview': 'Preview task image',
   'dialog.closePreview': 'Close image preview',
@@ -74,7 +75,7 @@ const EN: Dict = {
   'context.reuse': 'Use again',
   'context.reuseTitle': 'Send this older message or image again to include it in the next request',
   'context.taskTooLarge': 'This task is too large for one request. Select a smaller area or start a new chat.',
-  'context.reason.olderTask': 'Older task group does not fit the estimated input budget',
+  'context.reason.olderTask': 'Outside the current context',
 
 
 
@@ -104,6 +105,7 @@ const EN: Dict = {
   'ask.placeholder': 'Ask anything about this…',
   'ask.button': 'Ask',
   'ask.stop': 'Stop',
+  'msg.actions': 'Answer actions',
   'msg.copy': 'Copy',
   'msg.copied': 'Copied',
   'msg.retry': 'Retry',
@@ -158,6 +160,7 @@ const RU: Dict = {
   'dialog.busy': 'Другой ответ ещё генерируется. Остановите его в том окне или дождитесь завершения.',
   'dialog.disconnected': 'Связь с записью потеряна. Ответ прерван.',
   'dialog.cooldown': 'Следующий запрос через {seconds} с',
+  'dialog.cooldownShort': '{seconds}с',
   'dialog.attachment': 'Изображение задачи',
   'dialog.imagePreview': 'Показать изображение задания',
   'dialog.closePreview': 'Закрыть просмотр изображения',
@@ -184,7 +187,7 @@ const RU: Dict = {
   'context.reuse': 'Использовать снова',
   'context.reuseTitle': 'Отправить старое сообщение или изображение повторно, чтобы включить в следующий запрос',
   'context.taskTooLarge': 'Это задание слишком велико для одного запроса. Выделите меньшую область или начните новый чат.',
-  'context.reason.olderTask': 'Старая группа заданий не помещается в оценочный бюджет',
+  'context.reason.olderTask': 'Вне текущего контекста',
 
 
 
@@ -214,6 +217,7 @@ const RU: Dict = {
   'ask.placeholder': 'Спросите что угодно об этом…',
   'ask.button': 'Спросить',
   'ask.stop': 'Стоп',
+  'msg.actions': 'Действия с ответом',
   'msg.copy': 'Копировать',
   'msg.copied': 'Скопировано',
   'msg.retry': 'Повторить',

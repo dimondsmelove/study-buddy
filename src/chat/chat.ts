@@ -481,33 +481,19 @@ async function refreshStatus(): Promise<void> {
 function updateStatus(): void {
   const wait = cooldownRemaining(profileState.lastStartedAt)
   const busy = !!inflight || starting || !!profileState.generation
-  setBusy(busy, wait > 0)
-  const cooldownText = wait ? t(uiLang, 'dialog.cooldown', { seconds: Math.ceil(wait / 1000) }) : ''
-  const banner = el('cooldown-banner')
-  banner.textContent = cooldownText
-  banner.hidden = !wait
-  const text = profileState.generation ? t(uiLang, 'reply.streaming') : wait ? cooldownText : t(uiLang, 'dialog.saved')
+  setBusy(busy, wait)
+  const text = profileState.generation ? t(uiLang, 'reply.streaming') : t(uiLang, 'dialog.saved')
   if (!unsaved.size) el('dialog-status').textContent = text
   if (window.parent !== window) window.parent.postMessage({ source: 'study-buddy-chat', action: 'status', text, lang: uiLang }, '*')
 }
 
-function setContextSummary(projection: ContextProjection): void {
-  const node = el('context-summary-text')
-  const full = t(uiLang, 'context.usage', { tokens: Math.round(projection.estimatedInputTokens / 1000) })
-  node.textContent = full
-  node.setAttribute('aria-label', full)
+function applyContextProjection(projection: ContextProjection): void {
   for (const entry of projection.entries) {
     const wrap = [...thread.children].find((child) => (child as HTMLElement).dataset.turn === entry.turn.id) as HTMLElement | undefined
     if (!wrap) continue
     wrap.classList.toggle('context-excluded', !entry.included)
     if (!entry.included) {
       wrap.dataset.exclusion = entry.reason ?? 'olderTask'
-      if (!wrap.querySelector('.context-exclusion-note')) {
-        const note = document.createElement('span')
-        note.className = 'context-exclusion-note'
-        note.textContent = t(uiLang, 'context.reason.' + (entry.reason ?? 'olderTask'))
-        wrap.appendChild(note)
-      }
     } else {
       delete wrap.dataset.exclusion
       wrap.querySelector('.context-exclusion-note')?.remove()
@@ -520,8 +506,9 @@ function setContextSummary(projection: ContextProjection): void {
     const action = document.createElement('button')
     action.type = 'button'
     action.className = 'context-reuse'
-    action.textContent = t(uiLang, 'context.reuse')
+    action.setAttribute('aria-label', t(uiLang, 'context.reuseTitle'))
     action.title = t(uiLang, 'context.reuseTitle')
+    action.innerHTML = `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.5h7.5a3 3 0 1 1 0 6H8"/><path d="M5 3.5 3 5.5l2 2"/></svg>`
     action.onclick = () => {
       const turn = entry.turn
       if (turn.kind === 'capture') {
@@ -576,11 +563,10 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
     const key = err instanceof Error ? err.message : 'context.text'
     contextPreview = undefined
     setComposerError(key.startsWith('context.') ? key : 'context.text')
-    el('context-summary-text').textContent = t(uiLang, 'context.usage', { tokens: '—' })
     return
   }
   contextPreview = projection
-  setContextSummary(projection)
+  applyContextProjection(projection)
   setComposerError()
   for (const id of projection.images) {
     const attachment = await getAttachment(id)
@@ -592,75 +578,12 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
 
 let contextPreviewTimer: ReturnType<typeof setTimeout> | undefined
 window.addEventListener('resize', () => {
-  if (contextPreview) setContextSummary(contextPreview)
+  if (contextPreview) applyContextProjection(contextPreview)
 })
 
 function queueContextPreview(): void {
   if (contextPreviewTimer) clearTimeout(contextPreviewTimer)
   contextPreviewTimer = setTimeout(() => { contextPreviewTimer = undefined; void updateContextPreview() }, 120)
-}
-
-async function showContextDetails(): Promise<void> {
-  await updateContextPreview()
-  const projection = contextPreview
-  if (!projection) return
-  el('context-dialog-limits').textContent = t(uiLang, 'context.limits')
-  const list = el('context-dialog-list')
-  list.replaceChildren()
-  let hasExcluded = false
-  for (const entry of projection.entries) {
-    const turn = entry.turn
-    const row = document.createElement('div')
-    row.className = 'context-entry'
-    row.dataset.turnId = turn.id
-    row.dataset.included = String(entry.included)
-    const text = document.createElement('div')
-    text.className = 'context-entry-text'
-    const label = turn.kind === 'capture' ? t(uiLang, 'context.imageMessage') : turn.role === 'assistant' ? t(uiLang, 'context.assistant') : t(uiLang, 'context.user')
-    const excerpt = turn.display || turn.input || turn.text
-    text.textContent = `${label}: ${excerpt ? excerpt.replace(/\s+/g, ' ').slice(0, 180) : t(uiLang, 'context.imageMessage')}`
-    text.title = turn.id
-    const state = document.createElement('span')
-    state.className = 'context-entry-state'
-    state.textContent = t(uiLang, entry.included ? 'context.included' : 'context.excluded')
-    row.append(text, state)
-    if (!entry.included) {
-      hasExcluded = true
-      const reason = document.createElement('div')
-      reason.className = 'context-entry-reason'
-      reason.textContent = t(uiLang, 'context.reason.' + (entry.reason ?? 'olderTask'))
-      row.appendChild(reason)
-    }
-    if (entry.imageState) {
-      const imageState = document.createElement('div')
-      imageState.className = 'context-entry-reason'
-      imageState.textContent = t(uiLang, `context.image.${entry.imageState}`)
-      row.appendChild(imageState)
-      if (entry.imageState !== 'otherTurn') {
-        try {
-          const thumbnail = document.createElement('img')
-          thumbnail.alt = t(uiLang, 'dialog.attachment')
-          thumbnail.src = await imageUrl(turn.attachmentId!)
-          thumbnail.tabIndex = 0
-          thumbnail.setAttribute('role', 'button')
-          thumbnail.setAttribute('aria-label', t(uiLang, 'dialog.imagePreview'))
-          thumbnail.onclick = () => openLightbox(thumbnail, thumbnail.src)
-          thumbnail.onkeydown = (event) => {
-            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLightbox(thumbnail, thumbnail.src) }
-          }
-          row.appendChild(thumbnail)
-        } catch { /* Missing blobs are reported beside the composer before send. */ }
-      }
-    }
-    list.appendChild(row)
-  }
-  if (!hasExcluded) {
-    const included = document.createElement('p')
-    included.className = 'context-entry-reason'
-    included.textContent = t(uiLang, 'context.noItems')
-    list.appendChild(included)
-  }
-  ;(el('context-dialog') as HTMLDialogElement).showModal()
 }
 
 /** Prompt context from the current settings (answer language + resolved UI). */
@@ -705,6 +628,7 @@ function addMessage(role: 'user' | 'assistant' | 'error' | 'note', text: string)
 const ACTION_ICONS = {
   copy: '<rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.5"/><path d="M10.5 3.5h-6a1.5 1.5 0 0 0-1.5 1.5v6"/>',
   copied: '<path d="M3.5 8.5 6.5 11.5 12.5 4.5"/>',
+  more: '<circle cx="8" cy="3" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="8" cy="13" r="1.1"/>',
   simpler: '<text x="1.5" y="12.5" font-size="10" stroke="none" fill="currentColor" font-family="system-ui,sans-serif">A</text><text x="9" y="12.5" font-size="8" stroke="none" fill="currentColor" font-family="system-ui,sans-serif">a</text>',
   retry: '<path d="M13.5 8a5.5 5.5 0 1 1-1.7-4"/><path d="M13.5 1.5V4H11"/>',
 } as const
@@ -721,6 +645,20 @@ function iconButton(icon: keyof typeof ACTION_ICONS, label: string): HTMLButtonE
 function addActions(msg: Msg, canRegenerate: boolean): void {
   const actions = document.createElement('div')
   actions.className = 'msg-actions'
+  actions.setAttribute('role', 'group')
+  const actionItems = document.createElement('div')
+  actionItems.className = 'msg-action-items'
+  const actionsLabel = t(uiLang, 'msg.actions')
+  const toggle = iconButton('more', actionsLabel)
+  toggle.className = 'msg-actions-toggle'
+  toggle.setAttribute('aria-expanded', 'false')
+  toggle.setAttribute('aria-controls', 'actions-' + (msg.wrap.dataset.turn ?? crypto.randomUUID()))
+  actionItems.id = toggle.getAttribute('aria-controls')!
+  toggle.onclick = () => {
+    const open = actions.classList.toggle('is-open')
+    toggle.setAttribute('aria-expanded', String(open))
+  }
+  actions.appendChild(toggle)
 
   const copy = iconButton('copy', t(uiLang, 'msg.copy'))
   copy.onclick = async () => {
@@ -736,21 +674,34 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
       copy.title = t(uiLang, 'msg.copy')
     }, 1200)
   }
-  actions.appendChild(copy)
+  actionItems.appendChild(copy)
 
   const simpler = iconButton('simpler', t(uiLang, 'msg.simpler'))
   simpler.dataset.generation = '1'
   simpler.onclick = () => void send(simplerPrompt(promptCtx()), 'simpler', t(uiLang, 'msg.simpler')).catch(reportError)
-  actions.appendChild(simpler)
+  actionItems.appendChild(simpler)
 
   if (canRegenerate) {
     const retry = iconButton('retry', t(uiLang, 'msg.retry'))
     retry.dataset.retry = '1'
     retry.dataset.generation = '1'
     retry.onclick = () => void regenerate().catch(reportError)
-    actions.appendChild(retry)
+    actionItems.appendChild(retry)
   }
 
+  actions.appendChild(actionItems)
+  actions.addEventListener('click', (event) => {
+    if (toggle.contains(event.target as Node)) return
+    actions.classList.remove('is-open')
+    toggle.setAttribute('aria-expanded', 'false')
+  })
+  actions.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !actions.classList.contains('is-open')) return
+    event.preventDefault()
+    actions.classList.remove('is-open')
+    toggle.setAttribute('aria-expanded', 'false')
+    toggle.focus()
+  })
   msg.wrap.appendChild(actions)
 }
 
@@ -758,20 +709,24 @@ function clearRetryButtons(): void {
   for (const b of thread.querySelectorAll('[data-retry]')) b.remove()
 }
 
-function setBusy(busy: boolean, cooldown = false): void {
-  for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy || cooldown
-  ;(el('more-btn') as HTMLButtonElement).disabled = busy || cooldown
-  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation]')) b.disabled = busy || cooldown
+function setBusy(busy: boolean, cooldownMs = 0): void {
+  const cooldownSeconds = Math.ceil(cooldownMs / 1000)
+  const coolingDown = cooldownSeconds > 0
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy || coolingDown
+  ;(el('more-btn') as HTMLButtonElement).disabled = busy || coolingDown
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation]')) b.disabled = busy || coolingDown
   ;(el('new-chat-btn') as HTMLButtonElement).disabled = busy
   ;(el('ask-input') as HTMLInputElement).disabled = busy
   const askButton = el('ask-btn') as HTMLButtonElement
-  askButton.disabled = (busy || cooldown) && !inflight
-  const label = t(uiLang, inflight ? 'ask.stop' : 'ask.button')
+  askButton.disabled = (busy || coolingDown) && !inflight
+  const label = t(uiLang, inflight ? 'ask.stop' : coolingDown ? 'dialog.cooldown' : 'ask.button', coolingDown && !inflight ? { seconds: cooldownSeconds } : undefined)
   askButton.title = label
   askButton.setAttribute('aria-label', label)
   askButton.innerHTML = inflight
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
-    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 18-8-8 18-2-8-8-2Z"/><path d="m11 13 4-4"/></svg>'
+    : coolingDown
+      ? `<span class="cooldown-countdown">${t(uiLang, 'dialog.cooldownShort', { seconds: cooldownSeconds })}</span>`
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 18-8-8 18-2-8-8-2Z"/><path d="m11 13 4-4"/></svg>'
 }
 
 async function requireSettings(): Promise<Settings | null> {
@@ -832,7 +787,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
     const system = systemPrompt(promptContext) + (requestTitle ? '\n\n' + firstAnswerTitleInstruction(promptContext) : '')
     const projection = await projectContext(contextConversation, system)
     contextPreview = projection
-    setContextSummary(projection)
+    applyContextProjection(projection)
     const context = await requestContext(async (id) => (await getAttachment(id))?.data, projection)
     const result = await createGateway(settings).ask({
       messages: [{ role: 'system', content: system }, ...context.messages],
@@ -1094,9 +1049,6 @@ async function showHistory(): Promise<void> {
 ;(el('delete-dialog') as HTMLDialogElement).addEventListener('close', () => { deletingConversationId = undefined })
 
 el('history-btn').onclick = () => void showHistory().catch(reportError)
-el('context-details-btn').onclick = () => void showContextDetails().catch(reportError)
-el('context-dialog-close').onclick = () => (el('context-dialog') as HTMLDialogElement).close()
-;(el('context-dialog') as HTMLDialogElement).addEventListener('click', (event) => { if (event.target === el('context-dialog')) (el('context-dialog') as HTMLDialogElement).close() })
 el('history-back').onclick = () => {
   if (conversation) { show('capture'); return }
   if (historyEntry) {

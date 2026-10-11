@@ -10,6 +10,8 @@
 // requires a headed browser.
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
+import vm from 'node:vm'
+import ts from 'typescript'
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -17,6 +19,12 @@ import { join, resolve } from 'node:path'
 
 const root = resolve(fileURLToPath(import.meta.url), '..')
 const dist = resolve(root, '..', 'dist')
+const i18nModule = { exports: {} }
+const i18nSource = ts.transpileModule(readFileSync(resolve(root, '..', 'src/shared/i18n.ts'), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText
+vm.runInNewContext(`(function(module, exports) {${i18nSource}\n})(module, module.exports)`, { module: i18nModule })
+const answerActionLabels = ['en', 'ru'].map(lang => i18nModule.exports.t(lang, 'msg.actions'))
 
 // Fresh profile each run: a reused persistent profile can restore a STALE
 // service worker from the code cache (an old build!) — which once sent this
@@ -790,20 +798,19 @@ try {
   await layout.getByRole('button', { name: 'More', exact: true }).click()
   const narrowGeometry = await layout.evaluate(() => {
     const popover = document.querySelector('#more-actions').getBoundingClientRect()
-    const summary = document.querySelector('#context-summary-text')
+    const selection = document.querySelector('#new-selection-btn')
     const composer = document.querySelector('#composer').getBoundingClientRect()
     const input = document.querySelector('#ask-input').getBoundingClientRect()
     const send = document.querySelector('#ask-btn').getBoundingClientRect()
     const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height } }
-    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, summary: { text: summary.textContent, label: summary.getAttribute('aria-label'), fits: summary.scrollWidth <= summary.clientWidth }, layout: { header: rect('#capture-top'), context: rect('#context-summary'), presets: rect('#presets'), thread: rect('#thread'), composer: { top: composer.top, bottom: composer.bottom, inputBottom: input.bottom, sendBottom: send.bottom } }, viewport: { width: innerWidth, height: innerHeight } }
+    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, selection: { ...rect('#new-selection-btn'), label: selection.getAttribute('aria-label'), title: selection.title }, hasContextUi: !!document.querySelector('#context-summary, #context-details-btn, #context-dialog'), layout: { header: rect('#capture-top'), presets: rect('#presets'), thread: rect('#thread'), composer: { top: composer.top, bottom: composer.bottom, inputBottom: input.bottom, sendBottom: send.bottom } }, viewport: { width: innerWidth, height: innerHeight } }
   })
   check(narrowGeometry.width <= 320 && narrowGeometry.popover.left >= 0 && narrowGeometry.popover.top >= 0 &&
     narrowGeometry.popover.right <= 320 && narrowGeometry.popover.bottom <= 324 &&
-    narrowGeometry.summary.fits && narrowGeometry.summary.text.includes('budget') && narrowGeometry.summary.label.includes('budget') &&
-    narrowGeometry.layout.context.top >= narrowGeometry.layout.header.bottom && narrowGeometry.layout.context.bottom <= narrowGeometry.layout.presets.top &&
+    !narrowGeometry.hasContextUi && narrowGeometry.selection.height === 44 && narrowGeometry.selection.bottom <= narrowGeometry.layout.header.bottom && !!narrowGeometry.selection.label && !!narrowGeometry.selection.title &&
     narrowGeometry.layout.composer.bottom <= 324 && narrowGeometry.layout.composer.inputBottom <= 324 && narrowGeometry.layout.composer.sendBottom <= 324 &&
     await layout.locator('#ask-input').isVisible() && await layout.locator('#ask-btn').isVisible(),
-  '320×324 viewport places context in the header and keeps the menu/composer reachable (' + JSON.stringify(narrowGeometry) + ')')
+  '320×324 toolbar keeps New selection accessible and the menu/composer reachable (' + JSON.stringify(narrowGeometry) + ')')
   await layout.keyboard.press('Escape')
   await layout.getByRole('button', { name: 'More', exact: true }).click()
   await layout.getByRole('button', { name: 'Explain', exact: true }).click()
@@ -822,43 +829,85 @@ try {
       request.onsuccess = () => {
         const conversation = request.result
         const ids = [crypto.randomUUID(), crypto.randomUUID()]
+        const largeTaskId = crypto.randomUUID()
+        const oldAttachmentId = conversation.activeAttachmentId
+        const largeText = 'word  '.repeat(100000)
+        conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Earlier task', display: 'Earlier task', input: 'Earlier task', kind: 'ask', attachmentId: oldAttachmentId, createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' })
         for (const [index, id] of ids.entries()) {
-          const createdAt = Date.now() + index
+          const createdAt = Date.now() + index * 2
           tx.objectStore('attachments').put({ id, data: new Blob(['fixture ' + index], { type: 'image/png' }), createdAt })
           conversation.turns.push({ id, role: 'user', text: '', kind: 'capture', attachmentId: id, createdAt, locale: 'en', promptVersion: 'capture' })
+          if (index === 0) conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: largeText, display: 'Longer follow-up outside the current context', input: largeText, kind: 'ask', attachmentId: largeTaskId, createdAt: createdAt + 1, locale: 'en', promptVersion: 'fixture' })
         }
         conversation.activeAttachmentId = ids.at(-1)
+        conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Review the newest selection', display: 'Review the newest selection', input: 'Review the newest selection', kind: 'ask', createdAt: Date.now() + 3, locale: 'en', promptVersion: 'fixture' })
         conversations.put(conversation)
-        tx.oncomplete = () => { db.close(); resolve() }
+        tx.oncomplete = () => { db.close(); resolve(ids[0]) }
       }
       tx.onerror = () => reject(tx.error)
     }
   }))
-  await seedExtraImages()
+  const reusableImageId = await seedExtraImages()
   await layout.reload()
   await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
-  const narrowContext = async (language) => {
+  await layout.waitForFunction(() => !!document.querySelector('.msg.context-excluded .context-reuse'))
+  const excludedMessages = await layout.evaluate(() => {
+    const excluded = [...document.querySelectorAll('.msg.context-excluded')]
+    const first = excluded.find(message => message.querySelector('.context-reuse') && message.querySelector('.turn-image'))
+    const reuse = first?.querySelector('.context-reuse')
+    const body = first?.querySelector('.msg-body')
+    const includedBody = document.querySelector('.msg.user:not(.context-excluded) .msg-body')
+    const image = first?.querySelector('.turn-image')
+    return {
+      count: excluded.length,
+      marked: !!first && !!image,
+      mutedBody: !body || getComputedStyle(body).backgroundColor !== getComputedStyle(includedBody).backgroundColor,
+      mutedImage: !!image && getComputedStyle(image).opacity === '0.68',
+      noteCount: document.querySelectorAll('.context-exclusion-note').length,
+      reuseLabel: reuse?.getAttribute('aria-label'),
+      reuseTitle: reuse?.title,
+      reuseHasOnlyIcon: !!reuse?.querySelector('svg') && !reuse.textContent.trim(),
+      reuseSize: reuse ? [reuse.getBoundingClientRect().width, reuse.getBoundingClientRect().height] : [],
+    }
+  })
+  const reuseLabel = i18nModule.exports.t('en', 'context.reuseTitle')
+  check(excludedMessages.count > 0 && excludedMessages.marked && excludedMessages.mutedBody && excludedMessages.mutedImage && excludedMessages.noteCount === 0 &&
+    excludedMessages.reuseLabel === reuseLabel && excludedMessages.reuseTitle === reuseLabel && excludedMessages.reuseHasOnlyIcon && excludedMessages.reuseSize[0] === 44 && excludedMessages.reuseSize[1] === 44,
+  'excluded history is visibly muted without explanatory text and keeps an accessible 44px reuse icon (' + JSON.stringify(excludedMessages) + ')')
+  const reuseRequestCount = requestCount
+  await resetCooldown(layout)
+  await layout.reload()
+  await layout.waitForFunction(() => document.querySelectorAll('.msg.context-excluded .context-reuse').length > 0)
+  const reuseButton = layout.locator(`.msg.context-excluded[data-turn="${reusableImageId}"] .context-reuse`)
+  check(await reuseButton.count() === 1, 'the excluded image has one reuse action')
+  await reuseButton.click()
+  const reuseDeadline = Date.now() + 5000
+  while (requestCount === reuseRequestCount && Date.now() < reuseDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  const reusedImageSent = requestCount === reuseRequestCount + 1 &&
+    (lastAiRequest?.messages?.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url')) ?? false)
+  if (requestCount === reuseRequestCount + 1) await waitSaved(layout, 'Complete')
+  check(reusedImageSent, 'reusing an excluded image sends it in the next request')
+  const narrowToolbar = async (language) => {
     await layout.fill('#ask-input', 'Compare the saved images')
     await layout.setViewportSize({ width: 320, height: 324 })
     return layout.evaluate(() => {
-      const count = document.querySelector('#context-summary-text')
-      const details = document.querySelector('#context-details-btn')
       const selection = document.querySelector('#new-selection-btn')
-      const rect = node => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height } }
-      return {
-        count: count.textContent, fullLabel: count.getAttribute('aria-label'), countsFit: count.scrollWidth <= count.clientWidth,
-        hasLegacyWarning: !!document.querySelector('#context-warning'),
-        bounds: { header: rect(document.querySelector('#capture-top')), summary: rect(document.querySelector('#context-summary')), presets: rect(document.querySelector('#presets')), count: rect(count), details: rect(details), selection: rect(selection), composer: rect(document.querySelector('#composer')), ask: rect(document.querySelector('#ask-input')), send: rect(document.querySelector('#ask-btn')) },
-        overflow: document.documentElement.scrollWidth > innerWidth,
-      }
+      const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height } }
+      return { label: selection.getAttribute('aria-label'), title: selection.title, hasContextUi: !!document.querySelector('#context-summary, #context-details-btn, #context-dialog'), bounds: { header: rect('#capture-top'), selection: rect('#new-selection-btn'), history: rect('#history-btn'), newChat: rect('#new-chat-btn'), presets: rect('#presets'), composer: rect('#composer'), ask: rect('#ask-input'), send: rect('#ask-btn') }, overflow: document.documentElement.scrollWidth > innerWidth }
     }).then(result => ({ language, ...result }))
   }
-  const narrowEnglish = await narrowContext('en')
-  check(narrowEnglish.countsFit && narrowEnglish.count.includes('budget') && narrowEnglish.fullLabel.includes('budget') &&
-    !narrowEnglish.hasLegacyWarning && !narrowEnglish.overflow &&
-    narrowEnglish.bounds.summary.top >= narrowEnglish.bounds.header.bottom && narrowEnglish.bounds.summary.bottom <= narrowEnglish.bounds.presets.top && narrowEnglish.bounds.summary.height === 44 && narrowEnglish.bounds.details.height === 44 && narrowEnglish.bounds.selection.height === 44 &&
-    narrowEnglish.bounds.ask.bottom <= 324 && narrowEnglish.bounds.send.bottom <= 324 && narrowEnglish.bounds.composer.bottom <= 324,
-  '320×324 English token budget and composer remain visible with 44px controls (' + JSON.stringify(narrowEnglish) + ')')
+  const narrowEnglish = await narrowToolbar('en')
+  check(!narrowEnglish.hasContextUi && narrowEnglish.label.includes('Select another screen area') && narrowEnglish.title === narrowEnglish.label && !narrowEnglish.overflow &&
+    narrowEnglish.bounds.selection.height === 44 && narrowEnglish.bounds.selection.right <= narrowEnglish.bounds.newChat.left && narrowEnglish.bounds.composer.bottom <= 324 && narrowEnglish.bounds.ask.bottom <= 324 && narrowEnglish.bounds.send.bottom <= 324,
+  '320×324 English toolbar keeps New selection, History, New chat and composer accessible (' + JSON.stringify(narrowEnglish) + ')')
+  const mobileActionMenu = layout.locator('.msg.assistant').last().locator('.msg-actions')
+  check(await mobileActionMenu.locator('.msg-actions-toggle').isVisible() && await mobileActionMenu.locator('.msg-actions-toggle').evaluate(button => button.getBoundingClientRect().width >= 44 && button.getBoundingClientRect().height >= 44), 'narrow no-hover layout keeps a persistent 44px answer-action menu trigger')
+  await mobileActionMenu.locator('.msg-actions-toggle').click()
+  check(await mobileActionMenu.locator('.msg-actions-toggle').getAttribute('aria-expanded') === 'true' && await mobileActionMenu.locator('.msg-action-items button').count() >= 2 && await mobileActionMenu.locator('.msg-action-items').isVisible(), 'touch action menu opens its labeled actions on demand')
+  await mobileActionMenu.locator('.msg-actions-toggle').press('Escape')
+  check(await mobileActionMenu.locator('.msg-actions-toggle').getAttribute('aria-expanded') === 'false', 'Escape closes the touch action menu')
   await sw.evaluate(async () => {
     const { settings } = await chrome.storage.local.get('settings')
     await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'ru' } })
@@ -868,22 +917,15 @@ try {
   await layout.fill('#ask-input', 'Compare the saved images')
   await layout.setViewportSize({ width: 480, height: 568 })
   const wideRussian = await layout.evaluate(() => {
-    const count = document.querySelector('#context-summary-text')
-    const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom } }
-    return {
-      text: count.textContent, fullLabel: count.getAttribute('aria-label'),
-      fits: count.scrollWidth <= count.clientWidth, fontSize: parseFloat(getComputedStyle(count).fontSize),
-      layout: { header: rect('#capture-top'), context: rect('#context-summary'), presets: rect('#presets'), composer: rect('#composer') },
-    }
+    const selection = document.querySelector('#new-selection-btn')
+    const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height } }
+    return { label: selection.getAttribute('aria-label'), title: selection.title, hasContextUi: !!document.querySelector('#context-summary, #context-details-btn, #context-dialog'), header: rect('#capture-top'), selection: rect('#new-selection-btn'), history: rect('#history-btn'), newChat: rect('#new-chat-btn'), composer: rect('#composer'), overflow: document.documentElement.scrollWidth > innerWidth }
   })
-  check(wideRussian.fits && wideRussian.text.includes('200 тыс.') && wideRussian.fullLabel.includes('200 тыс.') && wideRussian.fontSize >= 12 && wideRussian.layout.context.top >= wideRussian.layout.header.bottom && wideRussian.layout.context.bottom <= wideRussian.layout.presets.top && wideRussian.layout.composer.bottom === 558,
-  '480px Russian estimated budget label remains readable (' + JSON.stringify(wideRussian) + ')')
-  const narrowRussian = await narrowContext('ru')
-  check(narrowRussian.countsFit && narrowRussian.count.includes('200 тыс.') && !narrowRussian.hasLegacyWarning && !narrowRussian.overflow &&
-    narrowRussian.bounds.summary.top >= narrowRussian.bounds.header.bottom && narrowRussian.bounds.summary.bottom <= narrowRussian.bounds.presets.top && narrowRussian.bounds.summary.height === 44 && narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324 &&
-    narrowRussian.bounds.details.height === 44 && narrowRussian.bounds.selection.height === 44 &&
-    narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324,
-  '320×324 Russian estimated budget and composer remain reachable with 44px controls (' + JSON.stringify(narrowRussian) + ')')
+  check(!wideRussian.hasContextUi && wideRussian.label.includes('Выделить другую область') && wideRussian.title === wideRussian.label && !wideRussian.overflow && wideRussian.selection.height === 44 && wideRussian.selection.bottom <= wideRussian.header.bottom && wideRussian.composer.bottom === 558,
+  '480px Russian title row keeps New selection accessible beside History/New chat (' + JSON.stringify(wideRussian) + ')')
+  const narrowRussian = await narrowToolbar('ru')
+  check(!narrowRussian.hasContextUi && narrowRussian.label.includes('Выделить другую область') && !narrowRussian.overflow && narrowRussian.bounds.selection.height === 44 && narrowRussian.bounds.selection.right <= narrowRussian.bounds.newChat.left && narrowRussian.bounds.composer.bottom <= 324 && narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324,
+  '320×324 Russian toolbar keeps New selection and composer accessible (' + JSON.stringify(narrowRussian) + ')')
   await sw.evaluate(async () => {
     const { settings } = await chrome.storage.local.get('settings')
     await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'en' } })
@@ -902,6 +944,19 @@ try {
   await waitSaved(hint, 'Complete')
   check(await hint.locator('.msg.user').count() === 2, 'reload restores the capture image and prompt without duplicate turns')
   await hint.screenshot({ path: join(evidence, 'dialog.png') })
+  const answerActions = hint.locator('.msg.assistant').last().locator('.msg-actions')
+  await hint.mouse.move(0, 0)
+  const hiddenActions = await answerActions.evaluate(node => getComputedStyle(node).opacity)
+  await hint.locator('.msg.assistant').last().hover()
+  await hint.waitForFunction(() => getComputedStyle(document.querySelector('.msg.assistant:last-of-type .msg-actions')).opacity === '1')
+  const hoveredActions = await answerActions.evaluate(node => getComputedStyle(node).opacity)
+  await hint.mouse.move(0, 0)
+  await hint.waitForFunction(() => getComputedStyle(document.querySelector('.msg.assistant:last-of-type .msg-actions')).opacity === '0')
+  await answerActions.locator('.msg-action-items button').first().focus()
+  await hint.waitForFunction(() => getComputedStyle(document.querySelector('.msg.assistant:last-of-type .msg-actions')).opacity === '1')
+  const focusedActions = await answerActions.evaluate(node => getComputedStyle(node).opacity)
+  const actionLabel = await answerActions.locator('.msg-actions-toggle').getAttribute('aria-label')
+  check(hiddenActions === '0' && hoveredActions === '1' && focusedActions === '1' && answerActionLabels.includes(actionLabel), 'answer action tray floats, reveals on hover/focus, and retains its localized label (' + JSON.stringify({ hiddenActions, hoveredActions, focusedActions, actionLabel }) + ')')
   await resetCooldown(hint)
   await hint.fill('#ask-input', 'What is the next step?')
   await hint.click('#ask-btn')
@@ -910,6 +965,7 @@ try {
   check(lastAiRequest.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length === 1, 'attachment sent once across multiple turns')
   await resetCooldown(hint)
   const usersBeforeRetry = await hint.locator('.msg.user').count()
+  await hint.locator('.msg.assistant').last().hover()
   await hint.click('[data-retry]')
   await hint.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 3)
   await waitSaved(hint, 'Complete')
@@ -921,16 +977,16 @@ try {
     'Check keeps the ordinary composer and has no separate attempt form')
   await checked.click('#check-btn')
   await waitSaved(checked, 'Complete')
-  await checked.waitForFunction(() => { const b = document.querySelector('#cooldown-banner'); return !b.hidden && /\d/.test(b.textContent) })
-  const cooldownStart = await checked.evaluate(() => ({ banner: document.querySelector('#cooldown-banner').textContent, askDisabled: document.querySelector('#ask-btn').disabled, checkDisabled: document.querySelector('#check-btn').disabled, errorHidden: document.querySelector('#operation-error').hidden }))
+  await checked.waitForFunction(() => document.querySelector('#ask-btn').disabled && !!document.querySelector('#ask-btn .cooldown-countdown')?.textContent)
+  const cooldownStart = await checked.evaluate(() => ({ visible: document.querySelector('#ask-btn .cooldown-countdown').textContent, accessible: document.querySelector('#ask-btn').getAttribute('aria-label'), askDisabled: document.querySelector('#ask-btn').disabled, checkDisabled: document.querySelector('#check-btn').disabled, errorHidden: document.querySelector('#operation-error').hidden, hasBanner: !!document.querySelector('#cooldown-banner') }))
   const checkRequests = requestCount
   await checked.fill('#ask-input', 'Do not queue this draft')
   await checked.evaluate(() => document.querySelector('#ask-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
-  check(cooldownStart.askDisabled && cooldownStart.checkDisabled && cooldownStart.errorHidden && requestCount === checkRequests && await checked.inputValue('#ask-input') === 'Do not queue this draft', 'cooldown banner disables send/Check and never queues a typed draft (' + JSON.stringify(cooldownStart) + ')')
-  await checked.waitForFunction((prior) => { const text = document.querySelector('#cooldown-banner').textContent; return !document.querySelector('#cooldown-banner').hidden && text !== prior }, cooldownStart.banner, { timeout: 2500 })
-  check(true, 'visible cooldown countdown ticks down without changing the draft')
-  await checked.waitForFunction(() => document.querySelector('#cooldown-banner').hidden && !document.querySelector('#ask-btn').disabled && !document.querySelector('#check-btn').disabled, { timeout: 12000 })
-  check(await checked.inputValue('#ask-input') === 'Do not queue this draft' && requestCount === checkRequests, 'cooldown expiry re-enables actions without auto-sending the draft')
+  check(cooldownStart.askDisabled && cooldownStart.checkDisabled && cooldownStart.errorHidden && !cooldownStart.hasBanner && cooldownStart.accessible.includes(cooldownStart.visible) && requestCount === checkRequests && await checked.inputValue('#ask-input') === 'Do not queue this draft', 'send control shows countdown, disables send/Check, and never queues a typed draft (' + JSON.stringify(cooldownStart) + ')')
+  await checked.waitForFunction((prior) => document.querySelector('#ask-btn .cooldown-countdown')?.textContent !== prior, cooldownStart.visible, { timeout: 2500 })
+  check(true, 'disabled send-control countdown ticks down without changing the draft')
+  await checked.waitForFunction(() => !document.querySelector('#cooldown-banner') && !document.querySelector('#ask-btn').disabled && !document.querySelector('#ask-btn .cooldown-countdown') && !document.querySelector('#check-btn').disabled, { timeout: 12000 })
+  check(await checked.inputValue('#ask-input') === 'Do not queue this draft' && requestCount === checkRequests, 'cooldown expiry clears countdown, re-enables actions and does not auto-send the draft')
   const checkGeometry = await checked.evaluate(() => ({ width: document.documentElement.scrollWidth, thread: document.querySelector('#thread').getBoundingClientRect().height, composerBottom: document.querySelector('#composer').getBoundingClientRect().bottom, viewport: innerHeight }))
   check(checkGeometry.width <= 480 && checkGeometry.thread >= 180 && checkGeometry.composerBottom <= 564,
     'direct Check preserves the compact composer and dialogue (' + JSON.stringify(checkGeometry) + ')')

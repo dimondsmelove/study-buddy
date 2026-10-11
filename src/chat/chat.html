@@ -15,6 +15,7 @@
           <button type="button" id="history-btn" class="icon-button" data-i18n-title="dialog.history" data-i18n-aria="dialog.history">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18" cy="17" r="3"/><path d="M18 15.5v1.7l1 .6"/></svg>
           </button>
+          <button type="button" id="new-selection-btn" class="icon-button" data-i18n-title="capture.newSelection" data-i18n-aria="capture.newSelection"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 8h8v8H8z"/></svg></button>
           <button type="button" id="new-chat-btn" class="toolbar-text-button" data-i18n="dialog.new"></button>
           <!--
           <button type="button" id="settings-btn" class="icon-button" data-i18n-title="capture.settings" data-i18n-aria="capture.settings">
@@ -22,8 +23,6 @@
           </button>
           -->
         </nav>
-        <div id="context-summary"><span id="context-summary-text"></span><button type="button" id="context-details-btn" class="text-button" data-i18n="context.details"></button><button type="button" id="new-selection-btn" class="selection-button icon-button" data-i18n-title="capture.newSelection" data-i18n-aria="capture.newSelection"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 8h8v8H8z"/></svg></button></div>
-        <p id="cooldown-banner" role="status" hidden></p>
         <div id="presets" data-i18n-aria="capture.actions">
           <button type="button" class="preset primary-action" data-preset="solve" data-i18n="preset.solve"></button>
           <button type="button" class="preset" data-preset="hint" data-i18n="preset.hint"></button>
@@ -96,11 +95,6 @@
         </div>
       </section>
     </main>
-    <dialog id="context-dialog" aria-labelledby="context-dialog-title">
-      <header class="view-heading"><h2 id="context-dialog-title" data-i18n="context.detailsTitle"></h2><span class="heading-spacer"></span><button type="button" id="context-dialog-close" class="icon-button" data-i18n-title="dialog.close" data-i18n-aria="dialog.close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
-      <p id="context-dialog-limits"></p>
-      <div id="context-dialog-list"></div>
-    </dialog>
     <dialog id="lightbox" data-i18n-aria="dialog.imagePreview">
       <button type="button" id="lightbox-close" class="icon-button" data-i18n-title="dialog.closePreview" data-i18n-aria="dialog.closePreview">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>

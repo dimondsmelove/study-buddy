@@ -629,7 +629,7 @@ const ACTION_ICONS = {
   copy: '<rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.5"/><path d="M10.5 3.5h-6a1.5 1.5 0 0 0-1.5 1.5v6"/>',
   copied: '<path d="M3.5 8.5 6.5 11.5 12.5 4.5"/>',
   more: '<circle cx="8" cy="3" r="1.1"/><circle cx="8" cy="8" r="1.1"/><circle cx="8" cy="13" r="1.1"/>',
-  simpler: '<text x="1.5" y="12.5" font-size="10" stroke="none" fill="currentColor" font-family="system-ui,sans-serif">A</text><text x="9" y="12.5" font-size="8" stroke="none" fill="currentColor" font-family="system-ui,sans-serif">a</text>',
+  simpler: '<path d="M1.8 12.5 5 3.5l3.2 9M3 9.2h4"/><path d="M14.2 8.2c-.35-.7-.95-1-1.75-1-1.35 0-2.25 1-2.25 2.65s.9 2.65 2.25 2.65c.8 0 1.4-.3 1.75-1M14.2 7.4v4.8"/>',
   retry: '<path d="M13.5 8a5.5 5.5 0 1 1-1.7-4"/><path d="M13.5 1.5V4H11"/>',
 } as const
 
@@ -668,7 +668,26 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
     feedback.setAttribute('role', 'status')
     feedback.setAttribute('aria-live', 'polite')
     try {
-      await navigator.clipboard.writeText(msg.raw)
+      try {
+        await navigator.clipboard.writeText(msg.raw)
+      } catch {
+        const field = document.createElement('textarea')
+        field.value = msg.raw
+        field.setAttribute('aria-hidden', 'true')
+        field.tabIndex = -1
+        field.style.position = 'fixed'
+        field.style.opacity = '0'
+        document.body.append(field)
+        let copied = false
+        try {
+          field.select()
+          copied = document.execCommand('copy')
+        } finally {
+          field.remove()
+          copy.focus({ preventScroll: true })
+        }
+        if (!copied) throw new Error('clipboard.copyFailed')
+      }
       feedback.textContent = t(uiLang, 'msg.copied')
       copy.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ACTION_ICONS.copied}</svg>`
       copy.title = t(uiLang, 'msg.copied')
@@ -703,6 +722,7 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
   }
 
   actions.appendChild(actionItems)
+  msg.body.appendChild(actions)
   actions.addEventListener('click', (event) => {
     if (toggle.contains(event.target as Node)) return
     actions.classList.remove('is-open')
@@ -715,7 +735,6 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
     toggle.setAttribute('aria-expanded', 'false')
     toggle.focus()
   })
-  msg.wrap.appendChild(actions)
 }
 
 function clearRetryButtons(): void {

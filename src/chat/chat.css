@@ -181,7 +181,8 @@ section {
 }
 #thread .hint { margin: 0; color: var(--muted); font-size: 14px; }
 .msg { position: relative; display: flex; flex-direction: column; align-items: flex-start; margin-bottom: 12px; }
-.msg:has(.msg-actions) { padding-bottom: 44px; margin-bottom: 12px; }
+.msg:has(.msg-actions) { margin-bottom: 12px; }
+.msg:has(.msg-actions) .msg-body { position: relative; padding-bottom: 56px; }
 .msg:last-child { margin-bottom: 0; }
 .msg.user { align-items: flex-end; }
 .msg-body {
@@ -234,7 +235,7 @@ section {
   position: absolute;
   z-index: 2;
   right: 0;
-  bottom: 4px;
+  bottom: 6px;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -388,7 +389,7 @@ h1 { margin: 0; font-size: 18px; font-weight: 650; line-height: 1.3; }
 
 
 @media (hover: none), (pointer: coarse), (max-width: 360px) {
-  .msg:has(.msg-actions) { padding-bottom: 52px; }
+  .msg:has(.msg-actions) .msg-body { padding-bottom: 64px; }
   .msg-actions, .msg:hover .msg-actions, .msg:focus-within .msg-actions {
     height: 46px;
     min-height: 46px;

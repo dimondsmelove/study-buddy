@@ -311,6 +311,7 @@ function showChat(state: ChatState): void {
   title.style.cssText = 'flex:1;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'
   const frame = document.createElement('iframe')
   frame.title = 'Study Buddy conversation'
+  frame.allow = 'clipboard-write'
   frame.style.cssText = 'flex:1;width:100%;border:0;display:block;background:#fff'
   frame.src = chatUrl(state)
   const close = document.createElement('button')

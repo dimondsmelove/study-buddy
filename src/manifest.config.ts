@@ -41,6 +41,7 @@ export default defineManifest({
     'scripting', // inject the selection overlay on demand
     'storage', // chrome.storage.session (captures) + .local (settings)
     'contextMenus', // Show saved conversations from the toolbar icon's context menu
+    'clipboardWrite', // Copy an answer from the extension iframe on explicit user action
   ],
 
   // Not requested at install. Asked at runtime, per-site, when a capture needs

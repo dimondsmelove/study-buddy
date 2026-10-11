@@ -66,6 +66,11 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: { message: 'model unavailable' } }))
         return
       }
+      if (responseMode === 'clipboard') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'clipboard-real-proof' } }] }) + '\n\ndata: [DONE]\n\n')
+        return
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n')
       if (responseMode === 'slow') {
@@ -215,6 +220,8 @@ try {
   await page.waitForSelector('[data-study-buddy="chat"]', { timeout: 5000, state: 'attached' })
   check(true, 'chat window host embedded near the selection')
   const liveFrame = await chatFrameOn(page)
+  const liveFrameAllow = await (await liveFrame.frameElement()).evaluate(element => element.getAttribute('allow'))
+  check(liveFrameAllow === 'clipboard-write', 'production overlay delegates clipboard-write to its cross-origin chat iframe')
   await liveFrame.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
 
   // The SW should have captured, cropped, and stored the region.
@@ -654,16 +661,19 @@ try {
     'long answer renders wrapped prose and display LaTeX at readable answer typography (' + JSON.stringify(longRendered) + ')')
   await longAnswer.locator('.msg.assistant').last().hover()
   const longActionGeometry = await longAnswer.locator('.msg.assistant').last().evaluate(message => {
-    const body = message.querySelector('.msg-body').getBoundingClientRect()
+    const bodyElement = message.querySelector('.msg-body')
+    const body = bodyElement.getBoundingClientRect()
+    const content = [...bodyElement.children].filter(child => !child.classList.contains('msg-actions')).at(-1)?.getBoundingClientRect()
     const tray = message.querySelector('.msg-actions').getBoundingClientRect()
     const buttons = [...message.querySelectorAll('.msg-actions .msg-action-items button')].map(button => {
       const r = button.getBoundingClientRect()
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, radius: getComputedStyle(button).borderRadius }
     })
     const container = message.querySelector('.msg-actions')
-    return { bodyBottom: body.bottom, trayTop: tray.top, trayBottom: tray.bottom, messageBottom: message.getBoundingClientRect().bottom, trayRadius: getComputedStyle(container).borderRadius, buttons }
+    return { contentBottom: content?.bottom, bodyTop: body.top, bodyBottom: body.bottom, trayTop: tray.top, trayBottom: tray.bottom, messageBottom: message.getBoundingClientRect().bottom, trayRadius: getComputedStyle(container).borderRadius, buttons }
   })
-  check(longActionGeometry.trayTop >= longActionGeometry.bodyBottom && longActionGeometry.trayBottom <= longActionGeometry.messageBottom &&
+  check(longActionGeometry.contentBottom !== undefined && longActionGeometry.trayTop >= longActionGeometry.contentBottom &&
+    longActionGeometry.trayBottom <= longActionGeometry.bodyBottom && longActionGeometry.trayTop >= longActionGeometry.bodyTop &&
     longActionGeometry.buttons.length >= 2 && longActionGeometry.buttons.every(button => button.radius === longActionGeometry.trayRadius && button.left >= 0 && button.right <= 480),
     'long answer reserves a non-overlapping action row with rounded buttons inside the tray (' + JSON.stringify(longActionGeometry) + ')')
   const longEvidence = resolve(root, '..', 'review', 'loop')
@@ -994,14 +1004,117 @@ try {
     label: document.querySelector('.msg-action-items button[aria-label="Copied"]')?.getAttribute('aria-label'),
   }))
   check(copyFeedback.text === 'Copied' && copyFeedback.role === 'status' && copyFeedback.live === 'polite' && copyFeedback.label === 'Copied',
-    'Copy confirms a successful clipboard write with a short accessible toast (' + JSON.stringify(copyFeedback) + ')')
+    'Copy reports success with a short accessible toast (' + JSON.stringify(copyFeedback) + ')')
   await hint.waitForSelector('.msg-copy-feedback', { state: 'detached', timeout: 2500 })
+
+  const clipboardBootstrap = await ctx.newPage()
+  await clipboardBootstrap.goto(`${chatOrigin}/src/chat/chat.html?kind=error&message=Fixture`)
+  const clipboardConversation = await clipboardBootstrap.evaluate(async () => {
+    const result = await chrome.runtime.sendMessage({ type: 'CONVERSATION', action: 'create', title: 'Clipboard iframe verification' })
+    if (!result.ok) throw new Error(result.error)
+    return result.value.id
+  })
+  await clipboardBootstrap.close()
+  const clipboardHost = await ctx.newPage()
+  await clipboardHost.setViewportSize({ width: 480, height: 564 })
+  await clipboardHost.goto(origin)
+  const clipboardFrameNavigation = clipboardHost.waitForEvent('framenavigated', frame => frame.url().startsWith(chatOrigin))
+  await clipboardHost.evaluate(src => {
+    const frame = document.createElement('iframe')
+    frame.title = 'Study Buddy conversation'
+    frame.allow = 'clipboard-write'
+    frame.src = src
+    frame.style.cssText = 'width:480px;height:564px;border:0'
+    document.body.appendChild(frame)
+  }, `${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${clipboardConversation}`)
+  await clipboardFrameNavigation
+  const clipboardFrame = clipboardHost.frames().find(frame => frame.url().startsWith(chatOrigin))
+  if (!clipboardFrame) throw new Error('Clipboard test extension iframe did not load')
+  await clipboardFrame.waitForSelector('#ask-input')
+  const clipboardFramePolicy = await clipboardHost.locator('iframe').getAttribute('allow')
+  const clipboardPolicyAllowed = await clipboardFrame.evaluate(() => {
+    const policy = document.permissionsPolicy ?? document.featurePolicy
+    return typeof policy?.allowsFeature === 'function' ? policy.allowsFeature('clipboard-write') : null
+  })
+  const policyProbeNavigation = clipboardHost.waitForEvent('framenavigated', frame => frame.url().includes('message=ClipboardPolicyProbe'))
+  await clipboardHost.evaluate(src => {
+    const frame = document.createElement('iframe')
+    frame.name = 'clipboard-policy-probe'
+    frame.src = src
+    document.body.appendChild(frame)
+  }, `${chatOrigin}/src/chat/chat.html?kind=error&message=ClipboardPolicyProbe`)
+  await policyProbeNavigation
+  const policyProbe = clipboardHost.frames().find(frame => frame.url().includes('message=ClipboardPolicyProbe'))
+  const policyWithoutAllow = await policyProbe.evaluate(() => {
+    const policy = document.permissionsPolicy ?? document.featurePolicy
+    return typeof policy?.allowsFeature === 'function' ? policy.allowsFeature('clipboard-write') : null
+  })
+  await policyProbe.evaluate(() => {
+    const button = document.createElement('button')
+    button.id = 'clipboard-policy-write-probe'
+    button.textContent = 'Probe clipboard policy'
+    button.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText('must-be-blocked-by-frame-policy')
+        button.dataset.result = 'resolved'
+      } catch (error) {
+        button.dataset.result = `rejected:${error.name}:${error.message}`
+      }
+    }
+    document.body.append(button)
+  })
+  await policyProbe.locator('#clipboard-policy-write-probe').click()
+  await policyProbe.waitForFunction(() => Boolean(document.querySelector('#clipboard-policy-write-probe')?.dataset.result))
+  const policyWriteResult = await policyProbe.locator('#clipboard-policy-write-probe').getAttribute('data-result')
+  check(policyWithoutAllow === false && clipboardPolicyAllowed === true && policyWriteResult?.startsWith('rejected:NotAllowedError:') && policyWriteResult.includes('permissions policy'),
+    'cross-origin iframe policy rejects real writeText without allow and enables the production allowlist (' + JSON.stringify({ policyWithoutAllow, policyWriteResult, clipboardPolicyAllowed }) + ')')
+  await clipboardHost.locator('iframe[name="clipboard-policy-probe"]').evaluate(frame => frame.remove())
+  responseMode = 'clipboard'
+  await clipboardFrame.locator('#ask-input').fill('Copy this exact text')
+  await clipboardFrame.locator('#ask-btn').click()
+  await waitSaved(clipboardFrame, 'Complete')
+  responseMode = 'normal'
+  await clipboardFrame.locator('.msg.assistant').last().hover()
+  await clipboardFrame.locator('.msg.assistant').last().locator('.msg-action-items button[aria-label="Copy"]').click()
+  await clipboardFrame.waitForFunction(() => document.querySelector('.msg-copy-feedback')?.textContent === 'Copied')
+  await ctx.grantPermissions(['clipboard-read'], { origin })
+  const systemClipboardText = await clipboardHost.evaluate(() => navigator.clipboard.readText())
+  check(clipboardFramePolicy === 'clipboard-write' && clipboardPolicyAllowed === true && systemClipboardText === 'clipboard-real-proof',
+    'real host-page iframe copies the exact assistant text to system clipboard (' + JSON.stringify({ clipboardFramePolicy, clipboardPolicyAllowed, systemClipboardText }) + ')')
+  await clipboardHost.close()
+
   await resetCooldown(hint)
+  // The fixture reset above updates IndexedDB, while this already-open page
+  // still holds the prior cooldown in memory. Reload so the next send starts
+  // from the reset state instead of silently remaining disabled.
+  await hint.reload()
+  await hint.waitForFunction(() => {
+    const image = document.querySelector('.turn-image')
+    return !!image?.src && image.naturalWidth > 0
+  })
+  const requestsBeforeAttachmentFollowup = requestCount
+  const assistantsBeforeAttachmentFollowup = await hint.locator('.msg.assistant').count()
   await hint.fill('#ask-input', 'What is the next step?')
   await hint.click('#ask-btn')
-  await hint.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 2)
+  await hint.waitForFunction(({ assistantCount }) => document.querySelectorAll('.msg.assistant').length > assistantCount,
+    { assistantCount: assistantsBeforeAttachmentFollowup })
+  const attachmentRequestDeadline = Date.now() + 2000
+  while (requestCount === requestsBeforeAttachmentFollowup && Date.now() < attachmentRequestDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
   await waitSaved(hint, 'Complete')
-  check(lastAiRequest.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length === 1, 'attachment sent once across multiple turns')
+  const attachmentParts = lastAiRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
+  const attachmentSummary = {
+    imageCount: attachmentParts.filter(part => part.type === 'image_url').length,
+    messages: lastAiRequest.messages.map(message => ({
+      role: message.role,
+      parts: Array.isArray(message.content)
+        ? message.content.map(part => part.type === 'image_url' ? { type: part.type, urlPrefix: part.image_url?.url?.slice(0, 30) } : { type: part.type, text: part.text?.slice(0, 80) })
+        : [{ type: 'text', text: String(message.content).slice(0, 80) }],
+    })),
+  }
+  check(requestCount === requestsBeforeAttachmentFollowup + 1 && attachmentSummary.imageCount === 1,
+    'attachment sent once across multiple turns (' + JSON.stringify({ ...attachmentSummary, requestDelta: requestCount - requestsBeforeAttachmentFollowup }) + ')')
   await resetCooldown(hint)
   const usersBeforeRetry = await hint.locator('.msg.user').count()
   await hint.locator('.msg.assistant').last().hover()
@@ -1692,6 +1805,7 @@ try {
   check(JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8')).incognito === 'not_allowed', 'incognito is explicitly disabled')
   const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
   check(!manifest.host_permissions && !manifest.permissions.includes('<all_urls>'), 'native-action capture needs no persistent site grant')
+  check(manifest.permissions.includes('clipboardWrite'), 'manifest grants extension-scoped clipboard write for the user-triggered Copy action')
   await racePeer.close()
 
   await page.bringToFront()

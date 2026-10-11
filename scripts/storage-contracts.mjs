@@ -55,19 +55,19 @@ try {
     const orphanRemoved = !await c.getAttachment(image.id)
     const empty = (await c.listConversations()).length === 0
     await c.createConversation('Survives reload')
+    const projectionOptions = { countTokens: text => text.length, systemPrompt: 'Study Buddy' }
     const many = { ...first, turns: [] }
-    for (let i = 0; i < 40; i++) many.turns.push({ ...user, id: `turn-${i}`, text: `turn ${i}`, kind: i === 4 ? 'check' : 'ask', input: i === 4 ? 'x=2' : undefined })
-    many.turns[30] = { ...many.turns[30], kind: 'check', input: 'different task attempt', attachmentId: 'other-task' }
-    const bounded = c.contextTurns(many)
+    for (let i = 0; i < 40; i++) many.turns.push({ ...user, id: 'turn-' + i, text: 'turn ' + i, kind: 'ask', attachmentId: 'task-' + Math.floor(i / 3) })
+    const bounded = c.contextTurns(many, projectionOptions)
     let oversizeRejected = false
-    try { c.contextTurns({ ...first, turns: [{ ...user, text: 'x'.repeat(32_001) }] }) } catch { oversizeRejected = true }
+    try { c.contextTurns({ ...first, activeAttachmentId: 'too-large', turns: [{ ...user, attachmentId: 'too-large', text: 'x'.repeat(190_001) }] }, projectionOptions) } catch { oversizeRejected = true }
     const captureIds = ['shared-image', 'next-image', 'capture-c']
     const captures = captureIds.map((id, index) => ({ ...user, id: `capture-turn-${id}`, text: '', kind: 'capture', attachmentId: id, createdAt: Date.now() + index }))
     const questions = ['ask-a', 'ask-b', 'ask-c'].map((id, index) => ({ ...user, id, text: `question ${index}`, attachmentId: captures[index].attachmentId, createdAt: Date.now() + index + 3 }))
     const answers = questions.map((turn, index) => ({ ...turn, id: `answer-${index}`, role: 'assistant', status: 'complete', replyTo: turn.id, attachmentId: undefined, createdAt: Date.now() + index + 6 }))
     const dialog = { ...first, activeAttachmentId: 'capture-c', turns: [captures[0], questions[0], answers[0], captures[1], questions[1], answers[1], captures[2], questions[2]] }
-    const projection = c.contextProjection(dialog)
-    const projectedContext = await c.requestContext(dialog, async () => new Blob(['thread image'], { type: 'image/png' }), projection)
+    const projection = c.contextProjection(dialog, projectionOptions)
+    const projectedContext = await c.requestContext(async () => new Blob(['thread image'], { type: 'image/png' }), projection)
     const includedIds = projection.entries.filter(entry => entry.included).map(entry => entry.turn.id)
     const excludedReasons = Object.fromEntries(projection.entries.filter(entry => !entry.included).map(entry => [entry.turn.role === 'assistant' ? entry.turn.id : entry.turn.attachmentId === 'shared-image' ? entry.turn.kind === 'capture' ? 'capture-a' : 'ask-a' : entry.turn.id, entry.reason]))
     const projectedImages = projectedContext.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(part => part.type === 'image_url').length
@@ -75,12 +75,20 @@ try {
     const previewPayloadMatch = projectedContext.messages.length === projection.turns.length && projectedImages === projection.images.size
     const images = { ...first, turns: ['old', 'recent', 'current'].map((id) => ({ ...user, id, attachmentId: id })) }
     const sourceSnapshot = JSON.stringify(images)
-    const context = await c.requestContext(images, async () => image.data)
+    const imageProjection = c.contextProjection(images, projectionOptions)
+    const context = await c.requestContext(async () => image.data, imageProjection)
     const imageCount = context.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length
     let imageLarge = false, imageMissing = false
-    try { await c.requestContext(images, async () => new Blob([new Uint8Array(4 * 1024 * 1024 + 1)])) } catch (err) { imageLarge = err.message === 'context.imageLarge' }
-    try { await c.requestContext(images, async () => undefined) } catch (err) { imageMissing = err.message === 'context.imageMissing' }
-    return { includedIds, excludedReasons, projectedImages, firstImageOnly, previewPayloadMatch, captureTurnCount, captureOrder, capturePointerStable, captureBlobStable, captureDoesNotPromote, recovered: recovered.turns.at(-1), generatedTitle: recovered.title, titleGeneratedAt: recovered.titleGeneratedAt, state, bytes, quotaRejected, preserved, sharedKept, orphanRemoved, empty, bounded: { count: bounded.turns.length, ids: bounded.turns.map(t => t.id), omitted: bounded.omitted }, oversizeRejected, imageCount, imageLarge, imageMissing, contextPreserved: JSON.stringify(images) === sourceSnapshot, cooldown: [c.cooldownRemaining(100, 10099), c.cooldownRemaining(100, 10100)] }
+    try { await c.requestContext(async () => new Blob([new Uint8Array(4 * 1024 * 1024 + 1)]), imageProjection) } catch (err) { imageLarge = err.message === 'context.imageLarge' }
+    try { await c.requestContext(async () => undefined, imageProjection) } catch (err) { imageMissing = err.message === 'context.imageMissing' }
+    const budgetTurns = [
+      { ...user, id: 'capture-old', kind: 'capture', text: '', attachmentId: 'old-task' },
+      { ...user, id: 'old-work', kind: 'ask', text: 'o'.repeat(100_000), attachmentId: 'old-task' },
+      { ...user, id: 'capture-current', kind: 'capture', text: '', attachmentId: 'current-task' },
+      { ...user, id: 'current-work', kind: 'ask', text: 'n'.repeat(90_000), attachmentId: 'current-task' },
+    ]
+    const taskProjection = c.contextProjection({ ...first, activeAttachmentId: 'current-task', turns: budgetTurns }, projectionOptions)
+    return { includedIds, excludedReasons, taskIncluded: taskProjection.turns.map(turn => turn.id), taskReason: taskProjection.entries[0].reason, estimate: taskProjection.estimatedInputTokens, projectedImages, firstImageOnly, previewPayloadMatch, captureTurnCount, captureOrder, capturePointerStable, captureBlobStable, captureDoesNotPromote, recovered: recovered.turns.at(-1), generatedTitle: recovered.title, titleGeneratedAt: recovered.titleGeneratedAt, state, bytes, quotaRejected, preserved, sharedKept, orphanRemoved, empty, bounded: { count: bounded.turns.length, ids: bounded.turns.map(t => t.id), omitted: bounded.omitted }, oversizeRejected, imageCount, imageLarge, imageMissing, contextPreserved: JSON.stringify(images) === sourceSnapshot, cooldown: [c.cooldownRemaining(100, 10099), c.cooldownRemaining(100, 10100)] }
   })
   assert.equal(result.recovered.text, 'partial response')
   assert.equal(result.recovered.status, 'interrupted')
@@ -88,9 +96,9 @@ try {
   assert.equal(typeof result.titleGeneratedAt, 'number')
   assert.equal(result.state.generation, undefined)
   assert.ok(result.bytes > 0)
-  assert.deepEqual(result.includedIds, ['capture-turn-next-image', 'ask-b', 'answer-1', 'capture-turn-capture-c', 'ask-c'])
-  assert.deepEqual(result.excludedReasons, { 'capture-a': 'imageLimit', 'ask-a': 'imageLimit', 'answer-0': 'linkedImageLimit' })
-  assert.equal(result.projectedImages, 2)
+  assert.equal(result.includedIds.length, 8, 'all recent whole task groups fit the token estimate')
+  assert.deepEqual(result.excludedReasons, {})
+  assert.equal(result.projectedImages, 3)
   assert.equal(result.firstImageOnly, true, 'capture-only context message contains only its image part')
   assert.equal(result.previewPayloadMatch, true)
   assert.equal(result.captureTurnCount, 1, 'repeated capture handoff adds one image turn')
@@ -99,12 +107,13 @@ try {
   assert.equal(result.captureBlobStable, true, 'late duplicate handoff does not replace the saved blob')
   assert.equal(result.captureDoesNotPromote, true, 'capture does not promote conversation activity')
   for (const key of ['quotaRejected', 'preserved', 'sharedKept', 'orphanRemoved', 'empty', 'oversizeRejected']) assert.equal(result[key], true, key)
-  assert.equal(result.bounded.count, 12)
-  assert.ok(result.bounded.ids.includes('turn-0'))
-  assert.ok(result.bounded.ids.includes('turn-4'))
-  assert.ok(result.bounded.ids.includes('turn-39'))
+  assert.equal(result.bounded.count, 40)
+  assert.equal(result.bounded.omitted, 0)
+  assert.deepEqual(result.taskIncluded, ['capture-current', 'current-work'])
+  assert.equal(result.taskReason, 'olderTask')
+  assert.ok(result.estimate < 200_000)
   assert.deepEqual(result.cooldown, [1, 0])
-  assert.equal(result.imageCount, 2)
+  assert.equal(result.imageCount, 3)
   for (const key of ['imageLarge', 'imageMissing', 'contextPreserved']) assert.equal(result[key], true, key)
   await page.reload()
   await page.addScriptTag({ content: compiled.outputFiles[0].text })
@@ -172,7 +181,7 @@ try {
     return (await c.getConversationState()).lastConversationId === (await c.listConversations())[0].id
   })
   assert.equal(deleteRepair, true, 'manual deletion repairs selection using the activity-sorted list')
-  console.log('PASS IndexedDB commit/rollback/recovery/reload/attachment GC; 20-chat message-activity retention; protected writer + same-ms new chat; deletion state repair; bounded context; cooldown boundaries')
+  console.log('PASS IndexedDB commit/rollback/recovery/reload/attachment GC; 20-chat message-activity retention; protected writer + same-ms new chat; deletion state repair; token-budgeted whole-task context; cooldown boundaries')
 } finally {
   await browser.close()
   await new Promise((resolve) => server.close(resolve))

@@ -22,6 +22,7 @@ import type { ChatState, Rect } from '../shared/messages'
 import { conversationUsage, getAttachment, getConversation, getConversationState, listConversations } from '../shared/conversation-store'
 import { CONTEXT_LIMITS, contextProjection, conversationActivityAt, conversationDisplayTitle, cooldownRemaining, requestContext, type ContextProjection, type Conversation, type ConversationState, type ReplyStatus, type Turn } from '../shared/conversations'
 import { conversationAction, GenerationConnection } from './conversation-client'
+import { loadDeepSeekTokenCounter } from '../shared/context-tokenizer'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, resolveSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
@@ -340,6 +341,11 @@ function reportError(err: unknown): void {
   el('operation-error').hidden = false
 }
 
+async function projectContext(value: Conversation, prompt = systemPrompt(promptCtx())): Promise<ContextProjection> {
+  const countTokens = await loadDeepSeekTokenCounter()
+  return contextProjection(value, { countTokens, systemPrompt: prompt })
+}
+
 async function imageUrl(id: string): Promise<string> {
   const cached = imageUrls.get(id)
   if (cached) return cached
@@ -536,7 +542,8 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
   const turns = draft && !selected.turns.some((turn) => turn.id === draft.id) ? [...selected.turns, draft] : selected.turns
   let projection: ContextProjection
   try {
-    projection = contextProjection({ ...selected, turns })
+    const system = systemPrompt(promptCtx()) + (!selected.titleGeneratedAt ? '\n\n' + firstAnswerTitleInstruction(promptCtx()) : '')
+    projection = await projectContext({ ...selected, turns }, system)
   } catch (err) {
     const key = err instanceof Error ? err.message : 'context.text'
     contextPreview = undefined
@@ -785,13 +792,14 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     await refreshStatus()
     const index = conversation.turns.findIndex((turn) => turn.id === source.id)
     const contextConversation = { ...conversation, turns: conversation.turns.slice(0, index + 1) }
-    const projection = contextProjection(contextConversation)
+    const system = systemPrompt(promptContext) + (requestTitle ? '\n\n' + firstAnswerTitleInstruction(promptContext) : '')
+    const projection = await projectContext(contextConversation, system)
     contextPreview = projection
     setContextSummary(projection)
-    const context = await requestContext(contextConversation, async (id) => (await getAttachment(id))?.data, projection)
+    const context = await requestContext(async (id) => (await getAttachment(id))?.data, projection)
     if (context.omitted) addMessage('note', t(uiLang, 'context.omitted', { count: context.omitted }))
     const result = await createGateway(settings).ask({
-      messages: [{ role: 'system', content: systemPrompt(promptContext) + (requestTitle ? `\n\n${firstAnswerTitleInstruction(promptContext)}` : '') }, ...context.messages],
+      messages: [{ role: 'system', content: system }, ...context.messages],
       ...turnParams(source.kind),
       signal: controller.signal,
       onDelta: (delta) => {

@@ -80,15 +80,19 @@ export function conversationActivityAt(conversation: Conversation): number {
   return conversation.turns.reduce((latest, turn) => turn.kind === 'capture' ? latest : Math.max(latest, turn.createdAt), conversation.createdAt)
 }
 
-export const CONTEXT_LIMITS = { turns: 12, text: 32_000, images: 2, imageBytes: 4 * 1024 * 1024 }
+export const CONTEXT_LIMITS = {
+  inputTokens: 200_000,
+  estimateHeadroom: 20_000,
+  imageTokenEstimate: 2_048,
+  imageBytes: 4 * 1024 * 1024,
+}
 export const GENERATION_INTERVAL = 10_000
 
 export function cooldownRemaining(lastStartedAt: number, now = Date.now()): number {
   return Math.max(0, GENERATION_INTERVAL - Math.max(0, now - lastStartedAt))
 }
 
-/** Last selected task and its attempt remain source inputs, even outside the window. */
-export type ContextExclusionReason = 'messages' | 'text' | 'imageLimit' | 'linkedImageLimit' | 'incomplete' | 'superseded' | 'empty'
+export type ContextExclusionReason = 'olderTask' | 'incomplete' | 'superseded' | 'empty'
 export interface ContextEntry {
   turn: Turn
   included: boolean
@@ -100,9 +104,17 @@ export interface ContextProjection {
   omitted: number
   images: Set<string>
   entries: ContextEntry[]
+  estimatedInputTokens: number
+  inputBudget: number
+}
+export interface ContextProjectionOptions {
+  /** Local model-specific estimate for text parts, not provider-exact usage. */
+  countTokens: (text: string) => number
+  systemPrompt: string
 }
 
-export function contextProjection(conversation: Conversation): ContextProjection {
+/** Keep the newest whole task groups that fit the estimated prompt budget. */
+export function contextProjection(conversation: Conversation, options: ContextProjectionOptions): ContextProjection {
   const latestReplies = new Map<string, string>()
   for (const turn of conversation.turns) if (turn.role === 'assistant' && turn.status === 'complete' && turn.replyTo) latestReplies.set(turn.replyTo, turn.id)
   const usable: Turn[] = []
@@ -115,71 +127,91 @@ export function contextProjection(conversation: Conversation): ContextProjection
     else usable.push(turn)
   }
 
-  const latestUser = [...usable].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
-  const taskId = latestUser?.attachmentId ?? conversation.activeAttachmentId
-  const task = usable.find((turn) => turn.role === 'user' && turn.kind !== 'capture' && turn.attachmentId === taskId)
-  const attempt = [...usable].reverse().find((turn) => turn.role === 'user' && !!turn.input && turn.kind === 'check' && turn.attachmentId === taskId)
-  const required = new Set([latestUser?.id, task?.id, attempt?.id].filter((id): id is string => !!id))
-  const selected = new Set(usable.slice(-CONTEXT_LIMITS.turns).map((turn) => turn.id))
-  for (const id of required) selected.add(id)
-  const excludeOldestOptional = (reason: 'messages' | 'text') => {
-    const removable = usable.find((turn) => selected.has(turn.id) && !required.has(turn.id))
-    if (!removable) throw new Error('context.text')
-    selected.delete(removable.id)
-    reasons.set(removable.id, reason)
+  const groupForTurn = new Map<string, string>()
+  const groups = new Map<string, Turn[]>()
+  let latestGroup = conversation.activeAttachmentId ?? 'text-session'
+  for (const turn of usable) {
+    if (turn.kind === 'capture' && turn.attachmentId) latestGroup = turn.attachmentId
+    let key = turn.attachmentId ?? latestGroup
+    if (turn.role === 'assistant' && turn.replyTo) key = groupForTurn.get(turn.replyTo) ?? key
+    if (turn.role === 'user' && turn.kind !== 'capture' && !turn.attachmentId) latestGroup = key
+    groupForTurn.set(turn.id, key)
+    const group = groups.get(key) ?? []
+    group.push(turn)
+    groups.set(key, group)
   }
-  while (selected.size > CONTEXT_LIMITS.turns) excludeOldestOptional('messages')
-  const selectedTurns = () => usable.filter((turn) => selected.has(turn.id))
-  while (selectedTurns().reduce((sum, turn) => sum + turn.text.length, 0) > CONTEXT_LIMITS.text) excludeOldestOptional('text')
 
-  const turns = selectedTurns()
+  const latestUser = [...usable].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
+  const currentGroup = latestUser ? groupForTurn.get(latestUser.id) : conversation.activeAttachmentId ?? [...groups.keys()].at(-1)
+  const orderedGroups = [...groups.entries()].sort((a, b) => usable.indexOf(a[1].at(-1)!) - usable.indexOf(b[1].at(-1)!))
+  const selectedGroups: Turn[][] = []
+  const selectedIds = new Set<string>()
+  const inputLimit = CONTEXT_LIMITS.inputTokens - CONTEXT_LIMITS.estimateHeadroom
+  const estimate = (candidate: Turn[][]): number => {
+    const turns = candidate.flat().sort((a, b) => usable.indexOf(a) - usable.indexOf(b))
+    const renderedText = [options.systemPrompt, ...turns.map((turn) => `${turn.role}\n${turn.text}`)].join('\n')
+    const imageIds = new Set(turns.flatMap((turn) => turn.role === 'user' && turn.attachmentId ? [turn.attachmentId] : []))
+    // OpenRouter does not expose image-token preflight. Reserve per image, add
+    // message framing overhead, and keep a 10% margin for route variance.
+    return options.countTokens(renderedText) + turns.length * 8 + imageIds.size * CONTEXT_LIMITS.imageTokenEstimate
+  }
+  let stoppedAtBoundary = false
+  for (const [key, group] of [...orderedGroups].reverse()) {
+    if (stoppedAtBoundary) {
+      for (const turn of group) reasons.set(turn.id, 'olderTask')
+      continue
+    }
+    const estimateTokens = estimate([...selectedGroups, group])
+    if (key === currentGroup && !selectedGroups.length && estimateTokens > inputLimit) throw new Error('context.taskTooLarge')
+    if (estimateTokens <= inputLimit || key === currentGroup) {
+      selectedGroups.push(group)
+      for (const turn of group) selectedIds.add(turn.id)
+    } else {
+      stoppedAtBoundary = true
+      for (const turn of group) reasons.set(turn.id, 'olderTask')
+    }
+  }
+  selectedGroups.reverse()
+  const turns = usable.filter((turn) => selectedIds.has(turn.id))
   const images = contextImages(turns)
-  const excludedImageTurns = new Set(turns.filter((turn) => turn.attachmentId && !images.has(turn.attachmentId)).map((turn) => turn.id))
-  for (const turn of turns) if (excludedImageTurns.has(turn.id)) reasons.set(turn.id, 'imageLimit')
-  const included = turns.filter((turn) => !excludedImageTurns.has(turn.id) && (!turn.replyTo || !excludedImageTurns.has(turn.replyTo)))
-  for (const turn of turns) if (turn.replyTo && excludedImageTurns.has(turn.replyTo)) reasons.set(turn.id, 'linkedImageLimit')
-
-  const includedIds = new Set(included.map((turn) => turn.id))
+  const includedIds = new Set(turns.map((turn) => turn.id))
   const imageTurns = new Map<string, string>()
-  for (const turn of included) if (turn.attachmentId && images.has(turn.attachmentId) && !imageTurns.has(turn.attachmentId)) imageTurns.set(turn.attachmentId, turn.id)
+  for (const turn of turns) if (turn.attachmentId && images.has(turn.attachmentId) && !imageTurns.has(turn.attachmentId)) imageTurns.set(turn.attachmentId, turn.id)
   const entries = conversation.turns.map((turn) => {
-    const includedHere = includedIds.has(turn.id)
+    const included = includedIds.has(turn.id)
     let imageState: ContextEntry['imageState']
     if (turn.attachmentId) {
       if (!images.has(turn.attachmentId)) imageState = 'excluded'
       else if (imageTurns.get(turn.attachmentId) === turn.id) imageState = 'included'
       else imageState = 'otherTurn'
     }
-    return { turn, included: includedHere, reason: includedHere ? undefined : reasons.get(turn.id) ?? 'messages', imageState }
+    return { turn, included, reason: included ? undefined : reasons.get(turn.id) ?? 'olderTask', imageState }
   })
   return {
-    turns: included,
+    turns,
     images,
     entries,
     omitted: entries.filter((entry) => !entry.included).length,
+    estimatedInputTokens: estimate(selectedGroups),
+    inputBudget: CONTEXT_LIMITS.inputTokens,
   }
 }
 
-/** Compatibility for coordinator checks and existing callers. */
-export function contextTurns(conversation: Conversation): { turns: Turn[]; omitted: number } {
-  const { turns, omitted } = contextProjection(conversation)
+/** Compatibility for caller and storage contracts. */
+export function contextTurns(conversation: Conversation, options: ContextProjectionOptions): { turns: Turn[]; omitted: number } {
+  const { turns, omitted } = contextProjection(conversation, options)
   return { turns, omitted }
 }
 
 export function contextImages(turns: Turn[]): Set<string> {
   const wanted = new Set<string>()
-  const latest = [...turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
-  if (latest?.attachmentId) wanted.add(latest.attachmentId)
-  for (const turn of [...turns].reverse()) {
-    if (turn.attachmentId && wanted.size < CONTEXT_LIMITS.images) wanted.add(turn.attachmentId)
-  }
+  for (const turn of turns) if (turn.role === 'user' && turn.attachmentId) wanted.add(turn.attachmentId)
   return wanted
 }
 
 export async function requestContext(
-  conversation: Conversation,
   readImage: (id: string) => Promise<Blob | undefined>,
-  projection = contextProjection(conversation),
+  projection: ContextProjection,
 ): Promise<{ messages: ApiMessage[]; omitted: number }> {
   const sent = new Set<string>()
   const messages: ApiMessage[] = []

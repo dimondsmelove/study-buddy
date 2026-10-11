@@ -248,7 +248,7 @@ section {
 #context-warning { flex: 0 0 auto; color: var(--warning-ink); font-size: 11px; white-space: nowrap; }
 .text-button { min-width: 44px; min-height: 44px; padding: 3px 8px; border-color: transparent; background: transparent; color: var(--accent-hover); font-size: 12px; }
 #composer { display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px; min-width: 0; }
-.selection-button { align-self: flex-start; min-height: 44px; padding: 7px 10px; font-size: 13px; }
+.selection-button { flex: 0 0 auto; min-height: 44px; padding: 7px 10px; font-size: 13px; }
 #composer-error { margin: 0; padding: 6px 8px; border-radius: var(--radius-control); color: var(--error-ink); background: var(--error-surface); font-size: 12px; }
 #ask-form { display: flex; gap: 6px; min-width: 0; }
 #ask-input, #check-input, #set-ui-lang, #set-ans-lang {

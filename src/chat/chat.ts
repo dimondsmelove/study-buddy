@@ -833,7 +833,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     starting = false
     connection.close()
     conversation = await getConversation(selectedId).catch(() => conversation)
-    await renderConversation().catch(reportError)
+    if (!storageFailed) await renderConversation().catch(reportError)
     scrollThread()
   }
   return true

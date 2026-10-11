@@ -20,6 +20,7 @@ export interface Rect {
 export type ChatState =
   | { kind: 'capture'; imageId: string; rect: Rect; conversationId?: string }
   | { kind: 'conversation'; conversationId: string }
+  | { kind: 'history' }
   | { kind: 'permission'; origin: string }
   | { kind: 'restricted'; reason: string }
   | { kind: 'error'; message: string }

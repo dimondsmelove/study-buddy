@@ -40,6 +40,7 @@ export default defineManifest({
     'activeTab', // captureVisibleTab on the tab where invoked
     'scripting', // inject the selection overlay on demand
     'storage', // chrome.storage.session (captures) + .local (settings)
+    'contextMenus', // Show saved conversations from the toolbar icon's context menu
   ],
 
   // Not requested at install. Asked at runtime, per-site, when a capture needs

@@ -153,7 +153,7 @@ export function installConversationCoordinator(): void {
           } else {
             const index = conversation.turns.findIndex((turn) => turn.id === assistant.replyTo && turn.role === 'user')
             if (index < 0) throw new Error('dialog.invalid')
-            conversation.turns = [...conversation.turns.slice(0, index + 1), ...conversation.turns.slice(index + 1).filter((turn) => turn.kind === 'capture')]
+            conversation.turns = conversation.turns.slice(0, index + 1)
           }
           await validateContext(conversation)
           // Prune before establishing the generation lease so failure cannot strand it.

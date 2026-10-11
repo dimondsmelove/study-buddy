@@ -14,6 +14,20 @@ import { captureDialog, closeDialog, installConversationCoordinator, restoreDial
 installConversationCoordinator()
 
 const CHAT_URL = 'src/chat/chat.html'
+const HISTORY_MENU_ID = 'study-buddy-show-history'
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.removeAll(() => {
+    if (chrome.runtime.lastError) return
+    chrome.contextMenus.create({ id: HISTORY_MENU_ID, title: 'Show history', contexts: ['action'] })
+  })
+})
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== HISTORY_MENU_ID || tab?.id === undefined) return
+  const tabId = tab.id
+  entrypoint(() => showHistoryOnTab(tabId), true)
+})
 
 let captureBusy = false
 
@@ -105,6 +119,23 @@ async function restoreOnTab(tabId: number): Promise<void> {
     try { await injectOverlay(tabId) } catch { /* detached fallback */ }
   }
   await showChatWindow(tabId, state)
+}
+
+async function showHistoryOnTab(tabId: number): Promise<void> {
+  // The toolbar context-menu gesture grants activeTab. Cancel selection before
+  // reusing the same overlay host for history.
+  if (selectionTabId === tabId) {
+    selectionTabId = undefined
+    try { await chrome.tabs.sendMessage(tabId, { type: 'HIDE_OVERLAY' }) } catch { /* host may have navigated */ }
+  }
+  const state: ChatState = { kind: 'history' }
+  try { await chrome.tabs.sendMessage(tabId, { type: 'SHOW_CHAT', state }); return } catch { /* inject below */ }
+  const tab = await chrome.tabs.get(tabId)
+  if (!restrictedReason(tab.url)) {
+    try { await injectOverlay(tabId) } catch { /* detached fallback */ }
+    try { await chrome.tabs.sendMessage(tabId, { type: 'SHOW_CHAT', state }); return } catch { /* detached fallback */ }
+  }
+  await showChatWindow(undefined, state)
 }
 
 async function startActiveTabSelection(): Promise<void> {
@@ -266,6 +297,8 @@ function stateUrlParams(state: ChatState): Record<string, string> {
       return { kind: 'capture', id: state.imageId, ...(state.conversationId ? { conversation: state.conversationId } : {}) }
     case 'conversation':
       return { kind: 'conversation', conversation: state.conversationId }
+    case 'history':
+      return { kind: 'history' }
     case 'permission':
       return { kind: 'permission', origin: state.origin }
     case 'restricted':

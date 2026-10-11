@@ -135,6 +135,7 @@ function apply(state: ChatState): void {
   opening++
   pendingConversationId = undefined
   current = state
+  historyEntry = state.kind === 'history'
   show(state.kind === 'conversation' ? 'capture' : state.kind)
   switch (state.kind) {
     case 'capture':
@@ -142,6 +143,9 @@ function apply(state: ChatState): void {
       break
     case 'conversation':
       void openConversation(state.conversationId).catch(reportError)
+      break
+    case 'history':
+      void showHistory().catch(reportError)
       break
     case 'permission':
       showPermission(state.origin)
@@ -319,6 +323,7 @@ let rendering = 0
 let starting = false
 let closing = false
 let activeCloseId: string | undefined
+let historyEntry = false
 let generationDone: Promise<boolean> | undefined
 const unsaved = new Map<string, Turn>()
 const imageUrls = new Map<string, string>()
@@ -875,6 +880,11 @@ async function showHistory(): Promise<void> {
 el('history-btn').onclick = () => void showHistory().catch(reportError)
 el('history-back').onclick = () => {
   if (conversation) { show('capture'); return }
+  if (historyEntry) {
+    if (window.parent !== window) window.parent.postMessage({ source: 'study-buddy-chat', action: 'dismiss-history' }, '*')
+    else window.close()
+    return
+  }
   void getConversationState().then(async (state) => {
     const target = state.lastConversationId ? await getConversation(state.lastConversationId) : undefined
     const next = target ?? await conversationAction<Conversation>({ action: 'create', title: t(uiLang, 'dialog.new') })
@@ -979,6 +989,8 @@ function stateFromLocation(): ChatState | null {
     }
     case 'conversation':
       return p.get('conversation') ? { kind: 'conversation', conversationId: p.get('conversation')! } : null
+    case 'history':
+      return { kind: 'history' }
     case 'permission':
       return { kind: 'permission', origin: p.get('origin') ?? '' }
     case 'restricted':

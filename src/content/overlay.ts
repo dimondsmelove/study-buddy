@@ -231,6 +231,8 @@ function chatUrlParams(state: ChatState): Record<string, string> {
       return { kind: 'capture', id: state.imageId, ...(state.conversationId ? { conversation: state.conversationId } : {}) }
     case 'conversation':
       return { kind: 'conversation', conversation: state.conversationId }
+    case 'history':
+      return { kind: 'history' }
     case 'permission':
       return { kind: 'permission', origin: state.origin }
     case 'restricted':
@@ -462,6 +464,7 @@ function showChat(state: ChatState): void {
     if (data.action === 'conversation-selected' && typeof data.conversationId === 'string') {
       trackConversation(data.conversationId, false)
     }
+    if (data.action === 'dismiss-history' && chatRoot === root && chatFrame === frame) removeChat()
     if (data.action === 'close-cancelled' && typeof data.closeId === 'string' && closeRequest?.id === data.closeId) {
       closeRequest = undefined
     }

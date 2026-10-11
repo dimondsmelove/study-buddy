@@ -19,7 +19,8 @@ chosen provider.
   prior conversation text go **directly to your chosen AI endpoint**. Nothing
   passes through a project-operated proxy in this version.
 - Up to 20 chats and their referenced images stay on your device, ordered by
-  their latest message (creation for empty chats). Older chats are automatically
+  their latest non-capture message (creation for empty chats). Viewing or
+  capturing alone does not change that order. Older chats are automatically
   deleted, including existing history on startup; manual deletion is available.
   Incognito use is disabled. No cloud sync or student profile is created.
 
@@ -45,10 +46,13 @@ that build and extractable; it is not protected server-side.
 
 ## What is sent, and to whom
 
-When you ask a question, the extension sends **the cropped image of the region
-you selected**, your question/attempt, a bounded selection of past turns, and
-generated task/system instructions **directly from
-your browser to the AI endpoint** (by default `https://openrouter.ai/api/v1`).
+Each successful selection is saved locally as an image message in the current
+conversation; selecting alone sends no model request. When you explicitly start
+a task or ask a question, the extension sends the selected bounded context:
+up to two relevant cropped images, your question/attempt, selected prior turns,
+and generated task/system instructions **directly from your browser to the AI
+endpoint** (by default `https://openrouter.ai/api/v1`). Next answer and Details
+show which messages/images will be included or excluded before you send.
 The private development connection authenticates with a runtime key. Requests
 are subject to the privacy policy of that
 provider (e.g. OpenRouter and the model vendor behind the chosen model). Study

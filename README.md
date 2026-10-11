@@ -10,6 +10,10 @@ the page, in English by default. The toolbar icon also starts region selection; 
 opens after a successful crop and continues the conversation selected for that tab.
 Right-click the toolbar icon → **Show history** to return to a saved chat without
 selecting another region. Opening History creates no chat and makes no model request.
+Inside a chat, **New chat** opens an empty conversation with text input;
+**New selection** adds another image message to the current conversation. Each
+capture is saved immediately, without starting an answer. Images remain in the
+thread and open at full size; there is no permanent upper preview.
 
 **Status: MVP.** Region selection → screenshot → crop → chat window,
 English interface and answer defaults, task-shaped answers
@@ -27,11 +31,18 @@ the `Gateway` seam (`src/shared/gateway.ts`) — currently a direct provider, la
 your hosted proxy for subscriptions. The answering model is fixed to DeepSeek
 (`src/shared/ai.ts`). Store copy, privacy policy, and screenshots live in `store/`.
 
+The image-dialogue/context slice passed 69 independent checks in isolated
+Chromium and context fixtures, plus the complete native smoke and contract suites.
+These checks used localhost model fixtures; this slice made no paid model calls.
+Evidence: `~/.local/state/codex/loops/study-buddy/evidence-dialogue-20261011/`.
+
 Manual use:
 
 ```
 Ctrl+Shift+Y or left-click toolbar icon  →  drag a box around a question  →  Solve / Quiz / …  →  read
 Right-click toolbar icon  →  Show history  →  choose a saved chat  →  continue
+New selection inside a chat  →  add another image message  →  ask about both
+New chat  →  empty conversation  →  type a question or select an image
 ```
 
 ## Roadmap
@@ -61,7 +72,8 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - The API key, settings and panel size live in `chrome.storage.local`. The last
   eight transient crops live in `chrome.storage.session`; saved transcripts and
   image Blobs live in extension-origin IndexedDB. History keeps at most 20 chats,
-  ordered by their latest message (creation for empty chats); older chats are
+  ordered by their latest non-capture message (creation for empty chats);
+  viewing or capturing alone does not promote recency. Older chats are
   automatically deleted, including existing history when the worker starts.
 - After Close, the icon’s **Show history** menu opens the saved list; choose a
   chat to restore its transcript and images. A new capture after Close starts a
@@ -79,7 +91,11 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - Provider context is at most 12 turns, 32,000 text characters and two images
   of at most 4 MiB each. The current task/attempt/input are retained; oversized
   required input is refused before network. Omitted/incomplete history stays
-  saved locally; no automatic summary is created.
+  saved locally; no automatic summary is created. **Next answer** shows the
+  selected message/image counts; **Details** lists exactly what is included or
+  excluded and why, using the same projection as the actual request. Errors
+  beside the composer explain oversized/missing input and preserve the draft.
+  Retry uses its original source context even after a later capture.
 - The ten-second start interval is local UX only, not trusted abuse protection
   or a unique-user guarantee. Regenerate is a new start; explicit availability
   fallback before any output is part of the existing start.

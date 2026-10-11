@@ -22,6 +22,8 @@
           </button>
           -->
         </nav>
+        <div id="context-summary"><span id="context-summary-text"></span><button type="button" id="context-details-btn" class="text-button" data-i18n="context.details"></button><button type="button" id="new-selection-btn" class="selection-button icon-button" data-i18n-title="capture.newSelection" data-i18n-aria="capture.newSelection"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 8h8v8H8z"/></svg></button></div>
+        <p id="cooldown-banner" role="status" hidden></p>
         <div id="presets" data-i18n-aria="capture.actions">
           <button type="button" class="preset primary-action" data-preset="solve" data-i18n="preset.solve"></button>
           <button type="button" class="preset" data-preset="hint" data-i18n="preset.hint"></button>
@@ -36,7 +38,6 @@
         </div>
         <div id="thread" aria-live="polite"></div>
         <p id="dialog-status" role="status"></p>
-        <div id="context-summary"><span id="context-summary-text"></span><button type="button" id="context-details-btn" class="text-button" data-i18n="context.details"></button><button type="button" id="new-selection-btn" class="selection-button icon-button" data-i18n-title="capture.newSelection" data-i18n-aria="capture.newSelection"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 8h8v8H8z"/></svg></button></div>
         <div id="composer">
           <p id="composer-error" role="alert" hidden></p>
           <form id="ask-form" autocomplete="off">

@@ -794,14 +794,16 @@ try {
     const composer = document.querySelector('#composer').getBoundingClientRect()
     const input = document.querySelector('#ask-input').getBoundingClientRect()
     const send = document.querySelector('#ask-btn').getBoundingClientRect()
-    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, summary: { text: summary.textContent, label: summary.getAttribute('aria-label'), fits: summary.scrollWidth <= summary.clientWidth }, composer: { bottom: composer.bottom, inputBottom: input.bottom, sendBottom: send.bottom }, viewport: { width: innerWidth, height: innerHeight } }
+    const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height } }
+    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, summary: { text: summary.textContent, label: summary.getAttribute('aria-label'), fits: summary.scrollWidth <= summary.clientWidth }, layout: { header: rect('#capture-top'), context: rect('#context-summary'), presets: rect('#presets'), thread: rect('#thread'), composer: { top: composer.top, bottom: composer.bottom, inputBottom: input.bottom, sendBottom: send.bottom } }, viewport: { width: innerWidth, height: innerHeight } }
   })
   check(narrowGeometry.width <= 320 && narrowGeometry.popover.left >= 0 && narrowGeometry.popover.top >= 0 &&
     narrowGeometry.popover.right <= 320 && narrowGeometry.popover.bottom <= 324 &&
     narrowGeometry.summary.fits && narrowGeometry.summary.text.includes('budget') && narrowGeometry.summary.label.includes('budget') &&
-    narrowGeometry.composer.bottom <= 324 && narrowGeometry.composer.inputBottom <= 324 && narrowGeometry.composer.sendBottom <= 324 &&
+    narrowGeometry.layout.context.top >= narrowGeometry.layout.header.bottom && narrowGeometry.layout.context.bottom <= narrowGeometry.layout.presets.top &&
+    narrowGeometry.layout.composer.bottom <= 324 && narrowGeometry.layout.composer.inputBottom <= 324 && narrowGeometry.layout.composer.sendBottom <= 324 &&
     await layout.locator('#ask-input').isVisible() && await layout.locator('#ask-btn').isVisible(),
-  '320×324 viewport keeps the menu and required composer reachable (' + JSON.stringify(narrowGeometry) + ')')
+  '320×324 viewport places context in the header and keeps the menu/composer reachable (' + JSON.stringify(narrowGeometry) + ')')
   await layout.keyboard.press('Escape')
   await layout.getByRole('button', { name: 'More', exact: true }).click()
   await layout.getByRole('button', { name: 'Explain', exact: true }).click()
@@ -846,7 +848,7 @@ try {
       return {
         count: count.textContent, fullLabel: count.getAttribute('aria-label'), countsFit: count.scrollWidth <= count.clientWidth,
         hasLegacyWarning: !!document.querySelector('#context-warning'),
-        bounds: { summary: rect(document.querySelector('#context-summary')), count: rect(count), details: rect(details), selection: rect(selection), composer: rect(document.querySelector('#composer')), ask: rect(document.querySelector('#ask-input')), send: rect(document.querySelector('#ask-btn')) },
+        bounds: { header: rect(document.querySelector('#capture-top')), summary: rect(document.querySelector('#context-summary')), presets: rect(document.querySelector('#presets')), count: rect(count), details: rect(details), selection: rect(selection), composer: rect(document.querySelector('#composer')), ask: rect(document.querySelector('#ask-input')), send: rect(document.querySelector('#ask-btn')) },
         overflow: document.documentElement.scrollWidth > innerWidth,
       }
     }).then(result => ({ language, ...result }))
@@ -854,7 +856,7 @@ try {
   const narrowEnglish = await narrowContext('en')
   check(narrowEnglish.countsFit && narrowEnglish.count.includes('budget') && narrowEnglish.fullLabel.includes('budget') &&
     !narrowEnglish.hasLegacyWarning && !narrowEnglish.overflow &&
-    narrowEnglish.bounds.summary.height >= 44 && narrowEnglish.bounds.details.height === 44 && narrowEnglish.bounds.selection.height === 44 &&
+    narrowEnglish.bounds.summary.top >= narrowEnglish.bounds.header.bottom && narrowEnglish.bounds.summary.bottom <= narrowEnglish.bounds.presets.top && narrowEnglish.bounds.summary.height === 44 && narrowEnglish.bounds.details.height === 44 && narrowEnglish.bounds.selection.height === 44 &&
     narrowEnglish.bounds.ask.bottom <= 324 && narrowEnglish.bounds.send.bottom <= 324 && narrowEnglish.bounds.composer.bottom <= 324,
   '320×324 English token budget and composer remain visible with 44px controls (' + JSON.stringify(narrowEnglish) + ')')
   await sw.evaluate(async () => {
@@ -867,16 +869,18 @@ try {
   await layout.setViewportSize({ width: 480, height: 568 })
   const wideRussian = await layout.evaluate(() => {
     const count = document.querySelector('#context-summary-text')
+    const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom } }
     return {
       text: count.textContent, fullLabel: count.getAttribute('aria-label'),
       fits: count.scrollWidth <= count.clientWidth, fontSize: parseFloat(getComputedStyle(count).fontSize),
+      layout: { header: rect('#capture-top'), context: rect('#context-summary'), presets: rect('#presets'), composer: rect('#composer') },
     }
   })
-  check(wideRussian.fits && wideRussian.text.includes('200 тыс.') && wideRussian.fullLabel.includes('200 тыс.') && wideRussian.fontSize >= 12,
+  check(wideRussian.fits && wideRussian.text.includes('200 тыс.') && wideRussian.fullLabel.includes('200 тыс.') && wideRussian.fontSize >= 12 && wideRussian.layout.context.top >= wideRussian.layout.header.bottom && wideRussian.layout.context.bottom <= wideRussian.layout.presets.top && wideRussian.layout.composer.bottom === 558,
   '480px Russian estimated budget label remains readable (' + JSON.stringify(wideRussian) + ')')
   const narrowRussian = await narrowContext('ru')
   check(narrowRussian.countsFit && narrowRussian.count.includes('200 тыс.') && !narrowRussian.hasLegacyWarning && !narrowRussian.overflow &&
-    narrowRussian.bounds.summary.height >= 44 && narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324 &&
+    narrowRussian.bounds.summary.top >= narrowRussian.bounds.header.bottom && narrowRussian.bounds.summary.bottom <= narrowRussian.bounds.presets.top && narrowRussian.bounds.summary.height === 44 && narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324 &&
     narrowRussian.bounds.details.height === 44 && narrowRussian.bounds.selection.height === 44 &&
     narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324,
   '320×324 Russian estimated budget and composer remain reachable with 44px controls (' + JSON.stringify(narrowRussian) + ')')
@@ -917,6 +921,16 @@ try {
     'Check keeps the ordinary composer and has no separate attempt form')
   await checked.click('#check-btn')
   await waitSaved(checked, 'Complete')
+  await checked.waitForFunction(() => { const b = document.querySelector('#cooldown-banner'); return !b.hidden && /\d/.test(b.textContent) })
+  const cooldownStart = await checked.evaluate(() => ({ banner: document.querySelector('#cooldown-banner').textContent, askDisabled: document.querySelector('#ask-btn').disabled, checkDisabled: document.querySelector('#check-btn').disabled, errorHidden: document.querySelector('#operation-error').hidden }))
+  const checkRequests = requestCount
+  await checked.fill('#ask-input', 'Do not queue this draft')
+  await checked.evaluate(() => document.querySelector('#ask-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+  check(cooldownStart.askDisabled && cooldownStart.checkDisabled && cooldownStart.errorHidden && requestCount === checkRequests && await checked.inputValue('#ask-input') === 'Do not queue this draft', 'cooldown banner disables send/Check and never queues a typed draft (' + JSON.stringify(cooldownStart) + ')')
+  await checked.waitForFunction((prior) => { const text = document.querySelector('#cooldown-banner').textContent; return !document.querySelector('#cooldown-banner').hidden && text !== prior }, cooldownStart.banner, { timeout: 2500 })
+  check(true, 'visible cooldown countdown ticks down without changing the draft')
+  await checked.waitForFunction(() => document.querySelector('#cooldown-banner').hidden && !document.querySelector('#ask-btn').disabled && !document.querySelector('#check-btn').disabled, { timeout: 12000 })
+  check(await checked.inputValue('#ask-input') === 'Do not queue this draft' && requestCount === checkRequests, 'cooldown expiry re-enables actions without auto-sending the draft')
   const checkGeometry = await checked.evaluate(() => ({ width: document.documentElement.scrollWidth, thread: document.querySelector('#thread').getBoundingClientRect().height, composerBottom: document.querySelector('#composer').getBoundingClientRect().bottom, viewport: innerHeight }))
   check(checkGeometry.width <= 480 && checkGeometry.thread >= 180 && checkGeometry.composerBottom <= 564,
     'direct Check preserves the compact composer and dialogue (' + JSON.stringify(checkGeometry) + ')')
@@ -938,10 +952,8 @@ try {
   responseMode = 'normal'
   const beforeCooldown = requestCount
   await checked.fill('#ask-input', 'Too soon')
-  await checked.click('#ask-btn')
-  await checked.waitForTimeout(100)
-  check(requestCount === beforeCooldown, 'accepted start imposes the ten-second interval without a queued request')
-  check(await checked.inputValue('#ask-input') === 'Too soon', 'a rejected start retains the typed question instead of silently clearing it')
+  check(await checked.locator('#ask-btn').isDisabled() && requestCount === beforeCooldown, 'cooldown keeps Send disabled without queuing another request')
+  check(await checked.inputValue('#ask-input') === 'Too soon', 'cooldown retains the typed question')
   await checked.click('#history-btn')
   await checked.locator(`.history-row:has([data-conversation="${checkedId}"])`).waitFor()
   await checked.waitForFunction(() => document.getElementById('storage-usage')?.textContent?.includes('MiB'))

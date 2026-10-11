@@ -335,8 +335,13 @@ let inflight: AbortController | null = null
 function reportError(err: unknown): void {
   const key = err instanceof Error ? err.message : 'storage.write'
   if (['context.text', 'context.taskTooLarge', 'context.imageMissing', 'context.imageLarge'].includes(key)) { setComposerError(key); return }
-  const cooldown = key.startsWith('dialog.cooldown:')
-  el('dialog-status').textContent = cooldown ? t(uiLang, 'dialog.cooldown', { seconds: key.split(':')[1] }) : t(uiLang, key.startsWith('storage.') ? 'dialog.storageError' : key)
+  if (key.startsWith('dialog.cooldown:')) {
+    el('operation-error').textContent = ''
+    el('operation-error').hidden = true
+    void refreshStatus().catch(() => {})
+    return
+  }
+  el('dialog-status').textContent = t(uiLang, key.startsWith('storage.') ? 'dialog.storageError' : key)
   el('operation-error').textContent = el('dialog-status').textContent
   el('operation-error').hidden = false
 }
@@ -474,9 +479,14 @@ async function refreshStatus(): Promise<void> {
 }
 
 function updateStatus(): void {
-  setBusy(!!inflight || starting || !!profileState.generation)
   const wait = cooldownRemaining(profileState.lastStartedAt)
-  const text = profileState.generation ? t(uiLang, 'reply.streaming') : wait ? t(uiLang, 'dialog.cooldown', { seconds: Math.ceil(wait / 1000) }) : t(uiLang, 'dialog.saved')
+  const busy = !!inflight || starting || !!profileState.generation
+  setBusy(busy, wait > 0)
+  const cooldownText = wait ? t(uiLang, 'dialog.cooldown', { seconds: Math.ceil(wait / 1000) }) : ''
+  const banner = el('cooldown-banner')
+  banner.textContent = cooldownText
+  banner.hidden = !wait
+  const text = profileState.generation ? t(uiLang, 'reply.streaming') : wait ? cooldownText : t(uiLang, 'dialog.saved')
   if (!unsaved.size) el('dialog-status').textContent = text
   if (window.parent !== window) window.parent.postMessage({ source: 'study-buddy-chat', action: 'status', text, lang: uiLang }, '*')
 }
@@ -748,13 +758,14 @@ function clearRetryButtons(): void {
   for (const b of thread.querySelectorAll('[data-retry]')) b.remove()
 }
 
-function setBusy(busy: boolean): void {
-  for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy
-  ;(el('more-btn') as HTMLButtonElement).disabled = busy
-  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation], #new-chat-btn')) b.disabled = busy
+function setBusy(busy: boolean, cooldown = false): void {
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy || cooldown
+  ;(el('more-btn') as HTMLButtonElement).disabled = busy || cooldown
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation]')) b.disabled = busy || cooldown
+  ;(el('new-chat-btn') as HTMLButtonElement).disabled = busy
   ;(el('ask-input') as HTMLInputElement).disabled = busy
   const askButton = el('ask-btn') as HTMLButtonElement
-  askButton.disabled = busy && !inflight
+  askButton.disabled = (busy || cooldown) && !inflight
   const label = t(uiLang, inflight ? 'ask.stop' : 'ask.button')
   askButton.title = label
   askButton.setAttribute('aria-label', label)
@@ -888,7 +899,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
 }
 
 async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string, onAccepted?: () => void, attachmentId?: string, storedText = false, preserveAttachment = false): Promise<boolean> {
-  if (!prompt.trim() || inflight || starting || !conversation) return false
+  if (!prompt.trim() || inflight || starting || !conversation || cooldownRemaining(profileState.lastStartedAt) > 0) return false
   starting = true
   setBusy(true)
   try {
@@ -906,7 +917,7 @@ async function send(prompt: string, kind: TurnKind = 'ask', display?: string, in
 }
 
 async function regenerate(): Promise<void> {
-  if (inflight || starting || !conversation) return
+  if (inflight || starting || cooldownRemaining(profileState.lastStartedAt) > 0 || !conversation) return
   const last = [...conversation.turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
   if (!last) return
   starting = true

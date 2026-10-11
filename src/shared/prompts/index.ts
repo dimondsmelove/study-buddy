@@ -11,7 +11,7 @@ import { checkEn, simplerEn, taskPromptsEn } from './tasks.en'
 import { checkRu, simplerRu, taskPromptsRu } from './tasks.ru'
 
 /** Bump on any prompt-text or parameter change; logged/verifiable. */
-export const PROMPTS_VERSION = '2026-10-10.1'
+export const PROMPTS_VERSION = '2026-10-11.1'
 
 export type TaskId = 'solve' | 'quiz' | 'explain' | 'translate' | 'summarize' | 'hint'
 /** Everything that starts a turn: a task button, a free question, "simpler", or checking an attempt. */
@@ -58,8 +58,7 @@ export function taskPrompt(task: TaskId, ctx: PromptContext): string {
     : taskPromptsEn[task](targetLanguageName(ctx))
 }
 
-export function checkPrompt(attempt: string, ctx: PromptContext): string {
-  if (!attempt.trim()) throw new Error('Enter a student attempt to check.')
+export function checkPrompt(attempt: string | undefined, ctx: PromptContext): string {
   return isRussian(ctx)
     ? checkRu(attempt, ruLanguageName(ctx))
     : checkEn(attempt, targetLanguageName(ctx))

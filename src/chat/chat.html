@@ -36,20 +36,12 @@
         </div>
         <div id="thread" aria-live="polite"></div>
         <p id="dialog-status" role="status"></p>
-        <div id="context-summary"><span id="context-summary-text"></span><span id="context-warning" hidden></span><button type="button" id="context-details-btn" class="text-button" data-i18n="context.details"></button><button type="button" id="new-selection-btn" class="selection-button secondary-action"><span class="selection-wide" data-i18n="capture.newSelection"></span><span class="selection-narrow" data-i18n="capture.newSelectionCompact"></span></button></div>
+        <div id="context-summary"><span id="context-summary-text"></span><button type="button" id="context-details-btn" class="text-button" data-i18n="context.details"></button><button type="button" id="new-selection-btn" class="selection-button icon-button" data-i18n-title="capture.newSelection" data-i18n-aria="capture.newSelection"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M8 8h8v8H8z"/></svg></button></div>
         <div id="composer">
           <p id="composer-error" role="alert" hidden></p>
-          <form id="check-form" hidden>
-            <label for="check-input" data-i18n="check.label"></label>
-            <textarea id="check-input" rows="2" data-i18n-placeholder="check.placeholder"></textarea>
-            <div class="composer-actions">
-              <button id="check-cancel" type="button" class="secondary-action" data-i18n="settings.back"></button>
-              <button id="check-submit" type="submit" class="primary-action" data-i18n="check.submit"></button>
-            </div>
-          </form>
           <form id="ask-form" autocomplete="off">
             <input id="ask-input" type="text" data-i18n-placeholder="ask.placeholder" />
-            <button id="ask-btn" type="submit" class="primary-action" data-i18n="ask.button"></button>
+            <button id="ask-btn" type="submit" class="primary-action icon-button" data-i18n-title="ask.button" data-i18n-aria="ask.button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 18-8-8 18-2-8-8-2Z"/><path d="m11 13 4-4"/></svg></button>
           </form>
         </div>
       </section>

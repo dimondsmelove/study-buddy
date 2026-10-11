@@ -524,7 +524,7 @@ try {
   // the request must carry the crop as an image_url. The model is fixed by the
   // app's chain (settings.model no longer exists).
   const PRIMARY = 'deepseek/deepseek-v4-flash-vision-exp'
-  const FALLBACK = 'google/gemini-2.5-flash-lite'
+  const FALLBACK = 'google/gemini-3.1-flash-lite'
   // Pin uiLanguage 'en' so the prompt assertions below are deterministic
   // regardless of the test machine's browser locale (auto would follow it).
   await sw.evaluate(
@@ -728,7 +728,7 @@ try {
     for (const kind of ['hint', 'solve']) document.querySelector(`[data-preset="${kind}"]`).dispatchEvent(new MouseEvent('click', { bubbles: true }))
   })
   await rapid.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.includes('Hello'))
-  check(requestCount === beforeRapid + 1 && await rapid.locator('.msg.user').count() === 2 && await rapid.locator('#ask-btn').textContent() === 'Stop' && !await rapid.locator('#ask-btn').isDisabled(), 'rapid same-page events reserve one start before settings resolve and retain its Stop controller')
+  check(requestCount === beforeRapid + 1 && await rapid.locator('.msg.user').count() === 2 && await rapid.locator('#ask-btn').getAttribute('aria-label') === 'Stop' && !await rapid.locator('#ask-btn').isDisabled(), 'rapid same-page events reserve one start before settings resolve and retain its Stop controller')
   await rapid.click('#ask-btn')
   await waitSaved(rapid, 'Stopped')
   check((await readSaved(rapid)).conversations.find(c => c.id === (rapid.url().match(/conversation=([^&]+)/)?.[1])).turns.at(-1).status === 'cancelled', 'the surviving same-page request can still be cancelled and saved')
@@ -791,11 +791,15 @@ try {
   const narrowGeometry = await layout.evaluate(() => {
     const popover = document.querySelector('#more-actions').getBoundingClientRect()
     const summary = document.querySelector('#context-summary-text')
-    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, summary: { text: summary.textContent, label: summary.getAttribute('aria-label'), fits: summary.scrollWidth <= summary.clientWidth }, viewport: { width: innerWidth, height: innerHeight } }
+    const composer = document.querySelector('#composer').getBoundingClientRect()
+    const input = document.querySelector('#ask-input').getBoundingClientRect()
+    const send = document.querySelector('#ask-btn').getBoundingClientRect()
+    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, summary: { text: summary.textContent, label: summary.getAttribute('aria-label'), fits: summary.scrollWidth <= summary.clientWidth }, composer: { bottom: composer.bottom, inputBottom: input.bottom, sendBottom: send.bottom }, viewport: { width: innerWidth, height: innerHeight } }
   })
   check(narrowGeometry.width <= 320 && narrowGeometry.popover.left >= 0 && narrowGeometry.popover.top >= 0 &&
     narrowGeometry.popover.right <= 320 && narrowGeometry.popover.bottom <= 324 &&
-    narrowGeometry.summary.fits && narrowGeometry.summary.text.includes('imgs') && narrowGeometry.summary.label.includes('images') &&
+    narrowGeometry.summary.fits && narrowGeometry.summary.text.includes('budget') && narrowGeometry.summary.label.includes('budget') &&
+    narrowGeometry.composer.bottom <= 324 && narrowGeometry.composer.inputBottom <= 324 && narrowGeometry.composer.sendBottom <= 324 &&
     await layout.locator('#ask-input').isVisible() && await layout.locator('#ask-btn').isVisible(),
   '320×324 viewport keeps the menu and required composer reachable (' + JSON.stringify(narrowGeometry) + ')')
   await layout.keyboard.press('Escape')
@@ -834,30 +838,25 @@ try {
   const narrowContext = async (language) => {
     await layout.fill('#ask-input', 'Compare the saved images')
     await layout.setViewportSize({ width: 320, height: 324 })
-    await layout.waitForFunction(() => !document.querySelector('#context-warning').hidden)
     return layout.evaluate(() => {
       const count = document.querySelector('#context-summary-text')
-      const warning = document.querySelector('#context-warning')
       const details = document.querySelector('#context-details-btn')
       const selection = document.querySelector('#new-selection-btn')
       const rect = node => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, height: r.height } }
       return {
-        count: count.textContent, fullLabel: count.getAttribute('aria-label'),
-        countsFit: count.scrollWidth <= count.clientWidth,
-        warning: warning.textContent, warningVisible: !warning.hidden,
-        bounds: { summary: rect(document.querySelector('#context-summary')), count: rect(count), warning: rect(warning), details: rect(details), selection: rect(selection), ask: rect(document.querySelector('#ask-input')), send: rect(document.querySelector('#ask-btn')) },
+        count: count.textContent, fullLabel: count.getAttribute('aria-label'), countsFit: count.scrollWidth <= count.clientWidth,
+        hasLegacyWarning: !!document.querySelector('#context-warning'),
+        bounds: { summary: rect(document.querySelector('#context-summary')), count: rect(count), details: rect(details), selection: rect(selection), composer: rect(document.querySelector('#composer')), ask: rect(document.querySelector('#ask-input')), send: rect(document.querySelector('#ask-btn')) },
         overflow: document.documentElement.scrollWidth > innerWidth,
       }
     }).then(result => ({ language, ...result }))
   }
   const narrowEnglish = await narrowContext('en')
-  check(narrowEnglish.countsFit && narrowEnglish.count.includes('msgs') && narrowEnglish.count.includes('imgs') &&
-    narrowEnglish.warningVisible && narrowEnglish.warning.includes('omitted') && !narrowEnglish.overflow &&
-    narrowEnglish.bounds.summary.height >= 60 && narrowEnglish.bounds.summary.height <= 62 && narrowEnglish.bounds.count.bottom <= narrowEnglish.bounds.details.top &&
-    narrowEnglish.bounds.warning.top >= narrowEnglish.bounds.details.top && narrowEnglish.bounds.warning.bottom <= narrowEnglish.bounds.summary.bottom &&
-    narrowEnglish.bounds.details.height === 44 && narrowEnglish.bounds.selection.height === 44 &&
-    narrowEnglish.bounds.ask.bottom <= 324 && narrowEnglish.bounds.send.bottom <= 324,
-  '320×324 English context counts and exclusions share a reachable second row with 44px controls (' + JSON.stringify(narrowEnglish) + ')')
+  check(narrowEnglish.countsFit && narrowEnglish.count.includes('budget') && narrowEnglish.fullLabel.includes('budget') &&
+    !narrowEnglish.hasLegacyWarning && !narrowEnglish.overflow &&
+    narrowEnglish.bounds.summary.height >= 44 && narrowEnglish.bounds.details.height === 44 && narrowEnglish.bounds.selection.height === 44 &&
+    narrowEnglish.bounds.ask.bottom <= 324 && narrowEnglish.bounds.send.bottom <= 324 && narrowEnglish.bounds.composer.bottom <= 324,
+  '320×324 English token budget and composer remain visible with 44px controls (' + JSON.stringify(narrowEnglish) + ')')
   await sw.evaluate(async () => {
     const { settings } = await chrome.storage.local.get('settings')
     await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'ru' } })
@@ -866,27 +865,21 @@ try {
   await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
   await layout.fill('#ask-input', 'Compare the saved images')
   await layout.setViewportSize({ width: 480, height: 568 })
-  await layout.waitForFunction(() => !document.querySelector('#context-warning').hidden)
   const wideRussian = await layout.evaluate(() => {
     const count = document.querySelector('#context-summary-text')
-    const warning = document.querySelector('#context-warning')
     return {
       text: count.textContent, fullLabel: count.getAttribute('aria-label'),
       fits: count.scrollWidth <= count.clientWidth, fontSize: parseFloat(getComputedStyle(count).fontSize),
-      warning: warning.textContent, warningVisible: !warning.hidden,
     }
   })
-  check(wideRussian.fits && wideRussian.text.includes('сообщ.') && wideRussian.text.includes('изобр.') &&
-    wideRussian.fullLabel.includes('В следующем ответе:') && wideRussian.warningVisible && wideRussian.warning.includes('Исключено:') && wideRussian.fontSize >= 12,
-  '480px Russian warning preserves a 12px readable count label or uses the compact full-count fallback (' + JSON.stringify(wideRussian) + ')')
+  check(wideRussian.fits && wideRussian.text.includes('200 тыс.') && wideRussian.fullLabel.includes('200 тыс.') && wideRussian.fontSize >= 12,
+  '480px Russian estimated budget label remains readable (' + JSON.stringify(wideRussian) + ')')
   const narrowRussian = await narrowContext('ru')
-  check(narrowRussian.countsFit && narrowRussian.count.includes('сообщ.') && narrowRussian.count.includes('изобр.') &&
-    narrowRussian.warningVisible && narrowRussian.warning.includes('исключ.') && !narrowRussian.overflow &&
-    narrowRussian.bounds.summary.height >= 60 && narrowRussian.bounds.summary.height <= 62 && narrowRussian.bounds.count.bottom <= narrowRussian.bounds.details.top &&
-    narrowRussian.bounds.warning.top >= narrowRussian.bounds.details.top && narrowRussian.bounds.warning.bottom <= narrowRussian.bounds.summary.bottom &&
+  check(narrowRussian.countsFit && narrowRussian.count.includes('200 тыс.') && !narrowRussian.hasLegacyWarning && !narrowRussian.overflow &&
+    narrowRussian.bounds.summary.height >= 44 && narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324 &&
     narrowRussian.bounds.details.height === 44 && narrowRussian.bounds.selection.height === 44 &&
     narrowRussian.bounds.ask.bottom <= 324 && narrowRussian.bounds.send.bottom <= 324,
-  '320×324 Russian context counts and exclusions share a reachable second row with 44px controls (' + JSON.stringify(narrowRussian) + ')')
+  '320×324 Russian estimated budget and composer remain reachable with 44px controls (' + JSON.stringify(narrowRussian) + ')')
   await sw.evaluate(async () => {
     const { settings } = await chrome.storage.local.get('settings')
     await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'en' } })
@@ -920,46 +913,29 @@ try {
 
   const checked = await openCapture()
   await checked.setViewportSize({ width: 480, height: 564 })
+  check(await checked.locator('#ask-form').isVisible() && !(await checked.locator('#check-form').count()),
+    'Check keeps the ordinary composer and has no separate attempt form')
   await checked.click('#check-btn')
-  check(await checked.locator('#ask-form').isHidden() && await checked.locator('#thread .hint').isHidden(),
-    'Check uses the shared composer without a second Ask form or unrelated empty-state prompt')
-  await checked.click('#check-submit')
-  check(await checked.locator('#check-form').isVisible(), 'Check refuses an empty attempt and leaves the input visible')
-  const emptyAttemptFeedback = await checked.evaluate(() => {
-    const alert = document.querySelector('#composer-error')
-    const status = document.querySelector('#dialog-status')
-    return {
-      alertVisible: !alert.hidden && getComputedStyle(alert).display !== 'none',
-      operationErrorHidden: document.querySelector('#operation-error').hidden,
-      statusDifferent: alert.textContent.trim() !== status.textContent.trim(),
-    }
-  })
-  check(emptyAttemptFeedback.alertVisible && emptyAttemptFeedback.operationErrorHidden && emptyAttemptFeedback.statusDifferent,
-    'empty Check shows one accessible composer error without duplicating the lifecycle status (' + JSON.stringify(emptyAttemptFeedback) + ')')
-  const attempt = '2(x+3)=10\n2x+3=10\nx=3.5'
-  await checked.fill('#check-input', attempt)
-  const restoredCheckStatus = await checked.evaluate(() => {
-    const alert = document.querySelector('#operation-error')
-    const status = document.querySelector('#dialog-status')
-    return { alertHidden: alert.hidden, statusVisible: getComputedStyle(status).display !== 'none', text: status.textContent.trim() }
-  })
-  check(restoredCheckStatus.alertHidden && restoredCheckStatus.statusVisible &&
-    !restoredCheckStatus.text.includes('Enter your attempt'),
-    'typing clears the alert and restores the current lifecycle status (' + JSON.stringify(restoredCheckStatus) + ')')
-  const checkGeometry = await checked.evaluate(() => {
-    const thread = document.querySelector('#thread').getBoundingClientRect()
-    const form = document.querySelector('#check-form').getBoundingClientRect()
-    return { width: document.documentElement.scrollWidth, thread: thread.height, formBottom: form.bottom, viewport: innerHeight }
-  })
-  check(checkGeometry.width <= 480 && checkGeometry.thread >= 180 && checkGeometry.formBottom <= 564,
-    'Check keeps multiline input and enough dialogue in the 480×564 panel (' + JSON.stringify(checkGeometry) + ')')
-  await checked.screenshot({ path: join(evidence, 'check.png') })
-  await checked.click('#check-submit')
   await waitSaved(checked, 'Complete')
+  const checkGeometry = await checked.evaluate(() => ({ width: document.documentElement.scrollWidth, thread: document.querySelector('#thread').getBoundingClientRect().height, composerBottom: document.querySelector('#composer').getBoundingClientRect().bottom, viewport: innerHeight }))
+  check(checkGeometry.width <= 480 && checkGeometry.thread >= 180 && checkGeometry.composerBottom <= 564,
+    'direct Check preserves the compact composer and dialogue (' + JSON.stringify(checkGeometry) + ')')
+  await checked.screenshot({ path: join(evidence, 'check.png') })
   const checkedDb = await readSaved(checked)
   const checkedId = checkedDb.state.lastConversationId
-  check(checkedDb.conversations.find(c => c.id === checkedId).turns.find(turn => turn.id === checkedDb.conversations.find(c => c.id === checkedId).turns.at(-1).replyTo)?.input === attempt, 'raw multiline student attempt saved independently of its template')
-  check(lastAiRequest.max_tokens === 1024 && lastAiRequest.messages.some(m => Array.isArray(m.content) && m.content.some(p => p.text?.includes(attempt))), 'Check serializes the actual attempt and its budget')
+  const checkedConversation = checkedDb.conversations.find(c => c.id === checkedId)
+  const checkedTurn = checkedConversation.turns.find(turn => turn.role === 'user' && turn.kind === 'check')
+  check(!!checkedTurn && checkedTurn.input === undefined && checkedTurn.attachmentId === capture.id, 'Check is stored as an image-grounded user turn without a required text attempt')
+  check(lastAiRequest.max_tokens === 1024 && lastAiRequest.messages.some(m => Array.isArray(m.content) && m.content.some(p => p.text?.includes('work or answer visible in the current image') && p.text?.includes('no student work or answer that can be checked'))), 'Check asks the model to inspect visible image work and state honestly when there is none')
+  await resetCooldown(checked)
+  responseMode = 'slow'
+  await checked.fill('#ask-input', 'Accepted draft should clear immediately')
+  await checked.click('#ask-btn')
+  await checked.waitForFunction(() => [...document.querySelectorAll('.msg.user .msg-body')].at(-1)?.textContent?.includes('Accepted draft should clear immediately') && document.querySelector('#ask-input').value === '')
+  check(await checked.inputValue('#ask-input') === '', 'accepted user turn clears its draft before the model finishes')
+  await checked.click('#ask-btn')
+  await waitSaved(checked, 'Stopped')
+  responseMode = 'normal'
   const beforeCooldown = requestCount
   await checked.fill('#ask-input', 'Too soon')
   await checked.click('#ask-btn')
@@ -967,16 +943,16 @@ try {
   check(requestCount === beforeCooldown, 'accepted start imposes the ten-second interval without a queued request')
   check(await checked.inputValue('#ask-input') === 'Too soon', 'a rejected start retains the typed question instead of silently clearing it')
   await checked.click('#history-btn')
-  await checked.locator('.history-row').filter({ hasText: '2(x+3)=10' }).waitFor()
+  await checked.locator(`.history-row:has([data-conversation="${checkedId}"])`).waitFor()
   await checked.waitForFunction(() => document.getElementById('storage-usage')?.textContent?.includes('MiB'))
   await checked.screenshot({ path: join(evidence, 'history.png') })
-  const row = checked.locator('.history-row').filter({ hasText: '2(x+3)=10' })
+  const row = checked.locator(`.history-row:has([data-conversation="${checkedId}"])`)
   const rowGeometry = await row.evaluate(node => {
     const open = node.querySelector('.history-open').getBoundingClientRect()
     const remove = node.querySelector('.history-delete').getBoundingClientRect()
     return { children: node.children.length, title: node.querySelector('.history-title')?.textContent, date: node.querySelector('.history-date')?.textContent, deleteSize: [remove.width, remove.height], sameRow: Math.abs((open.top + open.height / 2) - (remove.top + remove.height / 2)) < 4 }
   })
-  check(rowGeometry.children === 2 && rowGeometry.title?.startsWith('2(x+3)=10') && !rowGeometry.title.includes('\n') && !!rowGeometry.date && rowGeometry.sameRow && rowGeometry.deleteSize[0] >= 44 && rowGeometry.deleteSize[1] >= 44, 'history keeps a readable title/date and 44px delete target on one row (' + JSON.stringify(rowGeometry) + ')')
+  check(rowGeometry.children === 2 && rowGeometry.title === 'Accepted draft should clear immediately' && !rowGeometry.title.includes('\n') && !!rowGeometry.date && rowGeometry.sameRow && rowGeometry.deleteSize[0] >= 44 && rowGeometry.deleteSize[1] >= 44, 'history keeps a readable title/date and 44px delete target on one row (' + JSON.stringify(rowGeometry) + ')')
   check(!(await checked.locator('#settings-btn').count()) && !(await row.getByRole('button', { name: /Export/ }).count()), 'History has no gear or JSON export control')
   await row.locator('.history-delete').click()
   await checked.locator('#delete-dialog[open]').waitFor()
@@ -997,7 +973,7 @@ try {
   await checked.locator('#delete-error:not([hidden])').waitFor()
   check(await checked.locator('#delete-dialog').evaluate(dialog => dialog.open) && await checked.locator('#delete-error').textContent() === "Couldn't delete this chat. Try again." && (await readSaved(checked)).conversations.some(c => c.id === checkedId), 'delete write failure shows a safe retry message inside the dialog and preserves the target')
   await checked.click('#delete-confirm')
-  await checked.waitForFunction(() => !document.querySelector('#history-list')?.textContent?.includes('2(x+3)=10'))
+  await checked.waitForFunction((id) => !document.querySelector(`[data-conversation="${id}"]`), checkedId)
   check(!(await readSaved(checked)).conversations.some(c => c.id === checkedId) && await checked.evaluate(() => document.activeElement?.id === 'history-back' || document.activeElement?.classList.contains('history-open')), 'in-app confirmation deletes the selected conversation and focuses a safe remaining target')
 
   for (const [mode, label, status] of [['truncated', 'Length limit', 'truncated'], ['interrupted', 'Interrupted', 'interrupted'], ['provider-error', 'Provider error', 'provider_error']]) {
@@ -1230,12 +1206,10 @@ try {
   responseMode = 'normal'
   await duplicate.waitForFunction(() => !document.getElementById('new-chat-btn')?.disabled)
   await duplicate.fill('#ask-input', 'Previous task question')
-  await duplicate.click('#check-btn')
-  await duplicate.fill('#check-input', 'Previous task attempt\nsecond line')
   await duplicate.click('#new-chat-btn')
   await duplicate.waitForFunction(() => document.querySelectorAll('.msg').length === 0 && document.querySelector('.turn-image') === null)
   check((await readSaved(duplicate)).state.lastConversationId !== nativeId, 'New chat creates a distinct empty conversation without a prior image message')
-  check(await duplicate.locator('#ask-input').inputValue() === '' && await duplicate.locator('#check-input').inputValue() === '' && await duplicate.locator('#check-form').isHidden(), 'New chat also clears drafts and the previous task attempt form')
+  check(await duplicate.locator('#ask-input').inputValue() === '' && !(await duplicate.locator('#check-form').count()), 'New chat also clears the free-form draft and leaves no obsolete Check form')
   await duplicate.setViewportSize({ width: 340, height: 620 })
   await duplicate.click('#check-btn')
   await duplicate.screenshot({ path: join(evidence, 'narrow.png') })
@@ -1633,7 +1607,7 @@ try {
   await recaptured.click('#ask-btn')
   await recaptured.waitForFunction(count => document.querySelectorAll('.msg.assistant').length > count, oldCount)
   await waitSaved(recaptured, 'Complete')
-  check(lastAiRequest.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length === 2, 'multi-capture request retains at most two unique source images')
+  check(lastAiRequest.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(p => p.type === 'image_url').length === 2, 'multi-capture request includes both unique source images')
 
   const quickPage = await ctx.newPage()
   const quickUrl = `${origin}/quick`

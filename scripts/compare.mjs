@@ -28,7 +28,7 @@ const KEY = apiKey()
 const DEFAULT_MODELS = [
   'qwen/qwen3.7-flash',
   'openai/gpt-5-nano',
-  'google/gemini-2.5-flash-lite',
+  'google/gemini-3.1-flash-lite',
   'z-ai/glm-5.3-flash',
   'deepseek/deepseek-v4-flash-vision-exp',
 ]

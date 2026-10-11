@@ -1,7 +1,7 @@
 # Study Buddy
 
 Select any question on your screen and get a step-by-step answer in English
-by default. Built for studying — hint, check an attempt, solve, quiz, explain,
+by default. Built for studying — hint, check visible work, solve, quiz, explain,
 translate, summarize.
 
 Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
@@ -88,14 +88,20 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - Minimize keeps the iframe/stream alive. Close saves and cancels; navigation
   or writer loss retains the latest committed partial as interrupted, without
   automatic paid resume. One local generation is admitted across windows.
-- Provider context is at most 12 turns, 32,000 text characters and two images
-  of at most 4 MiB each. The current task/attempt/input are retained; oversized
-  required input is refused before network. Omitted/incomplete history stays
-  saved locally; no automatic summary is created. **Next answer** shows the
-  selected message/image counts; **Details** lists exactly what is included or
-  excluded and why, using the same projection as the actual request. Errors
-  beside the composer explain oversized/missing input and preserve the draft.
-  Retry uses its original source context even after a later capture.
+- Each request targets about 200,000 estimated input tokens, including system
+  instructions and a 1,024-token reserve per image, with 20,000 tokens held
+  back for estimation variance. A pinned DeepSeek V4.1 tokenizer estimates
+  text locally; OpenRouter usage is saved with the assistant turn for comparison.
+  This is an estimate, not provider-exact preflight: fallback tokenizers,
+  provider templates and image preprocessing can differ. Whole older task
+  groups are excluded first; transcript and images remain saved locally, with
+  no automatic summary. **Details** explains the budget. Excluded messages stay
+  readable, appear muted with a reason, and can be sent again. Each image also
+  has a separate app-side 4 MiB payload/memory guard, not a provider limit: binary
+  PNG data expands by about one third when base64-encoded, before JSON framing. This
+  conservative per-image guard remains pending real route-specific payload testing. The active task group is refused before
+  network if its estimated size alone exceeds the available budget; the draft
+  remains in the composer.
 - The ten-second start interval is local UX only, not trusted abuse protection
   or a unique-user guarantee. Regenerate is a new start; explicit availability
   fallback before any output is part of the existing start.

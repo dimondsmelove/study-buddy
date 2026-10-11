@@ -334,7 +334,7 @@ let inflight: AbortController | null = null
 
 function reportError(err: unknown): void {
   const key = err instanceof Error ? err.message : 'storage.write'
-  if (['check.needAttempt', 'context.text', 'context.imageMissing', 'context.imageLarge'].includes(key)) { setComposerError(key); return }
+  if (['context.text', 'context.taskTooLarge', 'context.imageMissing', 'context.imageLarge'].includes(key)) { setComposerError(key); return }
   const cooldown = key.startsWith('dialog.cooldown:')
   el('dialog-status').textContent = cooldown ? t(uiLang, 'dialog.cooldown', { seconds: key.split(':')[1] }) : t(uiLang, key.startsWith('storage.') ? 'dialog.storageError' : key)
   el('operation-error').textContent = el('dialog-status').textContent
@@ -483,16 +483,45 @@ function updateStatus(): void {
 
 function setContextSummary(projection: ContextProjection): void {
   const node = el('context-summary-text')
-  const params = { messages: projection.turns.length, images: projection.images.size }
-  const full = t(uiLang, 'context.next', params)
-  const compactViewport = window.matchMedia('(max-width: 360px)').matches
-  const warning = el('context-warning')
-  const excludedCount = projection.entries.filter((entry) => !entry.included).length
-  warning.textContent = excludedCount ? t(uiLang, compactViewport ? 'context.exclusionsCompact' : 'context.exclusions', { count: excludedCount }) : ''
-  warning.hidden = !excludedCount
+  const full = t(uiLang, 'context.usage', { tokens: Math.round(projection.estimatedInputTokens / 1000) })
   node.textContent = full
-  if (compactViewport || node.scrollWidth > node.clientWidth) node.textContent = t(uiLang, 'context.nextCompact', params)
   node.setAttribute('aria-label', full)
+  for (const entry of projection.entries) {
+    const wrap = [...thread.children].find((child) => (child as HTMLElement).dataset.turn === entry.turn.id) as HTMLElement | undefined
+    if (!wrap) continue
+    wrap.classList.toggle('context-excluded', !entry.included)
+    if (!entry.included) {
+      wrap.dataset.exclusion = entry.reason ?? 'olderTask'
+      if (!wrap.querySelector('.context-exclusion-note')) {
+        const note = document.createElement('span')
+        note.className = 'context-exclusion-note'
+        note.textContent = t(uiLang, 'context.reason.' + (entry.reason ?? 'olderTask'))
+        wrap.appendChild(note)
+      }
+    } else {
+      delete wrap.dataset.exclusion
+      wrap.querySelector('.context-exclusion-note')?.remove()
+      wrap.querySelector('.context-reuse')?.remove()
+      continue
+    }
+    if (entry.turn.role !== 'user') continue
+    if (entry.turn.kind === 'capture' && projection.entries.some((other) => other.turn.role === 'user' && other.turn.kind !== 'capture' && other.turn.attachmentId === entry.turn.attachmentId)) continue
+    if (wrap.querySelector('.context-reuse')) continue
+    const action = document.createElement('button')
+    action.type = 'button'
+    action.className = 'context-reuse'
+    action.textContent = t(uiLang, 'context.reuse')
+    action.title = t(uiLang, 'context.reuseTitle')
+    action.onclick = () => {
+      const turn = entry.turn
+      if (turn.kind === 'capture') {
+        void send(checkPrompt(undefined, promptCtx()), 'check', t(uiLang, 'preset.check'), undefined, undefined, turn.attachmentId).catch(reportError)
+      } else {
+        void send(turn.text, turn.kind, turn.display ?? turn.text, turn.input, undefined, turn.attachmentId, true, true).catch(reportError)
+      }
+    }
+    wrap.appendChild(action)
+  }
 }
 
 function setComposerError(key?: string): void {
@@ -502,27 +531,16 @@ function setComposerError(key?: string): void {
 }
 
 function previewTurn(): Turn | undefined {
-  const checkMode = !(el('check-form') as HTMLFormElement).hidden
   let kind = previewKind
   let input: string | undefined
   let text: string
   let display: string
-  if (kind) {
-    if (kind === 'check') {
-      input = (el('check-input') as HTMLTextAreaElement).value
-      if (!input.trim()) return undefined
-      text = checkPrompt(input, promptCtx())
-      display = `${t(uiLang, 'preset.check')}\n${input}`
-    } else {
-      text = taskPrompt(kind as TaskId, promptCtx())
-      display = t(uiLang, `preset.${kind}`)
-    }
-  } else if (checkMode) {
-    kind = 'check'
-    input = (el('check-input') as HTMLTextAreaElement).value
-    if (!input.trim()) return undefined
-    text = checkPrompt(input, promptCtx())
-    display = `${t(uiLang, 'preset.check')}\n${input}`
+  if (kind === 'check') {
+    text = checkPrompt(undefined, promptCtx())
+    display = t(uiLang, 'preset.check')
+  } else if (kind) {
+    text = taskPrompt(kind as TaskId, promptCtx())
+    display = t(uiLang, 'preset.' + kind)
   } else {
     const ask = (el('ask-input') as HTMLInputElement).value
     if (!ask.trim()) return undefined
@@ -548,7 +566,7 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
     const key = err instanceof Error ? err.message : 'context.text'
     contextPreview = undefined
     setComposerError(key.startsWith('context.') ? key : 'context.text')
-    el('context-summary-text').textContent = t(uiLang, window.matchMedia('(max-width: 360px)').matches ? 'context.nextCompact' : 'context.next', { messages: '—', images: '—' })
+    el('context-summary-text').textContent = t(uiLang, 'context.usage', { tokens: '—' })
     return
   }
   contextPreview = projection
@@ -600,7 +618,7 @@ async function showContextDetails(): Promise<void> {
       hasExcluded = true
       const reason = document.createElement('div')
       reason.className = 'context-entry-reason'
-      reason.textContent = t(uiLang, `context.reason.${entry.reason ?? 'messages'}`)
+      reason.textContent = t(uiLang, 'context.reason.' + (entry.reason ?? 'olderTask'))
       row.appendChild(reason)
     }
     if (entry.imageState) {
@@ -733,10 +751,16 @@ function clearRetryButtons(): void {
 function setBusy(busy: boolean): void {
   for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy
   ;(el('more-btn') as HTMLButtonElement).disabled = busy
-  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation], #check-submit, #new-chat-btn')) b.disabled = busy
+  for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation], #new-chat-btn')) b.disabled = busy
   ;(el('ask-input') as HTMLInputElement).disabled = busy
-  ;(el('ask-btn') as HTMLButtonElement).disabled = busy && !inflight
-  ;(el('ask-btn') as HTMLButtonElement).textContent = t(uiLang, inflight ? 'ask.stop' : 'ask.button')
+  const askButton = el('ask-btn') as HTMLButtonElement
+  askButton.disabled = busy && !inflight
+  const label = t(uiLang, inflight ? 'ask.stop' : 'ask.button')
+  askButton.title = label
+  askButton.setAttribute('aria-label', label)
+  askButton.innerHTML = inflight
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 11 18-8-8 18-2-8-8-2Z"/><path d="m11 13 4-4"/></svg>'
 }
 
 async function requireSettings(): Promise<Settings | null> {
@@ -752,7 +776,7 @@ async function requireSettings(): Promise<Settings | null> {
 }
 
 /** Persist the accepted turn before any provider operation; only this port writes. */
-async function streamReply(settings: Settings, user: Turn | null, source: Turn): Promise<boolean> {
+async function streamReply(settings: Settings, user: Turn | null, source: Turn, onAccepted?: () => void): Promise<boolean> {
   if (!conversation) return false
   const selectedId = conversation.id
   const promptContext = { answerLanguage: settings.answerLanguage, uiLang: source.locale }
@@ -785,6 +809,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
   try {
     const accepted = await connection.request<{ conversation: Conversation }>({ action: 'start', conversationId: selectedId, user, assistant })
     conversation = accepted.conversation
+    onAccepted?.()
     el('conversation-title').textContent = conversation.title
     starting = false
     if (user) addMessage('user', user.display ?? user.text).wrap.dataset.turn = user.id
@@ -798,7 +823,6 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     contextPreview = projection
     setContextSummary(projection)
     const context = await requestContext(async (id) => (await getAttachment(id))?.data, projection)
-    if (context.omitted) addMessage('note', t(uiLang, 'context.omitted', { count: context.omitted }))
     const result = await createGateway(settings).ask({
       messages: [{ role: 'system', content: system }, ...context.messages],
       ...turnParams(source.kind),
@@ -863,22 +887,20 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
   return true
 }
 
-async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string): Promise<boolean> {
+async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string, onAccepted?: () => void, attachmentId?: string, storedText = false, preserveAttachment = false): Promise<boolean> {
   if (!prompt.trim() || inflight || starting || !conversation) return false
-  // Reserve before the asynchronous settings read: rapid events in this page
-  // must not replace its Stop controller even if the worker rejects the loser.
   starting = true
   setBusy(true)
   try {
     const settings = await requireSettings()
     if (!settings || closing) return false
-    const text = kind === 'ask' ? prompt : kind === 'check' ? checkPrompt(input!, promptCtx()) : kind === 'simpler' ? simplerPrompt(promptCtx()) : taskPrompt(kind, promptCtx())
-    const label = kind === 'ask' ? display : kind === 'check' ? `${t(uiLang, 'preset.check')}\n${input}` : kind === 'simpler' ? t(uiLang, 'msg.simpler') : t(uiLang, `preset.${kind}`)
-    const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: conversation.activeAttachmentId }
+    const text = storedText ? prompt : kind === 'ask' ? prompt : kind === 'check' ? checkPrompt(input, promptCtx()) : kind === 'simpler' ? simplerPrompt(promptCtx()) : taskPrompt(kind, promptCtx())
+    const label = display ?? (kind === 'ask' ? prompt : kind === 'check' ? t(uiLang, 'preset.check') : kind === 'simpler' ? t(uiLang, 'msg.simpler') : t(uiLang, 'preset.' + kind))
+    const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: preserveAttachment ? attachmentId : attachmentId ?? conversation.activeAttachmentId }
     previewKind = undefined
     await updateContextPreview(user)
     if (!el('composer-error').hidden) return false
-    generationDone = streamReply(settings, user, user)
+    generationDone = streamReply(settings, user, user, onAccepted)
     return await generationDone
   } finally { starting = false; updateStatus() }
 }
@@ -937,59 +959,24 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
 }
 
 ;(el('ask-input') as HTMLInputElement).addEventListener('input', () => { setComposerError(); queueContextPreview() })
-;(el('ask-form') as HTMLFormElement).addEventListener('submit', (e) => {
-  e.preventDefault()
-  // While a request is in flight the same button doubles as Stop.
+el('ask-form').addEventListener('submit', (event) => {
+  event.preventDefault()
   if (inflight) {
     inflight.abort()
     return
   }
   const input = el('ask-input') as HTMLInputElement
   const question = input.value
-  if (question.trim()) void send(question).then((accepted) => {
-    if (accepted && input.value === question) { input.value = ''; queueContextPreview() }
+  if (question.trim()) void send(question, 'ask', question, undefined, () => {
+    if (input.value === question) { input.value = ''; queueContextPreview() }
   }).catch(reportError)
 })
 
 el('check-btn').onclick = () => {
-  el('view-capture').dataset.composerMode = 'check'
-  previewKind = 'check'
   el('operation-error').hidden = true
   setComposerError()
-  el('check-form').hidden = false
-  el('ask-form').hidden = true
-  el('check-input').focus()
+  void send(checkPrompt(undefined, promptCtx()), 'check', t(uiLang, 'preset.check')).catch(reportError)
 }
-el('check-cancel').onclick = () => {
-  delete el('view-capture').dataset.composerMode
-  previewKind = undefined
-  el('check-form').hidden = true
-  el('ask-form').hidden = false
-  el('check-btn').focus()
-  queueContextPreview()
-}
-el('check-input').oninput = () => {
-  el('operation-error').hidden = true
-  setComposerError()
-  queueContextPreview()
-  updateStatus()
-}
-el('check-form').addEventListener('submit', (event) => {
-  event.preventDefault()
-  const attempt = (el('check-input') as HTMLTextAreaElement).value
-  if (!attempt.trim()) { reportError(new Error('check.needAttempt')); return }
-  void send(checkPrompt(attempt, promptCtx()), 'check', `${t(uiLang, 'preset.check')}\n${attempt}`, attempt).then((accepted) => {
-    const input = el('check-input') as HTMLTextAreaElement
-    if (!accepted || input.value !== attempt) return
-    input.value = ''
-    delete el('view-capture').dataset.composerMode
-    previewKind = undefined
-    el('check-form').hidden = true
-    el('ask-form').hidden = false
-    ;(el('ask-input') as HTMLInputElement).focus()
-    queueContextPreview()
-  }).catch(reportError)
-})
 
 el('new-chat-btn').onclick = () => {
   if (closing) return
@@ -997,12 +984,8 @@ el('new-chat-btn').onclick = () => {
     if (closing) return
     releaseImages()
     ;(el('ask-input') as HTMLInputElement).value = ''
-    ;(el('check-input') as HTMLTextAreaElement).value = ''
     previewKind = undefined
     setComposerError()
-    delete el('view-capture').dataset.composerMode
-    el('check-form').hidden = true
-    el('ask-form').hidden = false
     await openConversation(value.id)
   }).catch(reportError)
 }

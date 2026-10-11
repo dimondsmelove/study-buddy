@@ -9,7 +9,7 @@ export interface Turn {
   role: 'user' | 'assistant'
   text: string
   display?: string
-  kind: TurnKind
+  kind: TurnKind | 'capture'
   attachmentId?: string
   status?: ReplyStatus
   error?: string
@@ -77,7 +77,7 @@ function excerpt(value: string): string {
 
 /** Message activity ignores capture previews, selections and streamed delta saves. */
 export function conversationActivityAt(conversation: Conversation): number {
-  return conversation.turns.reduce((latest, turn) => Math.max(latest, turn.createdAt), conversation.createdAt)
+  return conversation.turns.reduce((latest, turn) => turn.kind === 'capture' ? latest : Math.max(latest, turn.createdAt), conversation.createdAt)
 }
 
 export const CONTEXT_LIMITS = { turns: 12, text: 32_000, images: 2, imageBytes: 4 * 1024 * 1024 }
@@ -91,10 +91,10 @@ export function cooldownRemaining(lastStartedAt: number, now = Date.now()): numb
 export function contextTurns(conversation: Conversation): { turns: Turn[]; omitted: number } {
   const latestReplies = new Map<string, string>()
   for (const turn of conversation.turns) if (turn.role === 'assistant' && turn.status === 'complete' && turn.replyTo) latestReplies.set(turn.replyTo, turn.id)
-  const usable = conversation.turns.filter((turn) => turn.role === 'user' || (!!turn.text && turn.status === 'complete' && (!turn.replyTo || latestReplies.get(turn.replyTo) === turn.id)))
-  const latestUser = [...usable].reverse().find((turn) => turn.role === 'user')
+  const usable = conversation.turns.filter((turn) => turn.kind === 'capture' || turn.role === 'user' || (!!turn.text && turn.status === 'complete' && (!turn.replyTo || latestReplies.get(turn.replyTo) === turn.id)))
+  const latestUser = [...usable].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
   const taskId = latestUser?.attachmentId ?? conversation.activeAttachmentId
-  const task = usable.find((turn) => turn.role === 'user' && turn.attachmentId === taskId)
+  const task = usable.find((turn) => turn.role === 'user' && turn.kind !== 'capture' && turn.attachmentId === taskId)
   const attempt = [...usable].reverse().find((turn) => turn.role === 'user' && !!turn.input && turn.kind === 'check' && turn.attachmentId === taskId)
   const required = new Set([latestUser?.id, task?.id, attempt?.id])
   const selected = usable.slice(-CONTEXT_LIMITS.turns)
@@ -119,7 +119,7 @@ export function contextTurns(conversation: Conversation): { turns: Turn[]; omitt
 
 export function contextImages(turns: Turn[]): Set<string> {
   const wanted = new Set<string>()
-  const latest = [...turns].reverse().find((turn) => turn.role === 'user')
+  const latest = [...turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
   if (latest?.attachmentId) wanted.add(latest.attachmentId)
   for (const turn of [...turns].reverse()) {
     if (turn.attachmentId && wanted.size < CONTEXT_LIMITS.images) wanted.add(turn.attachmentId)

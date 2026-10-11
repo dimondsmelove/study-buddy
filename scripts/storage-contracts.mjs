@@ -15,8 +15,13 @@ try {
     const c = contracts
     const first = await c.createConversation('First')
     const second = await c.createConversation('Second')
-    const image = { id: 'shared-image', data: new Blob(['image fixture'], { type: 'image/png' }), createdAt: Date.now() }
+    const image = { id: 'shared-image', data: new Blob(['image fixture'], { type: 'image/png' }), createdAt: Date.now() + 1000 }
+    const activityBeforeCapture = c.conversationActivityAt(first)
     await c.attachCapture(first.id, image)
+    await c.attachCapture(first.id, image)
+    const captured = await c.getConversation(first.id)
+    const captureTurnCount = captured.turns.filter(turn => turn.kind === 'capture' && turn.id === image.id).length
+    const captureDoesNotPromote = c.conversationActivityAt(captured) === activityBeforeCapture
     await c.attachCapture(second.id, image)
     const user = { id: 'user', role: 'user', text: '2x+6=10', kind: 'ask', locale: 'en', promptVersion: 'fixture', createdAt: Date.now(), attachmentId: image.id }
     const assistant = { ...user, id: 'assistant', role: 'assistant', text: '', status: 'streaming', replyTo: user.id }
@@ -57,7 +62,7 @@ try {
     let imageLarge = false, imageMissing = false
     try { await c.requestContext(images, async () => new Blob([new Uint8Array(4 * 1024 * 1024 + 1)])) } catch (err) { imageLarge = err.message === 'context.imageLarge' }
     try { await c.requestContext(images, async () => undefined) } catch (err) { imageMissing = err.message === 'context.imageMissing' }
-    return { recovered: recovered.turns.at(-1), generatedTitle: recovered.title, titleGeneratedAt: recovered.titleGeneratedAt, state, bytes, quotaRejected, preserved, sharedKept, orphanRemoved, empty, bounded: { count: bounded.turns.length, ids: bounded.turns.map(t => t.id), omitted: bounded.omitted }, oversizeRejected, imageCount, imageLarge, imageMissing, contextPreserved: JSON.stringify(images) === sourceSnapshot, cooldown: [c.cooldownRemaining(100, 10099), c.cooldownRemaining(100, 10100)] }
+    return { captureTurnCount, captureDoesNotPromote, recovered: recovered.turns.at(-1), generatedTitle: recovered.title, titleGeneratedAt: recovered.titleGeneratedAt, state, bytes, quotaRejected, preserved, sharedKept, orphanRemoved, empty, bounded: { count: bounded.turns.length, ids: bounded.turns.map(t => t.id), omitted: bounded.omitted }, oversizeRejected, imageCount, imageLarge, imageMissing, contextPreserved: JSON.stringify(images) === sourceSnapshot, cooldown: [c.cooldownRemaining(100, 10099), c.cooldownRemaining(100, 10100)] }
   })
   assert.equal(result.recovered.text, 'partial response')
   assert.equal(result.recovered.status, 'interrupted')
@@ -65,6 +70,8 @@ try {
   assert.equal(typeof result.titleGeneratedAt, 'number')
   assert.equal(result.state.generation, undefined)
   assert.ok(result.bytes > 0)
+  assert.equal(result.captureTurnCount, 1, 'repeated capture handoff adds one image turn')
+  assert.equal(result.captureDoesNotPromote, true, 'capture does not promote conversation activity')
   for (const key of ['quotaRejected', 'preserved', 'sharedKept', 'orphanRemoved', 'empty', 'oversizeRejected']) assert.equal(result[key], true, key)
   assert.equal(result.bounded.count, 12)
   assert.ok(result.bounded.ids.includes('turn-0'))

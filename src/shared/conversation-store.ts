@@ -99,7 +99,9 @@ export function attachCapture(id: string, attachment: Attachment): Promise<Conve
       const conversation = request.result as Conversation | undefined
       if (!conversation) { tx.abort(); return }
       conversation.activeAttachmentId = attachment.id
-      conversation.updatedAt = Date.now()
+      if (!conversation.turns.some((turn) => turn.kind === 'capture' && turn.id === attachment.id)) {
+        conversation.turns.push({ id: attachment.id, role: 'user', text: '', kind: 'capture', attachmentId: attachment.id, createdAt: attachment.createdAt, locale: 'en', promptVersion: 'capture' })
+      }
       tx.objectStore('attachments').put(attachment)
       store.put(conversation)
       done(conversation)
@@ -116,7 +118,7 @@ export function startGeneration(conversationId: string, user: Turn | null, assis
       if (!conversation) { tx.abort(); return }
       if (user) {
         conversation.turns.push(user)
-        if (!conversation.turns.some((turn) => turn.role === 'user' && turn.id !== user.id)) conversation.title = (user.input || user.display || conversation.title).slice(0, 80)
+        if (!conversation.turns.some((turn) => turn.role === 'user' && turn.kind !== 'capture' && turn.id !== user.id)) conversation.title = (user.input || user.display || conversation.title).slice(0, 80)
       }
       conversation.turns.push(assistant)
       conversation.updatedAt = now

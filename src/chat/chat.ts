@@ -565,7 +565,8 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
   if (!conversation) return false
   const selectedId = conversation.id
   const promptContext = { answerLanguage: settings.answerLanguage, uiLang: source.locale }
-  const requestTitle = !!user && conversation.turns.length === 0 && conversation.titleGeneratedAt === undefined
+  if (source.kind === 'capture') throw new Error('dialog.invalid')
+  const requestTitle = !!user && !conversation.turns.some((turn) => turn.role === 'user' && turn.kind !== 'capture') && conversation.titleGeneratedAt === undefined
   const titleParser = requestTitle ? createResponseTitleParser() : undefined
   let generatedTitle: string | undefined
   let titleParserFinished = false
@@ -683,7 +684,7 @@ async function send(prompt: string, kind: TurnKind = 'ask', display?: string, in
 
 async function regenerate(): Promise<void> {
   if (inflight || starting || !conversation) return
-  const last = [...conversation.turns].reverse().find((turn) => turn.role === 'user')
+  const last = [...conversation.turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
   if (!last) return
   starting = true
   setBusy(true)

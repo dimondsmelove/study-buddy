@@ -475,6 +475,20 @@ function updateStatus(): void {
   if (window.parent !== window) window.parent.postMessage({ source: 'study-buddy-chat', action: 'status', text, lang: uiLang }, '*')
 }
 
+function setContextSummary(projection: ContextProjection): void {
+  const node = el('context-summary-text')
+  const params = { messages: projection.turns.length, images: projection.images.size }
+  const full = t(uiLang, 'context.next', params)
+  const compact = window.matchMedia('(max-width: 360px)').matches
+  node.textContent = compact ? t(uiLang, 'context.nextCompact', params) : full
+  node.setAttribute('aria-label', full)
+  const warning = el('context-warning')
+  const excludedCount = projection.entries.filter((entry) => !entry.included).length
+  const warningParams = { count: excludedCount }
+  warning.textContent = excludedCount ? t(uiLang, compact ? 'context.exclusionsCompact' : 'context.exclusions', warningParams) : ''
+  warning.hidden = !excludedCount
+}
+
 function setComposerError(key?: string): void {
   const node = el('composer-error')
   node.textContent = key ? t(uiLang, key) : ''
@@ -527,15 +541,11 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
     const key = err instanceof Error ? err.message : 'context.text'
     contextPreview = undefined
     setComposerError(key.startsWith('context.') ? key : 'context.text')
-    el('context-summary-text').textContent = t(uiLang, 'context.next', { messages: '—', images: '—' })
+    el('context-summary-text').textContent = t(uiLang, window.matchMedia('(max-width: 360px)').matches ? 'context.nextCompact' : 'context.next', { messages: '—', images: '—' })
     return
   }
   contextPreview = projection
-  el('context-summary-text').textContent = t(uiLang, 'context.next', { messages: projection.turns.length, images: projection.images.size })
-  const excludedCount = projection.entries.filter((entry) => !entry.included).length
-  const warning = el('context-warning')
-  warning.textContent = excludedCount ? t(uiLang, 'context.exclusions', { count: excludedCount }) : ''
-  warning.hidden = !excludedCount
+  setContextSummary(projection)
   setComposerError()
   for (const id of projection.images) {
     const attachment = await getAttachment(id)
@@ -546,6 +556,10 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
 }
 
 let contextPreviewTimer: ReturnType<typeof setTimeout> | undefined
+window.addEventListener('resize', () => {
+  if (contextPreview) setContextSummary(contextPreview)
+})
+
 function queueContextPreview(): void {
   if (contextPreviewTimer) clearTimeout(contextPreviewTimer)
   contextPreviewTimer = setTimeout(() => { contextPreviewTimer = undefined; void updateContextPreview() }, 120)
@@ -773,7 +787,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn):
     const contextConversation = { ...conversation, turns: conversation.turns.slice(0, index + 1) }
     const projection = contextProjection(contextConversation)
     contextPreview = projection
-    el('context-summary-text').textContent = t(uiLang, 'context.next', { messages: projection.turns.length, images: projection.images.size })
+    setContextSummary(projection)
     const context = await requestContext(contextConversation, async (id) => (await getAttachment(id))?.data, projection)
     if (context.omitted) addMessage('note', t(uiLang, 'context.omitted', { count: context.omitted }))
     const result = await createGateway(settings).ask({

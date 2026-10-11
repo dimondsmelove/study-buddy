@@ -380,3 +380,13 @@ h1 { margin: 0; font-size: 18px; font-weight: 650; line-height: 1.3; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }
+
+@media (max-width: 360px) {
+  #context-summary { gap: 4px; }
+  #context-summary-text { font-size: 10px; }
+  #context-warning { font-size: 10px; }
+  .selection-button { padding-right: 6px; padding-left: 6px; font-size: 11px; }
+  .selection-wide { display: none; }
+}
+.selection-narrow { display: none; }
+@media (max-width: 360px) { .selection-narrow { display: inline; } }

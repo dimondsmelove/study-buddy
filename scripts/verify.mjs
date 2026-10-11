@@ -790,10 +790,12 @@ try {
   await layout.getByRole('button', { name: 'More', exact: true }).click()
   const narrowGeometry = await layout.evaluate(() => {
     const popover = document.querySelector('#more-actions').getBoundingClientRect()
-    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, viewport: { width: innerWidth, height: innerHeight } }
+    const summary = document.querySelector('#context-summary-text')
+    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, summary: { text: summary.textContent, label: summary.getAttribute('aria-label'), fits: summary.scrollWidth <= summary.clientWidth }, viewport: { width: innerWidth, height: innerHeight } }
   })
   check(narrowGeometry.width <= 320 && narrowGeometry.popover.left >= 0 && narrowGeometry.popover.top >= 0 &&
     narrowGeometry.popover.right <= 320 && narrowGeometry.popover.bottom <= 324 &&
+    narrowGeometry.summary.fits && narrowGeometry.summary.text.includes('imgs') && narrowGeometry.summary.label.includes('images') &&
     await layout.locator('#ask-input').isVisible() && await layout.locator('#ask-btn').isVisible(),
   '320×324 viewport keeps the menu and required composer reachable (' + JSON.stringify(narrowGeometry) + ')')
   await layout.keyboard.press('Escape')

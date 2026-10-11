@@ -479,14 +479,14 @@ function setContextSummary(projection: ContextProjection): void {
   const node = el('context-summary-text')
   const params = { messages: projection.turns.length, images: projection.images.size }
   const full = t(uiLang, 'context.next', params)
-  const compact = window.matchMedia('(max-width: 360px)').matches
-  node.textContent = compact ? t(uiLang, 'context.nextCompact', params) : full
-  node.setAttribute('aria-label', full)
+  const compactViewport = window.matchMedia('(max-width: 360px)').matches
   const warning = el('context-warning')
   const excludedCount = projection.entries.filter((entry) => !entry.included).length
-  const warningParams = { count: excludedCount }
-  warning.textContent = excludedCount ? t(uiLang, compact ? 'context.exclusionsCompact' : 'context.exclusions', warningParams) : ''
+  warning.textContent = excludedCount ? t(uiLang, compactViewport ? 'context.exclusionsCompact' : 'context.exclusions', { count: excludedCount }) : ''
   warning.hidden = !excludedCount
+  node.textContent = full
+  if (compactViewport || node.scrollWidth > node.clientWidth) node.textContent = t(uiLang, 'context.nextCompact', params)
+  node.setAttribute('aria-label', full)
 }
 
 function setComposerError(key?: string): void {

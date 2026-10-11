@@ -98,11 +98,12 @@ export function attachCapture(id: string, attachment: Attachment): Promise<Conve
     request.onsuccess = () => {
       const conversation = request.result as Conversation | undefined
       if (!conversation) { tx.abort(); return }
-      conversation.activeAttachmentId = attachment.id
-      if (!conversation.turns.some((turn) => turn.kind === 'capture' && turn.id === attachment.id)) {
+      const duplicate = conversation.turns.some((turn) => turn.kind === 'capture' && turn.id === attachment.id)
+      if (!duplicate) {
+        conversation.activeAttachmentId = attachment.id
         conversation.turns.push({ id: attachment.id, role: 'user', text: '', kind: 'capture', attachmentId: attachment.id, createdAt: attachment.createdAt, locale: 'en', promptVersion: 'capture' })
+        tx.objectStore('attachments').put(attachment)
       }
-      tx.objectStore('attachments').put(attachment)
       store.put(conversation)
       done(conversation)
     }

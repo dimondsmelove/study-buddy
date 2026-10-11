@@ -19,8 +19,14 @@ try {
     const activityBeforeCapture = c.conversationActivityAt(first)
     await c.attachCapture(first.id, image)
     await c.attachCapture(first.id, image)
+    const nextImage = { id: 'next-image', data: new Blob(['next image'], { type: 'image/png' }), createdAt: image.createdAt + 1 }
+    await c.attachCapture(first.id, nextImage)
+    await c.attachCapture(first.id, { ...image, data: new Blob(['replacement image'], { type: 'image/png' }) })
     const captured = await c.getConversation(first.id)
     const captureTurnCount = captured.turns.filter(turn => turn.kind === 'capture' && turn.id === image.id).length
+    const captureOrder = captured.turns.filter(turn => turn.kind === 'capture').map(turn => turn.attachmentId)
+    const capturePointerStable = captured.activeAttachmentId === nextImage.id
+    const captureBlobStable = await (await c.getAttachment(image.id)).data.text() === 'image fixture'
     const captureDoesNotPromote = c.conversationActivityAt(captured) === activityBeforeCapture
     await c.attachCapture(second.id, image)
     const user = { id: 'user', role: 'user', text: '2x+6=10', kind: 'ask', locale: 'en', promptVersion: 'fixture', createdAt: Date.now(), attachmentId: image.id }
@@ -55,6 +61,18 @@ try {
     const bounded = c.contextTurns(many)
     let oversizeRejected = false
     try { c.contextTurns({ ...first, turns: [{ ...user, text: 'x'.repeat(32_001) }] }) } catch { oversizeRejected = true }
+    const captureIds = ['shared-image', 'next-image', 'capture-c']
+    const captures = captureIds.map((id, index) => ({ ...user, id: `capture-turn-${id}`, text: '', kind: 'capture', attachmentId: id, createdAt: Date.now() + index }))
+    const questions = ['ask-a', 'ask-b', 'ask-c'].map((id, index) => ({ ...user, id, text: `question ${index}`, attachmentId: captures[index].attachmentId, createdAt: Date.now() + index + 3 }))
+    const answers = questions.map((turn, index) => ({ ...turn, id: `answer-${index}`, role: 'assistant', status: 'complete', replyTo: turn.id, attachmentId: undefined, createdAt: Date.now() + index + 6 }))
+    const dialog = { ...first, activeAttachmentId: 'capture-c', turns: [captures[0], questions[0], answers[0], captures[1], questions[1], answers[1], captures[2], questions[2]] }
+    const projection = c.contextProjection(dialog)
+    const projectedContext = await c.requestContext(dialog, async () => new Blob(['thread image'], { type: 'image/png' }), projection)
+    const includedIds = projection.entries.filter(entry => entry.included).map(entry => entry.turn.id)
+    const excludedReasons = Object.fromEntries(projection.entries.filter(entry => !entry.included).map(entry => [entry.turn.role === 'assistant' ? entry.turn.id : entry.turn.attachmentId === 'shared-image' ? entry.turn.kind === 'capture' ? 'capture-a' : 'ask-a' : entry.turn.id, entry.reason]))
+    const projectedImages = projectedContext.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(part => part.type === 'image_url').length
+    const firstImageOnly = Array.isArray(projectedContext.messages[0].content) && projectedContext.messages[0].content.length === 1 && projectedContext.messages[0].content[0].type === 'image_url'
+    const previewPayloadMatch = projectedContext.messages.length === projection.turns.length && projectedImages === projection.images.size
     const images = { ...first, turns: ['old', 'recent', 'current'].map((id) => ({ ...user, id, attachmentId: id })) }
     const sourceSnapshot = JSON.stringify(images)
     const context = await c.requestContext(images, async () => image.data)
@@ -62,7 +80,7 @@ try {
     let imageLarge = false, imageMissing = false
     try { await c.requestContext(images, async () => new Blob([new Uint8Array(4 * 1024 * 1024 + 1)])) } catch (err) { imageLarge = err.message === 'context.imageLarge' }
     try { await c.requestContext(images, async () => undefined) } catch (err) { imageMissing = err.message === 'context.imageMissing' }
-    return { captureTurnCount, captureDoesNotPromote, recovered: recovered.turns.at(-1), generatedTitle: recovered.title, titleGeneratedAt: recovered.titleGeneratedAt, state, bytes, quotaRejected, preserved, sharedKept, orphanRemoved, empty, bounded: { count: bounded.turns.length, ids: bounded.turns.map(t => t.id), omitted: bounded.omitted }, oversizeRejected, imageCount, imageLarge, imageMissing, contextPreserved: JSON.stringify(images) === sourceSnapshot, cooldown: [c.cooldownRemaining(100, 10099), c.cooldownRemaining(100, 10100)] }
+    return { includedIds, excludedReasons, projectedImages, firstImageOnly, previewPayloadMatch, captureTurnCount, captureOrder, capturePointerStable, captureBlobStable, captureDoesNotPromote, recovered: recovered.turns.at(-1), generatedTitle: recovered.title, titleGeneratedAt: recovered.titleGeneratedAt, state, bytes, quotaRejected, preserved, sharedKept, orphanRemoved, empty, bounded: { count: bounded.turns.length, ids: bounded.turns.map(t => t.id), omitted: bounded.omitted }, oversizeRejected, imageCount, imageLarge, imageMissing, contextPreserved: JSON.stringify(images) === sourceSnapshot, cooldown: [c.cooldownRemaining(100, 10099), c.cooldownRemaining(100, 10100)] }
   })
   assert.equal(result.recovered.text, 'partial response')
   assert.equal(result.recovered.status, 'interrupted')
@@ -70,7 +88,15 @@ try {
   assert.equal(typeof result.titleGeneratedAt, 'number')
   assert.equal(result.state.generation, undefined)
   assert.ok(result.bytes > 0)
+  assert.deepEqual(result.includedIds, ['capture-turn-next-image', 'ask-b', 'answer-1', 'capture-turn-capture-c', 'ask-c'])
+  assert.deepEqual(result.excludedReasons, { 'capture-a': 'imageLimit', 'ask-a': 'imageLimit', 'answer-0': 'linkedImageLimit' })
+  assert.equal(result.projectedImages, 2)
+  assert.equal(result.firstImageOnly, true, 'capture-only context message contains only its image part')
+  assert.equal(result.previewPayloadMatch, true)
   assert.equal(result.captureTurnCount, 1, 'repeated capture handoff adds one image turn')
+  assert.deepEqual(result.captureOrder, ['shared-image', 'next-image'], 'late duplicate handoff keeps capture order')
+  assert.equal(result.capturePointerStable, true, 'late duplicate handoff keeps the current task image')
+  assert.equal(result.captureBlobStable, true, 'late duplicate handoff does not replace the saved blob')
   assert.equal(result.captureDoesNotPromote, true, 'capture does not promote conversation activity')
   for (const key of ['quotaRejected', 'preserved', 'sharedKept', 'orphanRemoved', 'empty', 'oversizeRejected']) assert.equal(result[key], true, key)
   assert.equal(result.bounded.count, 12)

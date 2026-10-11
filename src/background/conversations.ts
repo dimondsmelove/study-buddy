@@ -1,5 +1,5 @@
 import { attachCapture, createConversation, deleteConversation, enforceConversationLimit, getAttachment, getConversation, getConversationState, recoverGeneration, selectConversation, startGeneration, updateReply } from '../shared/conversation-store'
-import { contextImages, contextTurns, CONTEXT_LIMITS, cooldownRemaining, type Conversation, type Generation, type ReplyStatus, type Turn } from '../shared/conversations'
+import { contextProjection, CONTEXT_LIMITS, cooldownRemaining, type Conversation, type Generation, type ReplyStatus, type Turn } from '../shared/conversations'
 import { CAPTURE_PREFIX, GENERATION_PORT, type ConversationAction, type StoredCapture } from '../shared/messages'
 
 const ready = recoverGeneration().then(() => enforceConversationLimit())
@@ -111,8 +111,8 @@ async function action(message: ConversationAction, tabId?: number): Promise<Conv
 }
 
 async function validateContext(conversation: Conversation): Promise<void> {
-  const { turns } = contextTurns(conversation)
-  for (const id of contextImages(turns)) {
+  const projection = contextProjection(conversation)
+  for (const id of projection.images) {
     const attachment = await getAttachment(id)
     if (!attachment) throw new Error('context.imageMissing')
     if (attachment.data.size > CONTEXT_LIMITS.imageBytes) throw new Error('context.imageLarge')
@@ -153,7 +153,7 @@ export function installConversationCoordinator(): void {
           } else {
             const index = conversation.turns.findIndex((turn) => turn.id === assistant.replyTo && turn.role === 'user')
             if (index < 0) throw new Error('dialog.invalid')
-            conversation.turns = conversation.turns.slice(0, index + 1)
+            conversation.turns = [...conversation.turns.slice(0, index + 1), ...conversation.turns.slice(index + 1).filter((turn) => turn.kind === 'capture')]
           }
           await validateContext(conversation)
           // Prune before establishing the generation lease so failure cannot strand it.

@@ -191,7 +191,7 @@ try {
   console.log(`\nStudy Buddy test browser is up.`)
   console.log(`  profile:  ${profile}`)
   console.log(`  provider: ${merged.provider} (${merged.source})`)
-  console.log(`  models:   DeepSeek → Gemini 2.5 Flash Lite → GPT-5 Nano (automatic fallback)`)
+  console.log(`  models:   DeepSeek → Gemini 3.1 Flash Lite → GPT-5 Nano (automatic fallback)`)
   console.log(`  demo:     ${url}`)
   console.log(`\nSelect a region with Ctrl+Shift+Y or the toolbar icon; chat opens after capture. Choose a task or ask a question.`)
   console.log(`Saved settings and History remain in this profile after closing the browser.\n`)

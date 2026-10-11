@@ -131,11 +131,28 @@ try {
     chatFrame = page.frames().find(frame => frame.url().startsWith(extensionPrefix))
   }
   if (!chatFrame) throw new Error('Preview did not create the embedded Study Buddy chat frame.')
-  await chatFrame.waitForFunction(() => {
-    const crop = document.getElementById('crop')
-    return !!crop?.naturalWidth && !!crop.naturalHeight
-  }, null, { timeout: 15_000 })
-  const cropSize = await chatFrame.locator('#crop').evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight }))
+  const cropDeadline = Date.now() + 15_000
+  let cropReady = false
+  while (Date.now() < cropDeadline && !cropReady) {
+    // The overlay can replace its extension iframe while capture handoff is
+    // still settling. Reacquire the live frame if that navigation detached it.
+    chatFrame = page.frames().find(frame => frame.url().startsWith(extensionPrefix))
+    if (!chatFrame) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      continue
+    }
+    try {
+      await chatFrame.waitForFunction(() => {
+        const crop = document.querySelector('.turn-image')
+        return !!crop?.naturalWidth && !!crop.naturalHeight
+      }, null, { timeout: Math.min(1000, cropDeadline - Date.now()) })
+      cropReady = true
+    } catch (error) {
+      if (!chatFrame.isDetached()) throw error
+    }
+  }
+  if (!cropReady) throw new Error('Preview did not finish loading the captured image.')
+  const cropSize = await chatFrame.locator('.turn-image').evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight }))
   if (cropSize.width < 4 || cropSize.height < 4) throw new Error('Preview capture produced an empty crop.')
   captureReady = true
   writeFileSync(stateFile, JSON.stringify({ origin, token, pid: process.pid, runDir, mode: 'localhost mock only' }, null, 2))

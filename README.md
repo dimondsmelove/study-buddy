@@ -15,26 +15,19 @@ Inside a chat, **New chat** opens an empty conversation with text input;
 capture is saved immediately, without starting an answer. Images remain in the
 thread and open at full size; there is no permanent upper preview.
 
-**Status: MVP.** Region selection → screenshot → crop → chat window,
-English interface and answer defaults, task-shaped answers
-(Hint / Check / Solve / Quiz / Explain / Translate / Summarize + free-form Ask), Markdown +
-LaTeX rendering, per-answer copy / explain simpler / retry, and an automatic
-model fallback, compact local history/delete and minimize/reopen work against
-local mock fixtures. One real-provider Solve fixture passed (84 km/h and a
-clean topic title); broader tutor response quality has not been re-evaluated.
-TD-06 hosted backend remains deferred; the direct-provider path is development-only, not a secured public distribution mode.
-This loop's acceptance build is keyless. The settings gear is commented out;
-retained language settings contain no connection fields. The direct-provider
-connection is provided by the development runtime and is not a user setup flow. That runtime
-still stores its connection locally on the device. All model calls go through
-the `Gateway` seam (`src/shared/gateway.ts`) — currently a direct provider, later
-your hosted proxy for subscriptions. The answering model is fixed to DeepSeek
-(`src/shared/ai.ts`). Store copy, privacy policy, and screenshots live in `store/`.
+**Status: local gateway integration candidate.** Capture, task-shaped streaming
+answers, Markdown/LaTeX, local History, image messages and context Details retain
+the current UI. The extension uses the Study Buddy backend; only that backend
+holds the OpenRouter credential and owns models, canonical prompts and limits.
+No provider key or local tokenizer is needed in the browser. Public hosting and
+store publication are separate release steps.
 
-The image-dialogue/context slice passed 69 independent checks in isolated
-Chromium and context fixtures, plus the complete native smoke and contract suites.
-These checks used localhost model fixtures; this slice made no paid model calls.
-Evidence: `~/.local/state/codex/loops/study-buddy/evidence-dialogue-20261011/`.
+The backend uses Node 22.22.2 and built-in SQLite for operational state, without
+cloud chat history. The answering/fallback chain remains in `src/shared/ai.ts`.
+Implementation and acceptance evidence for this slice are recorded in `ToDo.md`
+and the local loop ledger; earlier UI acceptance records remain historical.
+Store copy and privacy disclosures in `store/` are drafts until actual hosting,
+contact and audience decisions are complete.
 
 Manual use:
 
@@ -69,7 +62,8 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   so there is no "read and change all your data" install warning.
 - The chat window lives in a **closed shadow root**, so page styles can't leak in
   and ours can't leak out.
-- The API key, settings and panel size live in `chrome.storage.local`. The last
+- Language/panel settings and the anonymous backend access session live in
+  `chrome.storage.local`; the OpenRouter key stays on the backend. The last
   eight transient crops live in `chrome.storage.session`; saved transcripts and
   image Blobs live in extension-origin IndexedDB. History keeps at most 20 chats,
   ordered by their latest non-capture message (creation for empty chats);
@@ -88,79 +82,89 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - Minimize keeps the iframe/stream alive. Close saves and cancels; navigation
   or writer loss retains the latest committed partial as interrupted, without
   automatic paid resume. One local generation is admitted across windows.
-- Each request targets about 200,000 estimated input tokens, including system
-  instructions and a 1,024-token reserve per image, with 20,000 tokens held
-  back for estimation variance. A pinned DeepSeek V4.1 tokenizer estimates
-  text locally; OpenRouter usage is saved with the assistant turn for comparison.
-  This is an estimate, not provider-exact preflight: fallback tokenizers,
-  provider templates and image preprocessing can differ. Whole older task
-  groups are excluded first; transcript and images remain saved locally, with
-  no automatic summary. **Details** explains the budget. Excluded messages stay
-  readable, appear muted with a reason, and can be sent again. Each image also
-  has a separate app-side 4 MiB payload/memory guard, not a provider limit: binary
-  PNG data expands by about one third when base64-encoded, before JSON framing. This
-  conservative per-image guard remains pending real route-specific payload testing. The active task group is refused before
-  network if its estimated size alone exceeds the available budget; the draft
-  remains in the composer.
-- The ten-second start interval is local UX only, not trusted abuse protection
-  or a unique-user guarantee. Regenerate is a new start; explicit availability
-  fallback before any output is part of the existing start.
+- Context selection uses a shared conservative heuristic under a nominal
+  200,000 estimated input-token budget with 20,000 held in reserve. It includes
+  canonical system/task instructions and a 1,024-token estimate per image.
+  Whole older task groups are excluded first; the transcript stays saved locally.
+  **Details** shows selected/excluded messages. Only the selected context is
+  transmitted. The backend independently validates its canonical request with
+  the same estimator; there is no model tokenizer or provider-exact guarantee.
+- Each image is limited to 4 MiB decoded; the HTTP payload limit is 32 MiB.
+  Server validation accepts inline PNG/JPEG/WebP with bounded dimensions, without
+  downloading arbitrary image URLs. Oversized active context is refused and the
+  draft stays available.
+- Provider-reported usage is saved on the local assistant turn when available.
+  A lost final usage chunk means unknown usage. The server does not keep detailed
+  per-chat usage or conversation text/images/responses.
+- The backend admits one start per session per ten seconds, one in flight per
+  session, and four globally; session issuance is limited per network. It owns
+  task output limits, timeout and availability fallback before output. Duplicate
+  request IDs do not restart a generation within the 24-hour idempotency window.
+  Anonymous sessions and rate limits do not impose a monetary spending ceiling.
 - Incognito is disabled. There is no cloud sync, telemetry or student profiling.
 
-## Develop
+## Develop and run
 
-```
-npm install
-npm run dev        # Vite + CRXJS with HMR
-SB_DEFAULT_API_KEY= npm run build  # keyless production acceptance build → dist/
+Use Node **22.22.2** (`.nvmrc`), including for the built-in experimental
+`node:sqlite` backend API. Its startup warning is expected.
+
+```sh
+npm ci
 npm run typecheck
-npm run contracts          # settings + SSE/JSON/fallback fixtures, synthetic fetch
-npm run contracts:storage  # real IndexedDB, rollback/recovery/GC/context/rate
-npm run contracts:prompts  # EN/RU Hint/Check templates; no real model
-npm run verify     # smoke test: load dist/ in Chromium, select, capture, chat,
-                   # AI answer (mock SSE endpoint) — no API key needed
+npm run typecheck:backend
+npm run contracts
+npm run contracts:storage
+npm run contracts:prompts
+npm run contracts:context
+npm run contracts:backend       # real HTTP/SQLite boundary, fake upstream only
+npm run backend:build
+npm run build                  # public client; no provider key build variable
+npm run verify                 # isolated Chromium -> backend -> fake provider
+```
 
-# safe local acceptance browser + gallery, no credentials or external model calls:
-SB_DEFAULT_API_KEY= npm run build
-npm run preview:local                  # headed isolated Chromium, localhost:4187
+For a real backend, copy `.env.backend.example` to ignored `.env.backend`, fill
+runtime secrets and the exact extension-origin allowlist, then:
+
+```sh
+node --env-file=.env.backend .backend-dist/server.js
+```
+
+Backend configuration, stop/health, single-instance hosting, proxy requirements,
+backup and rollback are documented in [backend operation](docs/backend-deployment.md)
+and [the backend README](src/backend/README.md). The default bind is loopback;
+this does not publish a service. Never place `OPENROUTER_API_KEY` in client/Vite
+variables or the extension bundle.
+
+The client defaults to `http://127.0.0.1:8787`. Choose another backend at build time:
+
+```sh
+STUDY_BUDDY_GATEWAY_URL=https://api.example.invalid npm run build
+```
+
+Use the actual HTTPS service URL for public distribution. The generated manifest
+grants access to that gateway host; the backend allowlist must use the actual
+extension ID. The ordinary settings form retains language choices, with no
+provider key entry.
+
+For a safe local demonstration with a real backend and fake upstream:
+
+```sh
+npm run preview:local
 npm run preview:local -- health
 npm run preview:local -- stop
-# -- start --headless is available for automated checks.
-# Each start has its own profile under review/preview; stop does not delete it.
-# review/loop contains the actual verify screenshots. Run verify to regenerate.
-
-# manual real-provider test (demo page opens; no request is sent until you start a task):
-npm run playtest
-#   The development runtime reads OpenRouter credentials from
-#   ~/.config/study-buddy/credentials.json or OPENROUTER_API_KEY.
-#   OPENROUTER_API_KEY overrides the default OpenRouter connection. A saved
-#   custom provider, endpoint, and key stay paired and are preserved.
-#   These local dev credentials are stored on-device and never shown in the
-#   interface. The settings gear is hidden; the language form is retained.
-#   The dedicated ~/.config/study-buddy/playtest-profile persists settings and
-#   History across restarts; PLAYTEST_PROFILE can point to an isolated QA profile.
-#   New profiles default to English; saved language choices survive restarts.
-#   PLAYTEST_UI_LANGUAGE=en PLAYTEST_ANSWER_LANGUAGE=en npm run playtest
-#   explicitly switches an existing test profile while preserving its connection.
-
-# task quality: drive the real UI against the real API, one fixture per task:
-npm run quality
-
-# compare answer quality across models on mixed tasks/languages:
-npm run compare                # or: node scripts/compare.mjs model-a model-b
-
-# regenerate Chrome Web Store screenshots → store/screenshots/:
-npm run screenshots
-
-# load the unpacked extension in your own browser:
-#   chrome://extensions → Developer mode → Load unpacked → select dist/
 ```
 
-The legacy real-provider commands above were not run for this local acceptance.
-In particular, `quality` and `review` predate saved conversations and the start
-interval: their multi-fixture drivers need explicit conversation isolation and
-cooldown handling before their reports can be treated as fresh evidence.
-Store screenshots remain historical; the verified current UI is in `review/loop`.
+The preview owns a separate Chromium profile and database, uses synthetic page
+content and makes no external model calls. `-- start --headless` is available
+for background checks. Closing or stopping it does not touch Vivaldi.
+
+Older real-provider quality/compare/review scripts are historical tools. They
+are not part of this gateway acceptance and their reports are not fresh evidence.
+Store screenshots are historical until regenerated for the final release.
+
+To load a build manually in a separate browser: open `chrome://extensions`,
+enable Developer mode, choose Load unpacked and select `dist/`. Work on this
+candidate does not change the user's existing Vivaldi installation.
 
 ## Store
 

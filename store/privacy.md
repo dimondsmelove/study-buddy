@@ -1,109 +1,137 @@
 # Study Buddy — Privacy Policy
 
-_Last updated: 2026-10-11 · draft; not a release/compliance certification_
+_Last updated: 2026-10-16 · gateway integration draft; public hosting, contact
+details and store disclosures must be completed before publication._
 
-Study Buddy is a browser extension that lets you select a region of a web page
-and ask an AI model about it. This policy explains exactly what leaves your
-device and what does not. Selected images and typed text can contain personal
-information; do not send material you are not authorized to share with your
-chosen provider.
+Study Buddy lets you select a region of a web page and ask an AI model about
+it. Selected images and typed text may contain personal information. Review
+what you select before sending it.
 
 ## Summary
 
-- We run **no servers** and have **no accounts**.
-- There is **no analytics or telemetry** in this client.
-- This local acceptance build has no built-in key. The private development
-  launcher supplies a provider connection stored locally on the device; users
-  are not asked to enter a key in the ordinary interface.
-- Selected images, typed questions/attempts, generated instructions and bounded
-  prior conversation text go **directly to your chosen AI endpoint**. Nothing
-  passes through a project-operated proxy in this version.
-- Up to 20 chats and their referenced images stay on your device, ordered by
-  their latest non-capture message (creation for empty chats). Viewing or
-  capturing alone does not change that order. Older chats are automatically
-  deleted, including existing history on startup; manual deletion is available.
-  Incognito use is disabled. No cloud sync or student profile is created.
+- Your latest 20 conversations, selected images and available per-answer token
+  usage stay in this browser. There is no cloud conversation sync or student
+  profile.
+- The gateway version sends a bounded selection of your conversation through
+  the configured Study Buddy backend to OpenRouter and the model provider.
+  The OpenRouter credential stays on the backend.
+- There is no visible account registration. A persistent anonymous access
+  session identifies requests for service limits; it does not identify a
+  unique person or prevent someone from resetting an installation.
+- The backend temporarily processes request content and streams the answer.
+  It does not save conversation text, selected images or generated answers in
+  its application database or ordinary logs.
+- The backend retains limited operational records for access, cooldown,
+  concurrency, duplicate-request prevention and recovery. These records are
+  separate from your local conversation history.
 
-## What is stored, and where
+## What stays in your browser
 
-| Data | Where | Lifetime |
+| Data | Location | Lifetime |
 |---|---|---|
-| Language settings and the private development endpoint/key | `chrome.storage.local` on your device | until you clear it / remove the extension |
-| The cropped screenshot of your selection | `chrome.storage.session` (RAM-backed) | until the browser session ends; at most the last 8 captures are kept |
-| Saved conversation text, generated replies/statuses and selected image Blobs | extension-origin IndexedDB on this device | until automatic removal beyond the newest 20 chats, History → Delete, clearing extension data or removing the extension; browser storage can fail or be evicted |
-| Local generation timestamp and writer recovery metadata | IndexedDB | retained locally with the extension; not a user identity or telemetry |
+| Language/panel settings, backend configuration and anonymous access token | Extension-local storage; not browser sync | Until cleared, renewed or the extension is removed |
+| Transient selected screenshots | Extension session storage; up to the last eight captures | Until pruned or the browser session ends |
+| Saved messages, image Blobs, response status and available model/token/cost usage | Extension-origin IndexedDB | Up to the latest 20 chats, until automatic pruning, manual deletion, clearing browser data or extension removal |
+| Local generation/cooldown and recovery state | Extension-origin IndexedDB | Alongside the local extension data |
 
-History offers a storage usage display and an in-app deletion confirmation.
-Images referenced by another retained conversation are kept. JSON export is
-not offered. Copied text is independent of the local saved chat.
-Transient capture copies can remain until the session cache is pruned or the
-browser session ends. If storage fails, the latest visible answer may be
-unsaved: copy before closing or navigating.
+History orders conversations by their latest non-capture message, using
+creation time for an empty conversation. Viewing a chat or selecting another
+image alone does not promote its position. Older chats are automatically
+deleted, including previously accumulated chats on startup. An image remains
+while another retained chat still references it.
 
-The private development key is stored locally, never synchronized to a cloud
-account, and excluded from conversation records and the ordinary settings UI. A key baked into another build is still present in
-that build and extractable; it is not protected server-side.
+History provides manual deletion and storage usage information. JSON export
+is not offered. Copied text is independent of the saved chat. Browser storage
+can fail or be evicted; if an answer cannot be saved, copy it before closing.
+Incognito is disabled. Local history does not automatically move between
+devices and can be lost when extension data is removed.
 
-## What is sent, and to whom
+## What is sent
 
-Each successful selection is saved locally as an image message in the current
-conversation; selecting alone sends no model request. When you explicitly start
-a task or ask a question, the extension sends the selected bounded context:
-up to two relevant cropped images, your question/attempt, selected prior turns,
-and generated task/system instructions **directly from your browser to the AI
-endpoint** (by default `https://openrouter.ai/api/v1`). Next answer and Details
-show which messages/images will be included or excluded before you send.
-The private development connection authenticates with a runtime key. Requests
-are subject to the privacy policy of that
-provider (e.g. OpenRouter and the model vendor behind the chosen model). Study
-Buddy does not proxy or transmit telemetry about this request. Source turns and
-replies are retained locally as described above. Provider retention is governed
-by that provider, not by local History → Delete.
+Completing a selection saves an image locally. Selecting, opening History or
+viewing a saved conversation does not by itself start an AI generation.
 
-Requests include at most 12 turns, 32,000 text characters and two images of at
-most 4 MiB each; required oversized input is refused before transmission.
-Incomplete/superseded replies are not treated as complete context. Model
-fallback occurs only on explicit availability errors before any output; no
-automatic restart after ambiguous interruption. The client ten-second interval
-is UX, not a trusted spending/abuse control. Public shared-key release is blocked
-on TD-06 and budget/hosting decisions.
+When you explicitly start a task or send a question, the extension selects
+the bounded context shown by its context controls. It sends the selected
+user/assistant messages, needed image data and task/language metadata to the
+configured backend. Excluded history is not uploaded for server-side
+selection. Draft text is not uploaded on each keystroke.
 
-No other page content is read or transmitted. The extension does not scan pages
-in the background; the selection overlay and chat host are injected only when you start a
-capture or explicitly open History. Opening History does not take a screenshot
-or send a model request; a screenshot is taken only after you finish dragging
-a region.
+The backend validates the request, creates its own system/current-task
+instructions and model parameters, and forwards the request to OpenRouter.
+Availability fallback before output can use another configured model and
+provider. OpenRouter and those providers have their own data-retention
+policies; deleting local History does not delete their records.
 
-## Permissions and why they exist
+The application targets an approximate 200,000-input-token budget with a
+20,000-token reserve. This estimate is not a provider-exact token count.
+Images are limited to 4 MiB each and the total HTTP request to 32 MiB;
+oversized selected context is refused. Actual token usage and cost returned
+by the provider are attached to the answer when available. Missing usage
+after an interruption is unknown, not zero. Output limits depend on the task.
 
-- **activeTab** — to capture the visible tab after you ask for a selection, or
-  to show saved History on the tab after you choose it from the toolbar menu.
-- **contextMenus** — to provide Show history in the toolbar icon’s right-click menu.
-- **scripting** — to inject the selection overlay or History host on demand. There is no
-  always-on content script.
-- **storage** — to keep your settings/panel size (local) and transient captures
-  (session); saved conversations use IndexedDB.
-- **optional host access (`<all_urls>`)** — requested per site, at runtime, only
-  when a capture needs a tab you did not invoke on. It is never requested at
-  install time.
-- **commands** — the keyboard shortcut to start a selection.
+Stop and Close cancel the active connection and request upstream cancellation.
+Already completed provider processing can still be billed. The backend does
+not automatically restart an ambiguous or partially streamed operation.
 
-Chrome forbids any extension from capturing its own pages (`chrome://…`), the
-Chrome Web Store, and other privileged pages; Study Buddy tells you so honestly
-instead of retrying.
+No other page content is intentionally collected. The extension does not
+scan pages in the background; its selection overlay and chat host are
+injected on explicit capture or History actions.
 
-## Children’s privacy
+## Backend operational records
 
-Audience/age policy remains OPEN (D-11 in ToDo.md). This draft does not certify
-children's privacy compliance. Review the audience and provider handling before
-any public release; saved material and transmission follow the rules above.
+The backend stores access-session identifiers, token hashes, expiry and
+cooldown timestamps. Sessions expire after 30 days unless renewed; renewal
+retains the same identity and service limits. Expired sessions become invalid
+immediately. Physical cleanup runs at startup and on session issuance or
+generation admission; an idle database can retain expired records until then.
 
-## Changes
+Duplicate-request protection uses an operation identifier, a fingerprint of
+the accepted request, status and timestamps for a 24-hour window. Finished
+records become eligible for deletion after that window and are physically
+removed by the same activity-triggered cleanup. These records
+do not contain the conversation, image or answer. Within that window, repeating
+the same operation does not start another model request.
 
-If this policy changes, the “Last updated” date above changes and the new text
-ships with the extension.
+For limits on issuing new sessions, the server receives the connection IP and
+derives an hourly HMAC identifier. Issuance records count only within the last
+hour and are eligible for removal after that hour. The application does not save the raw IP
+in its database or ordinary logs. This identifier is pseudonymous, not a claim
+of irreversible anonymization. Shared networks can share an issuance limit.
+
+These technical records are not a learning profile or advertising analytics.
+Clearing local chats does not remove still-needed operational records; their
+validity windows expire independently and physical cleanup follows the schedule
+above. Public deployment must also configure proxy,
+hosting and error-reporting logs consistently with these disclosures.
+
+## Permissions
+
+- **activeTab** — capture the visible tab on an explicit selection action, or
+  show saved History after an explicit toolbar action.
+- **contextMenus** — Show history in the toolbar icon's context menu.
+- **scripting** — inject the selection overlay/chat host on demand.
+- **storage** — local settings/access state and transient session captures;
+  saved conversations/images use IndexedDB.
+- **clipboardWrite** — copy an answer after an explicit Copy action.
+- **optional site access** — requested per site when needed for capture; the
+  screenshot remains gated to the intended origin.
+- **keyboard command** — start selection with Ctrl+Shift+Y (Command+Shift+Y
+  on macOS).
+
+Backend access/CORS configuration must match the deployed extension and
+service. Persistent access to all browsing sites is not required for the
+gateway itself. Privileged browser pages and the extension store cannot be
+captured.
+
+## Children and publication
+
+The initial audience/age policy remains an explicit product decision. This
+draft does not certify children's privacy compliance or universal educational
+accuracy. The local integration does not itself publish a backend or extension.
 
 ## Contact
 
-_Replace with your support email before publishing._ For questions about this
-policy, contact: **you@example.com**.
+Replace this placeholder before public release: **you@example.com**.
+Publish this policy at the actual service's public privacy URL and reconcile
+the store privacy fields with the deployed behavior and hosting policies.

@@ -1,8 +1,9 @@
 # Chrome Web Store listing (draft)
 
-> Local client wording reconciled on 2026-10-11; **not ready for submission**.
-> Public gateway/budget controls, support contact/privacy URL and real AI quality
-> remain open. Existing store screenshots predate the local-dialog UI.
+> Gateway candidate wording reconciled on 2026-10-16; **not ready for submission**.
+> Public backend/domain deployment, support contact/privacy URL, audience decisions
+> and updated store assets remain open. Local integration evidence does not
+> establish general AI answer quality.
 
 > Chrome Web Store copy limits: **name ≤ 45 chars**, **short description ≤ 132
 > chars**, detailed description ≤ 16 000 chars. Screenshots 1280×800 (in
@@ -53,10 +54,12 @@ profiles; the settings gear is currently hidden.
 on the device for up to 20 chats, ordered by the latest message. Older chats
 are automatically deleted; History provides topic titles, readable times and
 manual deletion. Questions,
-attempts, instructions and bounded prior context are sent directly to your
-configured provider. The private development launcher supplies the connection;
-the ordinary interface does not ask for or expose a provider key. A public
-shared-key release still requires the deferred hosted gateway.
+attempts and the selected bounded context go through the Study Buddy backend
+to OpenRouter and the model provider. Provider credentials stay on the backend;
+the ordinary interface does not ask for a key. A renewable anonymous access
+session applies service limits. The backend keeps temporary operational metadata
+for access and duplicate-request prevention, without saving chat content.
+The gateway implementation is a local candidate; public hosting is still pending.
 
 **Study alongside web content.** Select a region on a supported regular web
 page. Compatibility with individual learning platforms and PDF viewers has not
@@ -79,7 +82,8 @@ request.
 
 Minimize keeps an answer running; Close saves and cancels. Saved history is
 separate from the bounded provider context. Model accuracy is not guaranteed;
-the new Hint/Check contracts have been verified with fixtures, not real AI.
+task contracts have deterministic fixture coverage; a small synthetic
+real-provider check does not establish accuracy on arbitrary learning material.
 
 ## Category & metadata
 
@@ -94,7 +98,8 @@ the new Hint/Check contracts have been verified with fixtures, not real AI.
 - [ ] Small promo tile 440×280 (optional)
 - [ ] Store category, language, and privacy-policy URL
 - [ ] Privacy policy published (see `store/privacy.md`); paste it into the CWS privacy tab
-- [ ] Justify each permission in the CWS form (`activeTab`, `scripting`, `storage`, `contextMenus`, optional `<all_urls>`)
+- [ ] Justify each permission in the CWS form (`activeTab`, `scripting`, `storage`, `contextMenus`, `clipboardWrite`,
+  gateway host access and optional site access)
 
 ## Permission justifications (for the CWS form)
 
@@ -102,8 +107,10 @@ the new Hint/Check contracts have been verified with fixtures, not real AI.
   show local History on the tab after an explicit toolbar context-menu action.
 - `contextMenus` — Show history in the toolbar icon’s right-click menu only.
 - `scripting` — inject the selection overlay or History host on demand (no declared content script).
-- `storage` — keep settings/key/panel size locally and transient crops in session;
+- `storage` — keep language/panel settings and anonymous access state locally, and transient crops in session;
   saved transcripts and images use extension-origin IndexedDB.
 - optional `host_permissions <all_urls>` — requested per site only when a capture
   needs a tab the user didn't invoke on; the screenshot stays gated per origin.
+- `clipboardWrite` — copy an answer after an explicit Copy action.
+- gateway host access — connect to the configured backend; no provider key is sent to the extension.
 - `commands` — the `Ctrl+Shift+Y`/`Cmd+Shift+Y` shortcut to start a selection.

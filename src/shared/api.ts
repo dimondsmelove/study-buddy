@@ -22,6 +22,7 @@ export type ApiErrorKind =
   | 'aborted'
   | 'response'
   | 'provider'
+  | 'context'
 
 /** Transport completion is distinct from the text already shown by onDelta. */
 export interface CompletionResult {
@@ -94,7 +95,11 @@ export function authHeaders(settings: Settings): Record<string, string> {
  *  endpoint failures exactly the same — one voice for every API error. The
  *  kind/status ride along for the fallback layer without changing the prose. */
 export async function apiHttpError(res: Response): Promise<ApiError> {
-  // Do not read provider prose: it can echo credentials, request text or URLs.
+  // Inspect only a bounded structured code. Provider prose may echo credentials,
+  // request text or URLs and is never surfaced or logged.
+  if (res.status === 400 && await hasContextLengthCode(res)) {
+    return new ApiError('The selected context exceeds the provider limit.', 'context', 400)
+  }
   switch (res.status) {
     case 401: return new ApiError('Invalid API key.', 'auth', 401)
     case 402: return new ApiError('Insufficient credits on this account.', 'credits', 402)
@@ -114,6 +119,40 @@ export async function apiHttpError(res: Response): Promise<ApiError> {
  *  - TypeError  → the request never happened (offline, DNS, CORS block) —
  *                 from the user's seat that is "the URL can't be reached";
  *  - AbortError → the caller cancelled; callers branch on kind 'aborted'. */
+async function hasContextLengthCode(res: Response): Promise<boolean> {
+  if (!res.headers.get('content-type')?.toLowerCase().includes('json') || !res.body) return false
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (size <= 8_192) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > 8_192) return false
+      chunks.push(value)
+    }
+  } catch {
+    return false
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
+  try {
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+    const body = JSON.parse(new TextDecoder().decode(bytes)) as {
+      error?: { code?: unknown; type?: unknown }
+    }
+    return body?.error?.code === 'context_length_exceeded' ||
+      body?.error?.code === 'context_window_exceeded' ||
+      body?.error?.type === 'context_length_exceeded' ||
+      body?.error?.type === 'context_window_exceeded'
+  } catch {
+    return false
+  }
+}
+
 export function apiNetworkError(err: unknown): ApiError {
   if (isAbort(err)) return new ApiError('Cancelled.', 'aborted')
   return new ApiError('Could not reach the API. Check the connection and endpoint settings.', 'network')

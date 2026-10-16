@@ -41,7 +41,7 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
   const log = dependencies.log ?? ((entry: Record<string, unknown>) => console.info(JSON.stringify(entry)))
   const providerBaseUrl = normalizeProviderBaseUrl(dependencies.providerBaseUrl ?? OPENROUTER_API_BASE)
   const store = new OperationalStore(config.databasePath, config.sessionHmacSecret, now())
-  const active = new Map<string, AbortController>()
+  const active = new Map<string, { controller: AbortController; done: Promise<void> }>()
   const trustedProxies = new Set(config.trustedProxyIps.map(normalizeIp))
   const allowedOrigins = new Set(config.allowedOrigins)
   const server = createServer((request, response) => {
@@ -216,11 +216,13 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
   ): Promise<void> {
     const operationKey = sessionId + ':' + input.requestId
     const controller = new AbortController()
+    let completeOperation!: () => void
+    const done = new Promise<void>((resolve) => { completeOperation = resolve })
     let timedOut = false
     let disconnected = false
     let emittedText = false
     let operationStatus: 'complete' | 'failed' | 'cancelled' | 'interrupted' = 'failed'
-    active.set(operationKey, controller)
+    active.set(operationKey, { controller, done })
 
     const timeout = setTimeout(() => {
       timedOut = true
@@ -300,7 +302,8 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
       clearTimeout(timeout)
       response.removeListener('close', onClose)
       active.delete(operationKey)
-      store.finish(sessionId, input.requestId, operationStatus, now())
+      try { store.finish(sessionId, input.requestId, operationStatus, now()) }
+      finally { completeOperation() }
       if (!response.writableEnded && !response.destroyed) response.end()
     }
   }
@@ -308,7 +311,8 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
   return {
     server,
     async close(): Promise<void> {
-      for (const controller of active.values()) controller.abort()
+      const operations = [...active.values()]
+      for (const operation of operations) operation.controller.abort()
       if (server.listening) {
         const closed = new Promise<void>((resolve, reject) => {
           server.close((error) => error ? reject(error) : resolve())
@@ -316,6 +320,7 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
         server.closeAllConnections()
         await closed
       }
+      await Promise.allSettled(operations.map((operation) => operation.done))
       store.close()
     },
   }
@@ -424,6 +429,9 @@ function parseGenerationInput(value: unknown): GatewayGenerationInput {
 
 function providerFailure(error: unknown): PublicError {
   if (error instanceof ApiError) {
+    if (error.kind === 'context') {
+      return { status: 422, code: 'provider.context_too_large', message: 'The selected context exceeds the provider limit. Remove older messages or images and try again.' }
+    }
     if (error.kind === 'auth' || error.kind === 'credits') {
       return {
         status: 502,

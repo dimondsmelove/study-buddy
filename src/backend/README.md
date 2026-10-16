@@ -16,7 +16,7 @@ Keep both secrets in the backend process environment. They are not Vite defines 
 
 npm run backend:build emits the Node entry to ignored .backend-dist/. npm run contracts:backend runs deterministic fake-only HTTP, SQLite, image, and SSE contracts; it does not read provider credentials or make provider requests. npm run typecheck:backend checks backend and shared TypeScript.
 
-Operational state contains hashed session tokens, opaque HMAC IP buckets, request fingerprints (SHA-256), cooldowns, and operation statuses. It does not store message text, images, generated output, or provider response bodies. HTTP logs contain only method, route name, status, and duration. The database file is set to mode 0600; the default data directory is created as mode 0700. Keep custom database paths in a private directory.
+Operational state contains hashed session tokens, opaque HMAC IP buckets, request fingerprints (SHA-256), cooldowns, and operation statuses. Expired issuance buckets and completed idempotency records are pruned at startup and on the next session issuance or generation admission; removal is lazy. It does not store message text, images, generated output, or provider response bodies. HTTP logs contain only method, route name, status, and duration. The database file is set to mode 0600; the default data directory is created as mode 0700. Keep custom database paths in a private directory.
 
 The HTTP API issues sessions at POST /api/v1/session, renews them at POST /api/v1/session/renew, and streams generations from POST /api/v1/generations. The generation stream emits context, fallback, delta, and a terminal complete or error event.
 

@@ -9,7 +9,6 @@
 // statuses (bad key, no credits, rate limit) get a short actionable message.
 // Provider details and URLs are untrusted and must never reach that message.
 
-import type { Settings } from './settings'
 
 /** Error kinds a caller can branch on without parsing prose. */
 export type ApiErrorKind =
@@ -71,8 +70,13 @@ export interface ApiMessage {
   content: ApiContent
 }
 
+export interface ProviderSettings {
+  baseUrl: string
+  apiKey: string
+}
+
 export interface ChatCompletionOpts {
-  settings: Settings
+  settings: ProviderSettings
   /** Model id for THIS request; the caller owns the fallback chain (ai.ts). */
   model: string
   messages: ApiMessage[]
@@ -87,7 +91,7 @@ export interface ChatCompletionOpts {
 }
 
 /** Authorization header shared by /models (models.ts) and /chat/completions. */
-export function authHeaders(settings: Settings): Record<string, string> {
+export function authHeaders(settings: ProviderSettings): Record<string, string> {
   return { Authorization: `Bearer ${settings.apiKey}` }
 }
 
@@ -141,13 +145,8 @@ async function hasContextLengthCode(res: Response): Promise<boolean> {
     const bytes = new Uint8Array(size)
     let offset = 0
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
-    const body = JSON.parse(new TextDecoder().decode(bytes)) as {
-      error?: { code?: unknown; type?: unknown }
-    }
-    return body?.error?.code === 'context_length_exceeded' ||
-      body?.error?.code === 'context_window_exceeded' ||
-      body?.error?.type === 'context_length_exceeded' ||
-      body?.error?.type === 'context_window_exceeded'
+    const body = JSON.parse(new TextDecoder().decode(bytes)) as { error?: unknown }
+    return isContextLengthError(body?.error)
   } catch {
     return false
   }
@@ -235,8 +234,10 @@ async function streamSSE(
     const eventType = event
     data = []
     event = ''
-    if (eventType === 'error') throw providerError()
-    if (!payload) return
+    if (!payload) {
+      if (eventType === 'error') throw providerError()
+      return
+    }
     if (payload === '[DONE]') {
       done = true
       return
@@ -252,7 +253,8 @@ async function streamSSE(
       malformed = true
       return
     }
-    if (body.error !== undefined && body.error !== null) throw providerError()
+    if (eventType === 'error') throw providerError((body as CompletionBody).error)
+    if (body.error !== undefined && body.error !== null) throw providerError(body.error)
     usage = readUsage(body.usage) ?? usage
     if (typeof body.model === 'string') reportedModel = body.model
     if (!Array.isArray(body.choices)) {
@@ -355,8 +357,23 @@ function readUsage(value: unknown): CompletionResult['usage'] | undefined {
   return { promptTokens, completionTokens, cost }
 }
 
-function providerError(): ApiError {
+function providerError(value?: unknown): ApiError {
+  if (isContextLengthError(value)) {
+    return new ApiError('The selected context exceeds the provider limit.', 'context')
+  }
   return new ApiError('The provider could not complete the response. Try again.', 'provider')
+}
+
+function isContextLengthError(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const error = value as Record<string, unknown>
+  const metadata = error.metadata && typeof error.metadata === 'object' && !Array.isArray(error.metadata)
+    ? error.metadata as Record<string, unknown>
+    : undefined
+  const type = metadata?.error_type
+  return type === 'context_length_exceeded' || type === 'context_window_exceeded' ||
+    error.code === 'context_length_exceeded' || error.code === 'context_window_exceeded' ||
+    error.type === 'context_length_exceeded' || error.type === 'context_window_exceeded'
 }
 
 function completionResult(
@@ -392,7 +409,7 @@ async function wholeJson(
     throw new ApiError('The API response was not valid JSON.', 'response')
   }
   if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
-  if (body?.error !== undefined && body.error !== null) throw providerError()
+  if (body?.error !== undefined && body.error !== null) throw providerError(body.error)
   const choice = Array.isArray(body?.choices) ? body.choices[0] : undefined
   const content = choice?.message?.content
   const text = content === null ? '' : flattenContent(content)

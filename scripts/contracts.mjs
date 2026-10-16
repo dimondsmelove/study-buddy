@@ -10,11 +10,11 @@ const stored = { settings: {} }
 const runtime = vm.createContext({
   console, URL, Blob, Response, ReadableStream, TextEncoder, TextDecoder, AbortController, DOMException,
   structuredClone, setTimeout, clearTimeout,
-  __SB_DEFAULT_API_KEY__: 'fixture-default-key',
-  __SB_DEFAULT_BASE_URL__: 'https://default.test/v1',
+  __SB_GATEWAY_URL__: 'https://gateway.test',
   chrome: { storage: { local: {
     get: async () => structuredClone(stored),
     set: async (value) => Object.assign(stored, structuredClone(value)),
+    remove: async (key) => { delete stored[key] },
   } } },
   fetch: () => { throw new Error('Unexpected network request in contract test') },
 })
@@ -36,6 +36,7 @@ function load(file) {
   return module.exports
 }
 
+const plain = (value) => JSON.parse(JSON.stringify(value))
 const settings = load('src/shared/settings.ts')
 const i18n = load('src/shared/i18n.ts')
 assert.equal(i18n.t('en', 'dialog.deleteError'), "Couldn't delete this chat. Try again.")
@@ -44,32 +45,22 @@ assert.equal(i18n.t('en', 'dialog.denied'), 'This action is unavailable.')
 assert.equal(i18n.t('ru', 'dialog.denied'), 'Это действие недоступно.')
 assert.equal(settings.DEFAULT_SETTINGS.uiLanguage, 'en')
 assert.equal(settings.DEFAULT_SETTINGS.answerLanguage, 'en')
-const defaults = { apiKey: 'fixture-baked-key', baseUrl: 'https://default.test/v1/' }
-assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: ' byok ', baseUrl: 'https://custom.test/v1/' }, defaults).apiKey, 'byok')
-const effective = settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: '', baseUrl: '' }, defaults)
-assert.equal(effective.baseUrl, 'https://default.test/v1')
-assert.equal(effective.apiKey, 'fixture-baked-key')
-assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, baseUrl: 'https://custom.test/v1' }, defaults).apiKey, '')
-assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, baseUrl: '' }, { ...defaults, apiKey: '' }).apiKey, '')
-for (const url of ['javascript:alert(1)', 'ftp://host.test', 'https://user:secret@host.test', 'https://host.test?key=secret', 'https://host.test#secret', 'bad URL']) {
-  assert.throws(() => settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, baseUrl: url }, defaults))
-}
-for (const value of [null, 'old', { apiKey: 42, baseUrl: [], uiLanguage: 'bad' }, { apiKey: 'legacy', uiLanguage: 'ru', model: 'old' }]) {
+for (const value of [null, 'old', { apiKey: 42, uiLanguage: 'bad' }, { apiKey: 'legacy-secret', uiLanguage: 'ru', model: 'old' }]) {
   stored.settings = value
   const got = await settings.getSettings()
-  assert.equal(typeof got.apiKey, 'string')
-  assert.equal(typeof got.baseUrl, 'string')
-  assert(!('model' in got))
+  assert.deepEqual(plain(got), { uiLanguage: value?.uiLanguage === 'ru' ? 'ru' : 'en', answerLanguage: 'en' })
+  assert.deepEqual(plain(stored.settings), plain(got), 'legacy provider fields are removed from extension storage')
 }
+stored.settings = settings.DEFAULT_SETTINGS
 runtime.chrome.storage.local.get = async () => { throw new Error('fixture storage failure') }
 await assert.rejects(settings.getSettings(), /storage.read/)
+runtime.chrome.storage.local.get = async () => structuredClone(stored)
 const previousSettings = structuredClone(stored.settings)
 runtime.chrome.storage.local.set = async () => { throw new Error('fixture write failure') }
-await assert.rejects(settings.setSettings({ ...settings.DEFAULT_SETTINGS, apiKey: 'unsaved-key' }), /fixture write failure/)
-assert.deepEqual(stored.settings, previousSettings)
-assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: '', baseUrl: '  ' }, defaults).apiKey, 'fixture-baked-key')
-assert.equal(settings.resolveSettings({ ...settings.DEFAULT_SETTINGS, apiKey: 'byok', baseUrl: 'https://custom.test' }, { apiKey: 'baked', baseUrl: 'invalid default' }).apiKey, 'byok')
-console.log('SETTINGS CONTRACTS OK — defaults, BYOK, custom isolation, malformed/legacy records, storage failure')
+await assert.rejects(settings.setSettings({ ...settings.DEFAULT_SETTINGS, uiLanguage: 'ru' }), /fixture write failure/)
+assert.deepEqual(plain(stored.settings), plain(previousSettings))
+runtime.chrome.storage.local.set = async (value) => Object.assign(stored, structuredClone(value))
+console.log('SETTINGS CONTRACTS OK — language-only defaults, legacy credential removal, malformed records and storage failures')
 
 const titles = load('src/shared/title.ts')
 const envelope = '[[STUDY_BUDDY_TITLE]]Linear equations\nSolve 2x + 3 = 7.'
@@ -158,7 +149,6 @@ const complete = (extra = {}) => api.chatCompletion({
   settings: fixtureSettings, model: 'fixture-model', messages, ...extra,
 })
 const ask = (extra = {}) => ai.askWithFallback({ settings: fixtureSettings, messages, ...extra })
-const plain = (value) => JSON.parse(JSON.stringify(value))
 const expected = (text, status, finishReason, model = 'fixture-model', usage) => ({
   text, status, ...(finishReason !== undefined ? { finishReason } : {}),
   ...(model ? { model } : {}), ...(usage ? { usage } : {}),
@@ -312,6 +302,24 @@ await contract('HTTP and network errors redact provider prose, headers, request 
   const error = await api.apiHttpError(new Response('fixture-secret-key', { status: 500, statusText: sensitive.join(' ') }))
   safeError(error, 'http', 500)
 })
+await contract('shared gateway body sizing counts UTF-8 JSON including encoded image URLs', async () => {
+  const protocol = load('src/shared/gateway-protocol.ts')
+  const request = {
+    requestId: '00000000-0000-4000-8000-000000000000', task: 'ask', answerLanguage: 'ru', uiLanguage: 'ru', titleNeeded: false,
+    taskInput: 'вопрос 😀', messages: [{ role: 'user', content: [{ type: 'text', text: 'вопрос 😀' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,' + 'A'.repeat(12_000) } }] }],
+  }
+  assert.equal(protocol.gatewayRequestBytes(request), new TextEncoder().encode(JSON.stringify(request)).byteLength)
+  assert(protocol.gatewayRequestBytes(request) > JSON.stringify(request).length, 'UTF-8 counts non-ASCII request content by encoded bytes')
+})
+await contract('documented OpenRouter context-length metadata is redacted and never falls back', async () => {
+  stubFetch(() => jsonResponse({ error: { code: 400, metadata: { error_type: 'context_length_exceeded' }, message: sensitive.join(' ') } }, 400))
+  await assert.rejects(complete(), (error) => safeError(error, 'context', 400))
+  const requests = stubFetch(() => streamResponse('data: ' + JSON.stringify({
+    error: { code: 400, metadata: { error_type: 'context_length_exceeded' }, message: sensitive.join(' ') },
+  }) + '\n\n'))
+  await assert.rejects(ask({ onFallback: () => assert.fail('Context rejections must not fall back') }), (error) => safeError(error, 'context'))
+  assert.equal(requests.length, 1)
+})
 await contract('404/429/503 before any delta fall back once with the same per-turn params', async () => {
   for (const status of [404, 429, 503]) {
     const switches = []
@@ -364,12 +372,48 @@ await contract('no fallback for partial output, network, abort, parse or HTTP 20
     assert.equal(requests.length, 1)
   }
 })
-await contract('Gateway exposes CompletionResult and passes turn parameters to the existing model chain', async () => {
-  const requests = stubFetch(() => streamResponse(delta('bounded') + finish('length')))
-  const result = await gateway.createGateway(fixtureSettings).ask({ messages, temperature: 0, maxTokens: 99 })
-  assert.deepEqual(plain(result), expected('bounded', 'truncated', 'length', ai.MODEL_PRIMARY))
-  assert.equal(requests[0].body.temperature, 0)
-  assert.equal(requests[0].body.max_tokens, 99)
+await contract('Gateway binds stored sessions to the configured origin and keeps provider settings off the wire', async () => {
+  const gatewayMessages = [{ role: 'user', content: 'current question' }]
+  stored['gateway.session'] = { token: 'old-origin-token-12345678901234567890', expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000, gatewayOrigin: 'https://another-gateway.test' }
+  const requests = []
+  runtime.fetch = async (url, init) => {
+    const body = init?.body ? JSON.parse(init.body) : undefined
+    requests.push({ url, ...init, body })
+    if (url.endsWith('/api/v1/session')) return jsonResponse({ token: 'gateway-token-12345678901234567890', expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 }, 201)
+    if (url.endsWith('/api/v1/generations')) return streamResponse(
+      'event: context\ndata: {"estimatedInputTokens":17,"inputBudget":200000,"estimateHeadroom":20000}\n\n' +
+      'event: delta\ndata: {"text":"bounded"}\n\n' +
+      'event: complete\ndata: {"status":"complete","model":"server-model","usage":{"promptTokens":17,"completionTokens":2}}\n\n',
+    )
+    throw new Error('Unexpected gateway fixture request: ' + url)
+  }
+  let context
+  const result = await gateway.createGateway().ask({
+    requestId: 'request-fixture', task: 'ask', answerLanguage: 'en', uiLanguage: 'en', titleNeeded: false,
+    taskInput: 'current question', messages: gatewayMessages, onContext: value => { context = value },
+  })
+  assert.deepEqual(plain(result), { text: 'bounded', status: 'complete', model: 'server-model', usage: { promptTokens: 17, completionTokens: 2 } })
+  assert.deepEqual(plain(context), { estimatedInputTokens: 17, inputBudget: 200000, estimateHeadroom: 20000 })
+  assert.equal(requests.length, 2)
+  assert(requests[0].url.endsWith('/api/v1/session'), 'cross-origin stale token is discarded instead of sent')
+  assert.equal(requests[1].body.requestId, 'request-fixture')
+  assert.deepEqual(requests[1].body.messages, gatewayMessages)
+  assert(!('system' in requests[1].body) && !('temperature' in requests[1].body) && !('model' in requests[1].body))
+  assert.equal(requests[1].headers.Authorization, 'Bearer gateway-token-12345678901234567890')
+  assert.deepEqual(plain(stored['gateway.session']), {
+    token: 'gateway-token-12345678901234567890',
+    expiresAt: stored['gateway.session'].expiresAt,
+    gatewayOrigin: 'https://gateway.test',
+  })
+
+  const beforeLegacy = requests.length
+  stored['gateway.session'] = { token: 'legacy-session-token-12345678901234567890', expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 }
+  await gateway.createGateway().ask({
+    requestId: 'request-legacy-session', task: 'ask', answerLanguage: 'en', uiLanguage: 'en', titleNeeded: false,
+    taskInput: 'current question', messages: gatewayMessages,
+  })
+  assert.equal(requests.length, beforeLegacy + 2, 'legacy unbound session is discarded and replaced before generation')
+  assert.equal(stored['gateway.session'].gatewayOrigin, 'https://gateway.test')
 })
 runtime.fetch = () => { throw new Error('Unexpected network request in contract test') }
 console.log(`API CONTRACTS OK — ${apiCases} groups, synthetic fetch only`)

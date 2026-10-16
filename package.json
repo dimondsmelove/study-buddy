@@ -14,12 +14,12 @@
     "contracts:prompts": "node scripts/prompt-contracts.mjs",
     "preview:local": "node scripts/preview-local.mjs",
     "verify": "node scripts/verify.mjs",
-    "playtest": "SB_DEFAULT_API_KEY= npm run build && node scripts/playtest.mjs",
+    "playtest": "node scripts/playtest.mjs",
     "quality": "npm run build && node scripts/quality.mjs",
     "screenshots": "npm run build && node scripts/screenshots.mjs",
     "review": "npm run build && node scripts/review.mjs",
     "compare": "node scripts/compare.mjs",
-    "contracts:context": "node scripts/context-tokenizer-contracts.mjs",
+    "contracts:context": "node scripts/context-estimator-contracts.mjs",
     "backend:build": "vite build --config vite.backend.config.ts",
     "backend": "npm run backend:build && node .backend-dist/server.js",
     "contracts:backend": "node scripts/backend-contracts.mjs",
@@ -34,7 +34,6 @@
     "vite": "^6.4.3"
   },
   "dependencies": {
-    "@huggingface/tokenizers": "^0.2.0",
     "dompurify": "^3.4.16",
     "katex": "^0.19.0",
     "marked": "^18.0.14"

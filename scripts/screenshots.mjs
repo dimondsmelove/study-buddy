@@ -17,12 +17,6 @@ mkdirSync(out, { recursive: true })
 const distTest = join(root, 'dist-test')
 rmSync(distTest, { recursive: true, force: true })
 cpSync(dist, distTest, { recursive: true })
-{
-  const mf = join(distTest, 'manifest.json')
-  const m = JSON.parse(readFileSync(mf, 'utf8'))
-  m.host_permissions = ['<all_urls>']
-  writeFileSync(mf, JSON.stringify(m, null, 2))
-}
 
 const profile = join('/tmp/opencode', 'sb-shots-profile')
 rmSync(profile, { recursive: true, force: true })
@@ -127,8 +121,8 @@ async function compose(id, name, bgPage, panelPage) {
   console.log('wrote', name)
 }
 
-// The store build ships a baked key — no onboarding. English UI here.
-await setSettings({ provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'sk-demo', uiLanguage: 'en', answerLanguage: 'en' })
+// English UI here; screenshot answers are injected locally and no provider is called.
+await setSettings({ uiLanguage: 'en', answerLanguage: 'en' })
 
 async function capturePanel(id, cropHtml) {
   const png = await shotPair(`<!doctype html><meta charset="utf-8"><style>body{margin:0;background:#fff;font:21px/1.5 Georgia,serif;padding:24px 28px}h2{font:600 18px system-ui;color:#4f9cff;margin:0 0 10px}</style>${cropHtml}`, { width: 420, height: 200 })

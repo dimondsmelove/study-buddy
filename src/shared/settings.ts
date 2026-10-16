@@ -1,16 +1,5 @@
-// AI connection + presentation settings.
-//
-// The whole Settings object lives under a single chrome.storage.local key.
-// local (not sync) is deliberate: the API key is stored only on this device —
-// sync storage would push it to the user's cloud account. Reads are merged
-// over DEFAULT_SETTINGS field by field, so a partially written or older shape
-// still yields a complete typed Settings (unknown fields, including the old
-// `model` field, are dropped).
-//
-// The model is NOT here: it is fixed by the fallback chain in ai.ts, so the
-// user never picks one.
-
-import { DEFAULT_API_KEY, DEFAULT_BASE_URL } from './config'
+// Presentation settings live on this device. Provider credentials and endpoint
+// configuration belong to the backend and are removed from legacy records.
 
 /** UI chrome language. 'auto' follows the browser. */
 export type UiLanguage = 'auto' | 'en' | 'ru'
@@ -33,10 +22,6 @@ export type AnswerLanguage =
   | 'ja'
 
 export interface Settings {
-  /** 'openrouter' = the default preset; 'custom' = any OpenAI-compatible endpoint. */
-  provider: 'openrouter' | 'custom'
-  baseUrl: string
-  apiKey: string
   uiLanguage: UiLanguage
   answerLanguage: AnswerLanguage
 }
@@ -44,9 +29,6 @@ export interface Settings {
 export const SETTINGS_KEY = 'settings'
 
 export const DEFAULT_SETTINGS: Settings = {
-  provider: 'openrouter',
-  baseUrl: 'https://openrouter.ai/api/v1',
-  apiKey: '',
   uiLanguage: 'en',
   answerLanguage: 'en',
 }
@@ -56,55 +38,34 @@ const ANSWER_LANGUAGES: AnswerLanguage[] = [
   'auto', 'en', 'ru', 'uk', 'de', 'fr', 'es', 'it', 'pt', 'pl', 'tr', 'zh', 'ja',
 ]
 
-/** Read settings merged over defaults (forward-compatible with new fields). */
+/** Read language settings and remove provider fields from legacy storage. */
 export async function getSettings(): Promise<Settings> {
+  let value: unknown
   try {
     const got = await chrome.storage.local.get(SETTINGS_KEY)
-    const value: unknown = got[SETTINGS_KEY]
-    const stored = (value && typeof value === 'object' ? value : {}) as Partial<Settings>
-    return {
-      // Union fields must not leak an unexpected stored value into typed
-      // callers, so anything unknown falls back to the default.
-      provider: stored.provider === 'custom' ? 'custom' : 'openrouter',
-      baseUrl: typeof stored.baseUrl === 'string' ? stored.baseUrl : DEFAULT_SETTINGS.baseUrl,
-      apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : DEFAULT_SETTINGS.apiKey,
-      uiLanguage: UI_LANGUAGES.includes(stored.uiLanguage as UiLanguage)
-        ? (stored.uiLanguage as UiLanguage)
-        : DEFAULT_SETTINGS.uiLanguage,
-      answerLanguage: ANSWER_LANGUAGES.includes(stored.answerLanguage as AnswerLanguage)
-        ? (stored.answerLanguage as AnswerLanguage)
-        : DEFAULT_SETTINGS.answerLanguage,
-    }
+    value = got[SETTINGS_KEY]
   } catch {
-    // A failed read is not an empty configuration: never switch endpoints/keys silently.
     throw new Error('storage.read')
   }
-}
-
-/** Normalize before checking configuration or constructing a gateway. */
-export function normalizeBaseUrl(value: string): string {
-  const url = new URL(value.trim())
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-    throw new Error('Base URL must be an http(s) endpoint without credentials, query or fragment.')
+  const stored = (value && typeof value === 'object' ? value : {}) as Partial<Settings> & Record<string, unknown>
+  const settings: Settings = {
+    uiLanguage: UI_LANGUAGES.includes(stored.uiLanguage as UiLanguage)
+      ? (stored.uiLanguage as UiLanguage)
+      : DEFAULT_SETTINGS.uiLanguage,
+    answerLanguage: ANSWER_LANGUAGES.includes(stored.answerLanguage as AnswerLanguage)
+      ? (stored.answerLanguage as AnswerLanguage)
+      : DEFAULT_SETTINGS.answerLanguage,
   }
-  return url.href.replace(/\/+$/, '')
-}
-
-/** A baked credential belongs only to its baked endpoint, never a custom URL. */
-export function resolveSettings(
-  settings: Settings,
-  defaults = { apiKey: DEFAULT_API_KEY, baseUrl: DEFAULT_BASE_URL },
-): Settings {
-  const baseUrl = normalizeBaseUrl(settings.baseUrl.trim() || defaults.baseUrl)
-  const userKey = settings.apiKey.trim()
-  return {
-    ...settings,
-    baseUrl,
-    apiKey: userKey || (defaults.apiKey && baseUrl === normalizeBaseUrl(defaults.baseUrl) ? defaults.apiKey : ''),
+  const keys = Object.keys(stored)
+  if (keys.length !== 2 || !keys.includes('uiLanguage') || !keys.includes('answerLanguage') ||
+      stored.uiLanguage !== settings.uiLanguage || stored.answerLanguage !== settings.answerLanguage) {
+    try { await chrome.storage.local.set({ [SETTINGS_KEY]: settings }) }
+    catch { throw new Error('storage.write') }
   }
+  return settings
 }
 
-/** Persist settings (whole object) to chrome.storage.local. */
+/** Persist the complete language-only settings record. */
 export async function setSettings(settings: Settings): Promise<void> {
   await chrome.storage.local.set({ [SETTINGS_KEY]: settings })
 }

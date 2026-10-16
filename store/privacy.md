@@ -52,7 +52,7 @@ Completing a selection saves an image locally. Selecting, opening History or
 viewing a saved conversation does not by itself start an AI generation.
 
 When you explicitly start a task or send a question, the extension selects
-the bounded context shown by its context controls. It sends the selected
+a bounded context locally; excluded older messages are muted with a reuse action. It sends the selected
 user/assistant messages, needed image data and task/language metadata to the
 configured backend. Excluded history is not uploaded for server-side
 selection. Draft text is not uploaded on each keystroke.

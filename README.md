@@ -16,7 +16,7 @@ capture is saved immediately, without starting an answer. Images remain in the
 thread and open at full size; there is no permanent upper preview.
 
 **Status: local gateway integration candidate.** Capture, task-shaped streaming
-answers, Markdown/LaTeX, local History, image messages and context Details retain
+answers, Markdown/LaTeX, local History, image messages and visible context exclusions retain
 the current UI. The extension uses the Study Buddy backend; only that backend
 holds the OpenRouter credential and owns models, canonical prompts and limits.
 No provider key or local tokenizer is needed in the browser. Public hosting and
@@ -86,7 +86,7 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   200,000 estimated input-token budget with 20,000 held in reserve. It includes
   canonical system/task instructions and a 1,024-token estimate per image.
   Whole older task groups are excluded first; the transcript stays saved locally.
-  **Details** shows selected/excluded messages. Only the selected context is
+  Excluded messages remain muted with a reuse action. Only the selected context is
   transmitted. The backend independently validates its canonical request with
   the same estimator; there is no model tokenizer or provider-exact guarantee.
 - Each image is limited to 4 MiB decoded; the HTTP payload limit is 32 MiB.

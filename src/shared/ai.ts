@@ -7,9 +7,8 @@
 // half an answer and then died must show that error, not silently restart on
 // another model and duplicate the visible text.
 
-import type { ApiMessage, CompletionResult } from './api'
+import type { ApiMessage, CompletionResult, ProviderSettings } from './api'
 import { chatCompletion, isRetryable } from './api'
-import type { Settings } from './settings'
 
 /** Primary model. */
 export const MODEL_PRIMARY = 'deepseek/deepseek-v4-flash-vision-exp'
@@ -31,7 +30,7 @@ export function modelLabel(id: string): string {
 }
 
 export interface AskOpts {
-  settings: Settings
+  settings: ProviderSettings
   messages: ApiMessage[]
   /** Sampling temperature (0 = deterministic; factual tasks). */
   temperature?: number

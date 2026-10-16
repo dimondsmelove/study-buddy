@@ -1,6 +1,7 @@
 import type { ApiMessage } from './api'
 import type { TurnKind } from './prompts'
 import type { UiLang } from './i18n'
+import { GATEWAY_LIMITS, estimateTextTokens, prepareGatewayGeneration, type GatewayGenerationInput } from './gateway-protocol'
 
 export type ReplyStatus = 'streaming' | 'complete' | 'truncated' | 'interrupted' | 'cancelled' | 'provider_error' | 'empty'
 
@@ -82,10 +83,10 @@ export function conversationActivityAt(conversation: Conversation): number {
 }
 
 export const CONTEXT_LIMITS = {
-  inputTokens: 200_000,
-  estimateHeadroom: 20_000,
-  imageTokenEstimate: 1_024,
-  imageBytes: 4 * 1024 * 1024,
+  inputTokens: GATEWAY_LIMITS.inputTokens,
+  estimateHeadroom: GATEWAY_LIMITS.estimateHeadroom,
+  imageTokenEstimate: GATEWAY_LIMITS.imageTokenEstimate,
+  imageBytes: GATEWAY_LIMITS.imageBytes,
 }
 export const GENERATION_INTERVAL = 10_000
 
@@ -109,9 +110,11 @@ export interface ContextProjection {
   inputBudget: number
 }
 export interface ContextProjectionOptions {
-  /** Local model-specific estimate for text parts, not provider-exact usage. */
-  countTokens: (text: string) => number
-  systemPrompt: string
+  /** Optional canonical task metadata makes this estimate match the gateway payload. */
+  generation?: Omit<GatewayGenerationInput, 'requestId' | 'messages'>
+  /** Legacy test seam for projections without a current user request. */
+  countTokens?: (text: string) => number
+  systemPrompt?: string
 }
 
 /** Keep the newest whole task groups that fit the estimated prompt budget. */
@@ -150,11 +153,18 @@ export function contextProjection(conversation: Conversation, options: ContextPr
   const inputLimit = CONTEXT_LIMITS.inputTokens - CONTEXT_LIMITS.estimateHeadroom
   const estimate = (candidate: Turn[][]): number => {
     const turns = candidate.flat().sort((a, b) => usable.indexOf(a) - usable.indexOf(b))
-    const renderedText = [options.systemPrompt, ...turns.map((turn) => `${turn.role}\n${turn.text}`)].join('\n')
+    const messages = previewContextMessages(turns)
+    if (messages.length > GATEWAY_LIMITS.maxMessages) return Number.POSITIVE_INFINITY
+    if (options.generation) {
+      return prepareGatewayGeneration({
+        ...options.generation,
+        requestId: 'context-preview',
+        messages,
+      }).estimatedInputTokens
+    }
+    const renderedText = [options.systemPrompt ?? '', ...turns.map((turn) => `${turn.role}\n${turn.text}`)].join('\n')
     const imageIds = new Set(turns.flatMap((turn) => turn.role === 'user' && turn.attachmentId ? [turn.attachmentId] : []))
-    // OpenRouter does not expose image-token preflight. Reserve per image, add
-    // message framing overhead, and keep a 10% margin for route variance.
-    return options.countTokens(renderedText) + turns.length * 8 + imageIds.size * CONTEXT_LIMITS.imageTokenEstimate
+    return (options.countTokens ?? estimateTextTokens)(renderedText) + turns.length * 8 + imageIds.size * CONTEXT_LIMITS.imageTokenEstimate
   }
   let stoppedAtBoundary = false
   for (const [key, group] of [...orderedGroups].reverse()) {
@@ -210,24 +220,51 @@ export function contextImages(turns: Turn[]): Set<string> {
   return wanted
 }
 
+function contextItems(turns: Turn[], images: Set<string>): Array<{ turn: Turn; imageId?: string }> {
+  const sent = new Set<string>()
+  return turns.map((turn) => {
+    const id = turn.role === 'user' && turn.attachmentId && images.has(turn.attachmentId) && !sent.has(turn.attachmentId)
+      ? turn.attachmentId
+      : undefined
+    if (id) sent.add(id)
+    return { turn, imageId: id }
+  })
+}
+
+function previewContextMessages(turns: Turn[]): ApiMessage[] {
+  const messages: ApiMessage[] = []
+  for (const { turn, imageId } of contextItems(turns, contextImages(turns))) {
+    if (turn.role === 'assistant') {
+      messages.push({ role: 'assistant', content: turn.text })
+      continue
+    }
+    const content: Exclude<ApiMessage['content'], string> = []
+    if (turn.text) content.push({ type: 'text', text: turn.text })
+    if (imageId) content.push({ type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } })
+    if (content.length) messages.push({ role: 'user', content })
+  }
+  return messages
+}
+
 export async function requestContext(
   readImage: (id: string) => Promise<Blob | undefined>,
   projection: ContextProjection,
 ): Promise<{ messages: ApiMessage[]; omitted: number }> {
-  const sent = new Set<string>()
   const messages: ApiMessage[] = []
-  for (const turn of projection.turns) {
+  for (const { turn, imageId } of contextItems(projection.turns, projection.images)) {
+    if (turn.role === 'assistant') {
+      messages.push({ role: 'assistant', content: turn.text })
+      continue
+    }
     const content: Exclude<ApiMessage['content'], string> = []
     if (turn.text) content.push({ type: 'text', text: turn.text })
-    if (turn.role === 'user' && turn.attachmentId && projection.images.has(turn.attachmentId) && !sent.has(turn.attachmentId)) {
-      const data = await readImage(turn.attachmentId)
+    if (imageId) {
+      const data = await readImage(imageId)
       if (!data) throw new Error('context.imageMissing')
       if (data.size > CONTEXT_LIMITS.imageBytes) throw new Error('context.imageLarge')
       content.push({ type: 'image_url', image_url: { url: await blobDataUrl(data) } })
-      sent.add(turn.attachmentId)
     }
-    if (turn.role === 'user' && content.length) messages.push({ role: 'user', content })
-    else if (turn.role === 'assistant') messages.push({ role: 'assistant', content: turn.text })
+    if (content.length) messages.push({ role: 'user', content })
   }
   return { messages, omitted: projection.omitted }
 }

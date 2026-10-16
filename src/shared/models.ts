@@ -13,7 +13,7 @@
 // fetched from the same settings form the chat request goes out from.
 
 import { apiHttpError, apiNetworkError, authHeaders } from './api'
-import type { Settings } from './settings'
+import type { ProviderSettings } from './api'
 
 export interface ModelInfo {
   id: string
@@ -43,7 +43,7 @@ interface RawModel {
  *  Throws with the same human phrasing as chatCompletion; an empty
  *  settings.model must NOT trigger that guard — listing models is exactly how
  *  a user picks one, so nothing here reads settings.model at all. */
-export async function fetchVisionModels(settings: Settings): Promise<ModelsResult> {
+export async function fetchVisionModels(settings: ProviderSettings): Promise<ModelsResult> {
   let res: Response
   try {
     res = await fetch(`${settings.baseUrl}/models`, {

@@ -3,7 +3,7 @@ import http from 'node:http'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
 
-const compiled = await build({ stdin: { contents: "export * from './src/shared/conversation-store'; export * from './src/shared/conversations'", resolveDir: process.cwd() }, bundle: true, format: 'iife', globalName: 'contracts', write: false })
+const compiled = await build({ stdin: { contents: "export * from './src/shared/conversation-store'; export * from './src/shared/conversations'; export * from './src/shared/gateway-protocol'", resolveDir: process.cwd() }, bundle: true, format: 'iife', globalName: 'contracts', write: false })
 const server = http.createServer((_, res) => res.end('<!doctype html><title>Isolated storage fixtures</title>'))
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
 const browser = await chromium.launch({ headless: true })
@@ -56,6 +56,7 @@ try {
     const empty = (await c.listConversations()).length === 0
     await c.createConversation('Survives reload')
     const projectionOptions = { countTokens: text => text.length, systemPrompt: 'Study Buddy' }
+    const generationOptions = { generation: { task: 'ask', answerLanguage: 'en', uiLanguage: 'en', titleNeeded: false, taskInput: 'question 2' } }
     const many = { ...first, turns: [] }
     for (let i = 0; i < 40; i++) many.turns.push({ ...user, id: 'turn-' + i, text: 'turn ' + i, kind: 'ask', attachmentId: 'task-' + Math.floor(i / 3) })
     const bounded = c.contextTurns(many, projectionOptions)
@@ -66,13 +67,14 @@ try {
     const questions = ['ask-a', 'ask-b', 'ask-c'].map((id, index) => ({ ...user, id, text: `question ${index}`, attachmentId: captures[index].attachmentId, createdAt: Date.now() + index + 3 }))
     const answers = questions.map((turn, index) => ({ ...turn, id: `answer-${index}`, role: 'assistant', status: 'complete', replyTo: turn.id, attachmentId: undefined, createdAt: Date.now() + index + 6 }))
     const dialog = { ...first, activeAttachmentId: 'capture-c', turns: [captures[0], questions[0], answers[0], captures[1], questions[1], answers[1], captures[2], questions[2]] }
-    const projection = c.contextProjection(dialog, projectionOptions)
+    const projection = c.contextProjection(dialog, generationOptions)
     const projectedContext = await c.requestContext(async () => new Blob(['thread image'], { type: 'image/png' }), projection)
     const includedIds = projection.entries.filter(entry => entry.included).map(entry => entry.turn.id)
     const excludedReasons = Object.fromEntries(projection.entries.filter(entry => !entry.included).map(entry => [entry.turn.role === 'assistant' ? entry.turn.id : entry.turn.attachmentId === 'shared-image' ? entry.turn.kind === 'capture' ? 'capture-a' : 'ask-a' : entry.turn.id, entry.reason]))
     const projectedImages = projectedContext.messages.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(part => part.type === 'image_url').length
     const firstImageOnly = Array.isArray(projectedContext.messages[0].content) && projectedContext.messages[0].content.length === 1 && projectedContext.messages[0].content[0].type === 'image_url'
-    const previewPayloadMatch = projectedContext.messages.length === projection.turns.length && projectedImages === projection.images.size
+    const preparedPreview = c.prepareGatewayGeneration({ ...generationOptions.generation, requestId: 'storage-preview', messages: projectedContext.messages })
+    const previewPayloadMatch = projectedContext.messages.length === projection.turns.length && projectedImages === projection.images.size && preparedPreview.estimatedInputTokens === projection.estimatedInputTokens
     const images = { ...first, turns: ['old', 'recent', 'current'].map((id) => ({ ...user, id, attachmentId: id })) }
     const sourceSnapshot = JSON.stringify(images)
     const imageProjection = c.contextProjection(images, projectionOptions)

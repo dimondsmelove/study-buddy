@@ -126,6 +126,11 @@ export function prepareGatewayGeneration(input: GatewayGenerationInput): Prepare
 
 /** Shared client/server estimate includes message framing and a fixed reserve
  * per image in addition to the deliberately conservative text heuristic. */
+/** Exact UTF-8 size of the JSON request body sent by the browser gateway client. */
+export function gatewayRequestBytes(input: GatewayGenerationInput): number {
+  return new TextEncoder().encode(JSON.stringify(input)).byteLength
+}
+
 export function estimateInputTokens(messages: ApiMessage[], imageCount = countImages(messages)): number {
   const rendered = messages.map((message) => message.role + '\n' + textContent(message.content)).join('\n')
   return estimateTextTokens(rendered) + messages.length * 8 + imageCount * GATEWAY_LIMITS.imageTokenEstimate

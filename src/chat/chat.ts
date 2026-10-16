@@ -6,8 +6,8 @@
 // relayed in by the host via postMessage (no reload, the conversation survives).
 //
 // Views: capture (crop + task actions + thread), the rare permission /
-// restricted / error states, and a settings detour. Provider configuration is
-// supplied by the development runtime; user settings only control languages.
+// restricted / error states, and a settings detour. The gateway owns provider
+// configuration; user settings only control languages.
 // The crop goes through the Gateway and the answer streams into the thread,
 // rendered as Markdown + LaTeX.
 
@@ -16,19 +16,18 @@ import DOMPurify from 'dompurify'
 import renderMathInElement from 'katex/contrib/auto-render'
 import 'katex/dist/katex.min.css'
 
-import { ApiError } from '../shared/api'
-import { createGateway } from '../shared/gateway'
+import { createGateway, GatewayError, gatewayErrorMessage } from '../shared/gateway'
+import { GATEWAY_LIMITS, gatewayRequestBytes } from '../shared/gateway-protocol'
 import type { ChatState, Rect } from '../shared/messages'
 import { conversationUsage, getAttachment, getConversation, getConversationState, listConversations } from '../shared/conversation-store'
 import { CONTEXT_LIMITS, contextProjection, conversationActivityAt, conversationDisplayTitle, cooldownRemaining, requestContext, type ContextProjection, type Conversation, type ConversationState, type ReplyStatus, type Turn } from '../shared/conversations'
 import { conversationAction, GenerationConnection } from './conversation-client'
-import { loadDeepSeekTokenCounter } from '../shared/context-tokenizer'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
-import { DEFAULT_SETTINGS, getSettings, resolveSettings, setSettings } from '../shared/settings'
+import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
 import { createResponseTitleParser } from '../shared/title'
-import { checkPrompt, firstAnswerTitleInstruction, PROMPTS_VERSION, simplerPrompt, systemPrompt, taskPrompt, turnParams, type TaskId, type TurnKind } from '../shared/prompts'
+import { checkPrompt, PROMPTS_VERSION, simplerPrompt, taskPrompt, type TaskId, type TurnKind } from '../shared/prompts'
 
 type Kind = 'capture' | 'permission' | 'restricted' | 'error'
 const KINDS: Kind[] = ['capture', 'permission', 'restricted', 'error']
@@ -334,7 +333,13 @@ let inflight: AbortController | null = null
 
 function reportError(err: unknown): void {
   const key = err instanceof Error ? err.message : 'storage.write'
-  if (['context.text', 'context.taskTooLarge', 'context.imageMissing', 'context.imageLarge'].includes(key)) { setComposerError(key); return }
+  if (['context.text', 'context.taskTooLarge', 'context.imageMissing', 'context.imageLarge', 'context.requestLarge'].includes(key)) { setComposerError(key); return }
+  if (err instanceof GatewayError) {
+    el('dialog-status').textContent = gatewayErrorMessage(err, uiLang)
+    el('operation-error').textContent = el('dialog-status').textContent
+    el('operation-error').hidden = false
+    return
+  }
   if (key.startsWith('dialog.cooldown:')) {
     el('operation-error').textContent = ''
     el('operation-error').hidden = true
@@ -346,9 +351,8 @@ function reportError(err: unknown): void {
   el('operation-error').hidden = false
 }
 
-async function projectContext(value: Conversation, prompt = systemPrompt(promptCtx())): Promise<ContextProjection> {
-  const countTokens = await loadDeepSeekTokenCounter()
-  return contextProjection(value, { countTokens, systemPrompt: prompt })
+async function projectContext(value: Conversation, generation?: Parameters<typeof contextProjection>[1]['generation']): Promise<ContextProjection> {
+  return contextProjection(value, { generation })
 }
 
 async function imageUrl(id: string): Promise<string> {
@@ -557,8 +561,18 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
   const turns = draft && !selected.turns.some((turn) => turn.id === draft.id) ? [...selected.turns, draft] : selected.turns
   let projection: ContextProjection
   try {
-    const system = systemPrompt(promptCtx()) + (!selected.titleGeneratedAt ? '\n\n' + firstAnswerTitleInstruction(promptCtx()) : '')
-    projection = await projectContext({ ...selected, turns }, system)
+    const currentUser = draft?.role === 'user' ? draft : [...turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
+    const isNewUser = !!draft && !selected.turns.some((turn) => turn.id === draft.id)
+    const previousUserExists = selected.turns.some((turn) => turn.role === 'user' && turn.kind !== 'capture')
+    const generation = isNewUser && currentUser ? {
+      task: currentUser.kind as TurnKind,
+      answerLanguage: settingsCache.answerLanguage,
+      uiLanguage: currentUser.locale,
+      titleNeeded: isNewUser && !previousUserExists && selected.titleGeneratedAt === undefined,
+      ...(currentUser.kind === 'ask' ? { taskInput: currentUser.input ?? currentUser.text } :
+        currentUser.kind === 'check' && currentUser.input !== undefined ? { taskInput: currentUser.input } : {}),
+    } : undefined
+    projection = await projectContext({ ...selected, turns }, generation)
   } catch (err) {
     const key = err instanceof Error ? err.message : 'context.text'
     contextPreview = undefined
@@ -762,22 +776,14 @@ function setBusy(busy: boolean, cooldownMs = 0): void {
 }
 
 async function requireSettings(): Promise<Settings | null> {
-  try { await loadSettings() } catch { reportError(new Error('storage.read')); return null }
-  try {
-    const settings = resolveSettings(settingsCache)
-    if (settings.apiKey) return settings
-  } catch {
-    // An unavailable runtime connection is reported without exposing setup fields.
-  }
-  reportError(new Error('err.notConnected'))
-  return null
+  try { return await loadSettings() }
+  catch (error) { reportError(new Error(error instanceof Error ? error.message : 'storage.read')); return null }
 }
 
 /** Persist the accepted turn before any provider operation; only this port writes. */
 async function streamReply(settings: Settings, user: Turn | null, source: Turn, onAccepted?: () => void): Promise<boolean> {
   if (!conversation) return false
   const selectedId = conversation.id
-  const promptContext = { answerLanguage: settings.answerLanguage, uiLang: source.locale }
   if (source.kind === 'capture') throw new Error('dialog.invalid')
   const requestTitle = !!user && !conversation.turns.some((turn) => turn.role === 'user' && turn.kind !== 'capture') && conversation.titleGeneratedAt === undefined
   const titleParser = requestTitle ? createResponseTitleParser() : undefined
@@ -805,7 +811,27 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   el('operation-error').hidden = true
   setBusy(true)
   try {
-    const accepted = await connection.request<{ conversation: Conversation }>({ action: 'start', conversationId: selectedId, user, assistant })
+    const prior = conversation
+    const sourceIndex = prior.turns.findIndex((turn) => turn.id === source.id)
+    const selectedTurns = user
+      ? [...prior.turns, user]
+      : prior.turns.slice(0, sourceIndex + 1)
+    const contextConversation = { ...prior, turns: selectedTurns }
+    const preflightGeneration = {
+      requestId: '00000000-0000-4000-8000-000000000000',
+      task: source.kind,
+      answerLanguage: settings.answerLanguage,
+      uiLanguage: source.locale,
+      titleNeeded: requestTitle,
+      ...(source.kind === 'ask' ? { taskInput: source.input ?? source.text } :
+        source.kind === 'check' && source.input !== undefined ? { taskInput: source.input } : {}),
+    }
+    const projection = await projectContext(contextConversation, preflightGeneration)
+    const context = await requestContext(async (id) => (await getAttachment(id))?.data, projection)
+    const preflightPayload = { ...preflightGeneration, messages: context.messages }
+    if (gatewayRequestBytes(preflightPayload) > GATEWAY_LIMITS.requestBytes) throw new Error('context.requestLarge')
+
+    const accepted = await connection.request<{ generation: { requestId: string }; conversation: Conversation }>({ action: 'start', conversationId: selectedId, user, assistant })
     conversation = accepted.conversation
     onAccepted?.()
     el('conversation-title').textContent = conversation.title
@@ -814,17 +840,20 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
     reply = addMessage('assistant', '…')
     reply.wrap.dataset.turn = assistant.id
     await refreshStatus()
-    const index = conversation.turns.findIndex((turn) => turn.id === source.id)
-    const contextConversation = { ...conversation, turns: conversation.turns.slice(0, index + 1) }
-    const system = systemPrompt(promptContext) + (requestTitle ? '\n\n' + firstAnswerTitleInstruction(promptContext) : '')
-    const projection = await projectContext(contextConversation, system)
     contextPreview = projection
     applyContextProjection(projection)
-    const context = await requestContext(async (id) => (await getAttachment(id))?.data, projection)
-    const result = await createGateway(settings).ask({
-      messages: [{ role: 'system', content: system }, ...context.messages],
-      ...turnParams(source.kind),
+    const generation = { ...preflightGeneration, requestId: accepted.generation.requestId }
+    const result = await createGateway().ask({
+      ...generation,
+      messages: context.messages,
       signal: controller.signal,
+      onContext: (value) => {
+        if (value.estimatedInputTokens !== projection.estimatedInputTokens ||
+            value.inputBudget !== projection.inputBudget || value.estimateHeadroom !== CONTEXT_LIMITS.estimateHeadroom) {
+          controller.abort()
+          throw new GatewayError('gateway.context_mismatch', 'uncertain')
+        }
+      },
       onDelta: (delta) => {
         acc += titleParser ? titleParser.push(delta) : delta
         generatedTitle = titleParser?.title ?? generatedTitle
@@ -848,8 +877,8 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
     usage = { model: result.model, ...result.usage }
   } catch (err) {
     if (!reply) { reportError(err); return false }
-    status = lost || storageFailed ? 'interrupted' : controller.signal.aborted ? 'cancelled' : err instanceof ApiError && ['network', 'interrupted', 'response'].includes(err.kind) ? 'interrupted' : 'provider_error'
-    error = err instanceof ApiError ? err.message : undefined
+    status = lost || storageFailed ? 'interrupted' : controller.signal.aborted || err instanceof GatewayError && err.kind === 'cancelled' ? 'cancelled' : err instanceof GatewayError && (err.kind === 'uncertain' || err.partial) ? 'interrupted' : 'provider_error'
+    error = err instanceof GatewayError ? gatewayErrorMessage(err, uiLang) : undefined
   } finally {
     if (timer) clearTimeout(timer)
     if (reply) {

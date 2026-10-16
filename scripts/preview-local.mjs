@@ -1,6 +1,8 @@
 // Isolated local acceptance browser + mock provider. Never reads credentials.
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,9 +26,18 @@ if (command === 'stop' || command === 'health') {
 if (command !== 'start') throw new Error('Use start, health or stop')
 mkdirSync(stateDir, { recursive: true })
 const runDir = mkdtempSync(join(stateDir, 'run-'))
+const portProbe = createNetServer()
+await new Promise((resolve, reject) => portProbe.listen(0, '127.0.0.1', resolve).once('error', reject))
+const gatewayPort = portProbe.address().port
+await new Promise((resolve, reject) => portProbe.close(error => error ? reject(error) : resolve()))
+const gatewayUrl = `http://127.0.0.1:${gatewayPort}`
+const buildEnv = { ...process.env, STUDY_BUDDY_GATEWAY_URL: gatewayUrl }
+delete buildEnv.OPENROUTER_API_KEY
+delete buildEnv.OPENAI_API_KEY
+execFileSync('npm', ['run', 'build'], { cwd: root, env: buildEnv, stdio: 'inherit' })
 const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
-if (manifest.host_permissions?.length || manifest.permissions?.includes('<all_urls>')) {
-  throw new Error('Preview requires the original narrow manifest without persistent host permissions.')
+if (manifest.host_permissions?.join(',') !== `${gatewayUrl}/*` || manifest.permissions?.includes('<all_urls>')) {
+  throw new Error('Preview build must use only the configured gateway host permission.')
 }
 const token = randomUUID()
 let ctx
@@ -34,11 +45,15 @@ let stopping = false
 let requests = 0
 let origin
 let captureReady = false
+let backend
+let vite
 const stop = async () => {
   if (stopping) return
   stopping = true
   await ctx?.close()
-  server.close()
+  await backend?.close()
+  await vite?.close()
+  if (server.listening) server.close()
 }
 const demo = `<!doctype html><meta charset="utf-8"><title>Study Buddy · локальная приёмка</title>
 <style>body{font:18px/1.6 system-ui;background:#eef1f5;color:#18181b;margin:0}header{padding:18px;background:#111827;color:white}main{padding:28px}article{background:white;border:1px solid #ddd;border-radius:10px;padding:20px;width:340px}small{font-size:13px}</style>
@@ -61,7 +76,7 @@ const server = createServer((req, res) => {
   }
   if (req.url === '/v1/chat/completions' && req.method === 'POST') {
     let body = ''
-    req.on('data', chunk => { body += chunk; if (body.length > 16 * 1024 * 1024) req.destroy() })
+    req.on('data', chunk => { body += chunk; if (body.length > 32 * 1024 * 1024) req.destroy() })
     req.on('end', () => {
       let request
       try { request = JSON.parse(body) } catch { res.writeHead(400); res.end(); return }
@@ -77,7 +92,7 @@ const server = createServer((req, res) => {
       const timer = setInterval(() => {
         const chunk = chunks.shift()
         if (chunk !== undefined) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`)
-        else { clearInterval(timer); res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n') }
+        else { clearInterval(timer); res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n') }
       }, 200)
       res.on('close', () => clearInterval(timer))
     })
@@ -101,15 +116,32 @@ try {
   })
   await ctx.route('**/*', route => {
     const url = new URL(route.request().url())
-    return ['http:', 'https:'].includes(url.protocol) && url.origin !== origin ? route.abort() : route.continue()
+    return ['http:', 'https:'].includes(url.protocol) && ![origin, gatewayUrl].includes(url.origin) ? route.abort() : route.continue()
   })
   let [sw] = ctx.serviceWorkers()
   if (!sw) sw = await ctx.waitForEvent('serviceworker')
-  await sw.evaluate(settings => chrome.storage.local.set({ settings }), { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'mock-preview-only', uiLanguage: 'ru', answerLanguage: 'auto' })
+  const extensionId = new URL(sw.url()).hostname
+  const viteModule = await import('vite')
+  vite = await viteModule.createServer({ configFile: false, root, appType: 'custom', server: { middlewareMode: true } })
+  const [{ createBackend }, { loadBackendConfig }] = await Promise.all([
+    vite.ssrLoadModule('/src/backend/app.ts'),
+    vite.ssrLoadModule('/src/backend/config.ts'),
+  ])
+  const backendConfig = loadBackendConfig({
+    OPENROUTER_API_KEY: 'FAKE_PREVIEW_PROVIDER_KEY',
+    SESSION_HMAC_SECRET: 'local-preview-session-secret-for-tests-012345',
+    HOST: '127.0.0.1',
+    PORT: String(gatewayPort),
+    DATABASE_PATH: join(runDir, 'gateway.sqlite'),
+    ALLOWED_ORIGINS: `chrome-extension://${extensionId}`,
+  })
+  let backendClock = Date.now()
+  backend = createBackend(backendConfig, { providerBaseUrl: `${origin}/v1`, now: () => { backendClock += 11_000; return backendClock } })
+  await new Promise((resolve, reject) => backend.server.listen(gatewayPort, '127.0.0.1', error => error ? reject(error) : resolve()))
+  await sw.evaluate(settings => chrome.storage.local.set({ settings }), { uiLanguage: 'ru', answerLanguage: 'auto' })
   const page = await ctx.newPage()
   await page.goto(`${origin}/demo`)
   await page.bringToFront()
-  const extensionId = new URL(sw.url()).hostname
   const extensionPrefix = `chrome-extension://${extensionId}/`
   const extensionFrameNavigation = page.waitForEvent('framenavigated', frame => frame.url().startsWith(extensionPrefix), { timeout: 15_000 }).catch(() => undefined)
   const browserCdp = await ctx.browser().newBrowserCDPSession()
@@ -155,11 +187,11 @@ try {
   const cropSize = await chatFrame.locator('.turn-image').evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight }))
   if (cropSize.width < 4 || cropSize.height < 4) throw new Error('Preview capture produced an empty crop.')
   captureReady = true
-  writeFileSync(stateFile, JSON.stringify({ origin, token, pid: process.pid, runDir, mode: 'localhost mock only' }, null, 2))
+  writeFileSync(stateFile, JSON.stringify({ origin, token, pid: process.pid, runDir, mode: 'localhost backend and fake upstream only' }, null, 2))
   console.log(`READY ${origin} · demo ${origin}/demo · captured crop ${cropSize.width}×${cropSize.height}px · isolated profile ${runDir}/profile`)
   process.once('SIGINT', () => void stop())
   process.once('SIGTERM', () => void stop())
-  ctx.once('close', () => { stopping = true; server.close() })
+  ctx.once('close', () => { if (stopping) return; stopping = true; void backend?.close(); void vite?.close(); if (server.listening) server.close() })
   await new Promise(resolve => server.once('close', resolve))
 } catch (err) {
   await stop()

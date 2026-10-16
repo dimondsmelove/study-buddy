@@ -1,4 +1,7 @@
 import { defineManifest } from '@crxjs/vite-plugin'
+import { DEFAULT_GATEWAY_URL, gatewayHostPermission } from './shared/gateway-url'
+
+const gatewayHost = gatewayHostPermission(process.env.STUDY_BUDDY_GATEWAY_URL ?? DEFAULT_GATEWAY_URL)
 
 // Study Buddy — Manifest V3.
 // Design inherited from OCR Buddy (MIT), stripped of the local-OCR machinery:
@@ -36,6 +39,8 @@ export default defineManifest({
   // "read and change all your data on all websites" install warning. The overlay
   // is injected on demand by the service worker (chrome.scripting + activeTab /
   // granted host), built as a fixed-name classic script entry in vite.config.ts.
+  host_permissions: [gatewayHost],
+
   permissions: [
     'activeTab', // captureVisibleTab on the tab where invoked
     'scripting', // inject the selection overlay on demand

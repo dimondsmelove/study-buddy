@@ -10,6 +10,9 @@
 // requires a headed browser.
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
+import { execFileSync } from 'node:child_process'
+import { createServer as createViteServer } from 'vite'
 import vm from 'node:vm'
 import ts from 'typescript'
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
@@ -18,7 +21,8 @@ import { fileURLToPath } from 'node:url'
 import { join, resolve } from 'node:path'
 
 const root = resolve(fileURLToPath(import.meta.url), '..')
-const dist = resolve(root, '..', 'dist')
+const repo = resolve(root, '..')
+const dist = resolve(repo, 'dist')
 const i18nModule = { exports: {} }
 const i18nSource = ts.transpileModule(readFileSync(resolve(root, '..', 'src/shared/i18n.ts'), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -30,6 +34,16 @@ const answerActionLabels = ['en', 'ru'].map(lang => i18nModule.exports.t(lang, '
 // service worker from the code cache (an old build!) — which once sent this
 // very test in circles. Fresh dir = always the current dist/ code.
 const profile = mkdtempSync(join(tmpdir(), 'study-buddy-verify-'))
+const portProbe = createNetServer()
+await new Promise((resolve, reject) => portProbe.listen(0, '127.0.0.1', resolve).once('error', reject))
+const gatewayPort = portProbe.address().port
+await new Promise((resolve, reject) => portProbe.close((error) => error ? reject(error) : resolve()))
+const gatewayUrl = `http://127.0.0.1:${gatewayPort}`
+execFileSync('npm', ['run', 'build'], {
+  cwd: repo,
+  env: { ...process.env, STUDY_BUDDY_GATEWAY_URL: gatewayUrl },
+  stdio: 'inherit',
+})
 
 let failures = 0
 const check = (ok, label) => {
@@ -42,10 +56,9 @@ const pageHtml = `<!doctype html><meta charset="utf-8"><title>target</title>
 <style>body{margin:0;font:24px system-ui}.capture-proof{position:fixed;left:220px;top:230px;width:140px;height:90px;background:rgb(19,135,64)}</style>
 <body><p style="padding:40px">homework text 12345</p><div class="capture-proof"></div></body>`
 
-// The same server doubles as a mock OpenAI-compatible endpoint for the AI
-// tests below: /v1/chat/completions streams two SSE deltas, and the request
-// body is kept so the test can assert the crop actually went out as an image.
-// `failModel` makes that one model answer 503, to exercise the fallback chain.
+// This isolated HTTP server serves the local capture page and acts as the
+// injected fake OpenAI-compatible upstream for the real backend process.
+// `failModel` makes one model answer 503, to exercise the backend fallback chain.
 let lastAiRequest = null
 let failModel = null
 let responseMode = 'normal'
@@ -68,27 +81,27 @@ const server = createServer((req, res) => {
       }
       if (responseMode === 'clipboard') {
         res.writeHead(200, { 'content-type': 'text/event-stream' })
-        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'clipboard-real-proof' } }] }) + '\n\ndata: [DONE]\n\n')
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'clipboard-real-proof' } }] }) + '\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n')
         return
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n')
       if (responseMode === 'slow') {
         const interval = setInterval(() => res.write('data: {"choices":[{"delta":{"content":" step"}}]}\n\n'), 180)
-        const finish = setTimeout(() => { clearInterval(interval); res.end('data: [DONE]\n\n') }, 10_000)
+        const finish = setTimeout(() => { clearInterval(interval); res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2}}\n\ndata: [DONE]\n\n') }, 10_000)
         res.on('close', () => { clearInterval(interval); clearTimeout(finish) })
         return
       }
       if (responseMode === 'long') {
         const answer = 'A longer worked explanation with enough detail to read at normal size. Each step follows from the captured question and keeps the reasoning visible instead of compressing the result.\n\nFor the quadratic formula,\n\n$$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$\n\nThis display equation is rendered with KaTeX. The surrounding prose remains selectable and wraps within the answer column.'
-        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: answer } }] }) + '\n\ndata: [DONE]\n\n')
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: answer } }] }) + '\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n')
         return
       }
-      if (responseMode === 'truncated') { res.end('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'); return }
+      if (responseMode === 'truncated') { res.end('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2}}\n\ndata: [DONE]\n\n'); return }
       if (responseMode === 'interrupted') { res.end(); return }
-      if (responseMode === 'provider-error') { res.end('data: {"error":{"message":"private-provider-fixture"}}\n\n'); return }
+      if (responseMode === 'context-error') { res.end('data: {"error":{"code":400,"metadata":{"error_type":"context_length_exceeded"},"message":"private-provider-fixture"}}\n\n'); return }
       res.write('data: {"choices":[{"delta":{"content":" world"}}]}\n\n')
-      res.end('data: [DONE]\n\n')
+      res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n')
     })
     return
   }
@@ -99,6 +112,9 @@ await new Promise((r) => server.listen(0, '127.0.0.1', r))
 const origin = `http://127.0.0.1:${server.address().port}`
 const url = `${origin}/`
 
+let backend
+let vite
+let backendLogs = []
 const ctx = await chromium.launchPersistentContext(profile, {
   // channel 'chromium' = the full build with the NEW headless, which loads
   // extensions (the default "headless shell" does not).
@@ -115,6 +131,26 @@ try {
   if (!sw) sw = await ctx.waitForEvent('serviceworker')
   check(true, 'service worker started')
   const extensionId = new URL(sw.url()).hostname
+  vite = await createViteServer({ configFile: false, root: repo, appType: 'custom', server: { middlewareMode: true } })
+  const [{ createBackend }, { loadBackendConfig }] = await Promise.all([
+    vite.ssrLoadModule('/src/backend/app.ts'),
+    vite.ssrLoadModule('/src/backend/config.ts'),
+  ])
+  const backendConfig = loadBackendConfig({
+    OPENROUTER_API_KEY: 'FAKE_PROVIDER_KEY',
+    SESSION_HMAC_SECRET: 'verify-fixture-session-secret-0123456789',
+    HOST: '127.0.0.1',
+    PORT: String(gatewayPort),
+    DATABASE_PATH: join(profile, 'gateway.sqlite'),
+    ALLOWED_ORIGINS: `chrome-extension://${extensionId}`,
+  })
+  let backendClock = Date.now()
+  backend = createBackend(backendConfig, {
+    providerBaseUrl: origin,
+    now: () => { backendClock += 11_000; return backendClock },
+    log: (entry) => backendLogs.push(entry),
+  })
+  await new Promise((resolve, reject) => backend.server.listen(gatewayPort, '127.0.0.1', (error) => error ? reject(error) : resolve()))
   const browserCdp = await ctx.browser().newBrowserCDPSession()
   const triggerAction = async (targetPage) => {
     await targetPage.bringToFront()
@@ -154,12 +190,8 @@ try {
   const shortcut = commands.find((c) => c.name === 'start-capture')?.shortcut
   check(Boolean(shortcut), `start-capture command registered (${shortcut || 'MISSING'})`)
 
-  // Seed a key so the chat pages used by the capture-flow tests don't detour
-  // into onboarding; the onboarding path itself is tested later on clean storage.
+  // The backend owns provider credentials; the browser stores only language.
   await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), {
-    provider: 'openrouter',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    apiKey: 'sk-test-123',
     uiLanguage: 'auto',
     answerLanguage: 'auto',
   })
@@ -472,8 +504,8 @@ try {
   check(page.frames().includes(liveFrame), 'a tiny accidental selection restores the same expanded chat')
 
   // Language-only Settings keep the existing development connection intact.
-  const settingsFixture = { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto' }
-  await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), settingsFixture)
+  const settingsFixture = { uiLanguage: 'en', answerLanguage: 'auto' }
+  await sw.evaluate((s) => chrome.storage.local.set({ settings: { ...s, apiKey: 'legacy-fixture-secret', baseUrl: 'https://provider.invalid/v1', provider: 'custom' } }), settingsFixture)
   const settings = await ctx.newPage()
   await settings.goto(`${chatOrigin}/src/chat/chat.html?kind=error&message=Settings%20fixture`)
   await settings.waitForSelector('#view-error:not([hidden])')
@@ -483,7 +515,7 @@ try {
     const settingsMarkup = document.getElementById('view-settings').outerHTML.toLowerCase()
     const pageMarkup = document.documentElement.outerHTML
     return !/(api.?key|provider|base.?url|openrouter|deepseek|model|advanced)/.test(settingsMarkup) &&
-      !pageMarkup.includes('sk-test-123') &&
+      !pageMarkup.includes('legacy-fixture-secret') &&
       !document.querySelector('#set-api-key,#set-provider,#set-base-url,[data-key-toggle],.advanced')
   })
   check(noConnectionDetails, 'Settings exposes only language controls; no connection fields or stored secret appear anywhere in the DOM')
@@ -516,7 +548,7 @@ try {
       await settings.locator('#view-settings').isVisible() &&
       JSON.stringify(await sw.evaluate(async () => chrome.storage.local.get('settings'))) === JSON.stringify(beforeSettingsWrites) &&
       await settings.evaluate(() => globalThis.fixtureFailedWriteCount) === 1,
-    'Settings write failure stays visible and preserves the previous connection',
+    'Settings write failure stays visible and preserves the prior language settings',
   )
   await settings.evaluate(() => { chrome.storage.local.set = globalThis.fixtureStorageSet })
   const requestsBeforeLanguageSave = requestCount
@@ -524,18 +556,16 @@ try {
   await settings.waitForSelector('#view-settings[hidden]', { state: 'attached' })
   const savedSettings = (await sw.evaluate(async () => chrome.storage.local.get('settings'))).settings
   check(
-    savedSettings.provider === settingsFixture.provider &&
-      savedSettings.baseUrl === settingsFixture.baseUrl &&
-      savedSettings.apiKey === settingsFixture.apiKey &&
+    Object.keys(savedSettings).sort().join(',') === 'answerLanguage,uiLanguage' &&
       savedSettings.uiLanguage === 'ru' &&
       savedSettings.answerLanguage === 'fr' &&
       requestCount === requestsBeforeLanguageSave,
-    'language Save retains the stored runtime connection and sends no model request (credentials redacted)',
+    'language Save removes legacy provider fields and sends no model request',
   )
   await settings.close()
 
-  // AI answering: point settings at the mock endpoint and send the captured
-  // crop through the Solve preset. The reply must stream into the thread, and
+  // AI answering now traverses the local gateway and fake HTTP upstream. The
+  // reply must stream into the thread, and
   // the request must carry the crop as an image_url. The model is fixed by the
   // app's chain (settings.model no longer exists).
   const PRIMARY = 'deepseek/deepseek-v4-flash-vision-exp'
@@ -544,7 +574,7 @@ try {
   // regardless of the test machine's browser locale (auto would follow it).
   await sw.evaluate(
     async (s) => chrome.storage.local.set({ settings: s }),
-    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto' },
+    { uiLanguage: 'en', answerLanguage: 'auto' },
   )
   // Wait until the stored crop is decoded — i.e. `activeImage` is set — or the
   // preset click could race the storage read and send a caption-less question.
@@ -576,24 +606,35 @@ try {
     }
     request.onerror = () => reject(request.error)
   }))
-  // With no development connection, an attempted task explains the state and
-  // does not open credential setup or send a request.
-  await sw.evaluate(() => chrome.storage.local.set({ settings: { provider: 'custom', baseUrl: 'http://127.0.0.1/unconfigured', apiKey: '', uiLanguage: 'en', answerLanguage: 'auto' } }))
+  // An invalid persisted gateway session is explicit and never auto-replays a paid request.
+  await sw.evaluate((origin) => chrome.storage.local.set({ 'gateway.session': {
+    token: 'invalid-session-token-12345678901234567890',
+    expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    gatewayOrigin: origin,
+  } }), gatewayUrl)
   const disconnected = await openCapture()
   const beforeDisconnected = requestCount
   await disconnected.click('.preset[data-preset="solve"]')
-  await disconnected.waitForFunction(() => !document.getElementById('operation-error')?.hidden)
+  await disconnected.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .reply-status')].some(node => node.textContent?.includes('The answer session expired.')))
   check(
-    await disconnected.locator('#operation-error').textContent() === 'The answer service is not connected. Try again later.' &&
-      await disconnected.locator('#view-settings').isHidden() &&
-      requestCount === beforeDisconnected,
-    'missing runtime connection is a clear service error with no key prompt or provider request',
+    (await disconnected.locator('.msg.assistant .reply-status').last().textContent())?.includes('The answer session expired. Start a new request to reconnect.') &&
+      requestCount === beforeDisconnected &&
+      !(await sw.evaluate(async () => (await chrome.storage.local.get('gateway.session'))['gateway.session'])),
+    'invalid gateway session is cleared with a friendly error and never starts a provider request',
   )
   await disconnected.close()
-  await sw.evaluate((s) => chrome.storage.local.set({ settings: s }), {
-    provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto',
-  })
 
+  const readSaved = (p) => p.evaluate(() => new Promise((resolve, reject) => {
+    const open = indexedDB.open('study-buddy-conversations', 1)
+    open.onsuccess = () => {
+      const db = open.result
+      const tx = db.transaction(['conversations', 'state'], 'readonly')
+      const state = tx.objectStore('state').get('state')
+      const conversations = tx.objectStore('conversations').getAll()
+      tx.oncomplete = () => { db.close(); resolve({ state: state.result, conversations: conversations.result }) }
+      tx.onabort = () => reject(tx.error)
+    }
+  }))
   const waitReply = (p) =>
     p
       .waitForFunction(
@@ -612,8 +653,17 @@ try {
   await ai.click('.preset[data-preset="solve"]')
   const reply = await waitReply(ai)
   check(reply === 'Hello world', `assistant reply streamed into the thread (${reply ?? 'no reply'})`)
+  await ai.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete'))
+  const savedAi = await readSaved(ai)
+  const savedUsage = savedAi.conversations.find(item => item.id === savedAi.state.lastConversationId)?.turns.at(-1)?.usage
+  check(savedUsage?.model === PRIMARY && savedUsage.promptTokens === 17 && savedUsage.completionTokens === 2 && savedUsage.cost === 0.0001,
+    'final usage-only provider chunk is retained on the saved assistant turn')
+  await ai.reload()
+  await ai.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete'))
+  await ai.waitForTimeout(200)
+  check(await ai.locator('#composer-error').isHidden(), 'idle context preview after a completed answer does not require a new user message')
   const userMessages = lastAiRequest?.messages?.filter((m) => m.role === 'user') ?? []
-  const firstUser = userMessages.find((m) => Array.isArray(m.content) && m.content.some(part => part?.type === 'text'))
+  const firstUser = [...userMessages].reverse().find((m) => typeof m.content === 'string' || Array.isArray(m.content) && m.content.some(part => part?.type === 'text'))
   const imageMessage = userMessages.find((m) => Array.isArray(m.content) && m.content.some(part => part?.type === 'image_url'))
   const sentImage =
     Array.isArray(imageMessage?.content) &&
@@ -631,7 +681,7 @@ try {
       sysMsg.content.includes('Ground every answer in the image'),
     'system prompt carries the grounding rules',
   )
-  const solveText = Array.isArray(firstUser?.content) ? firstUser.content.find(part => part?.type === 'text')?.text : null
+  const solveText = typeof firstUser?.content === 'string' ? firstUser.content : Array.isArray(firstUser?.content) ? firstUser.content.find(part => part?.type === 'text')?.text : null
   check(
     typeof solveText === 'string' && solveText.startsWith('Solve the problem shown in the image'),
     `solve prompt sent as expected (${String(solveText ?? '').slice(0, 40)}…)`,
@@ -641,6 +691,47 @@ try {
     `request carried solve params (t=${lastAiRequest?.temperature}, max_tokens=${lastAiRequest?.max_tokens})`,
   )
   await ai.close()
+
+  const oversized = await openCapture()
+  const oversizedConversationId = new URL(oversized.url()).searchParams.get('conversation')
+  await oversized.evaluate((conversationId) => new Promise((resolve, reject) => {
+    const open = indexedDB.open('study-buddy-conversations', 1)
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const db = open.result
+      const tx = db.transaction(['conversations', 'attachments'], 'readwrite')
+      const conversations = tx.objectStore('conversations')
+      const request = conversations.get(conversationId)
+      request.onsuccess = () => {
+        const conversation = request.result
+        const payload = new Blob([new Uint8Array(4 * 1024 * 1024)], { type: 'image/png' })
+        const ids = Array.from({ length: 7 }, () => crypto.randomUUID())
+        for (const [index, id] of ids.entries()) {
+          const createdAt = Date.now() + index
+          tx.objectStore('attachments').put({ id, data: payload, createdAt })
+          conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: '', kind: 'capture', attachmentId: id, createdAt, locale: 'en', promptVersion: 'capture' })
+        }
+        conversation.activeAttachmentId = ids.at(-1)
+        conversations.put(conversation)
+      }
+      tx.oncomplete = () => { db.close(); resolve() }
+      tx.onerror = () => reject(tx.error)
+    }
+  }), oversizedConversationId)
+  await oversized.reload()
+  await oversized.waitForFunction(() => document.querySelectorAll('.turn-image').length === 8)
+  const largeDraft = 'Keep this draft when the encoded image payload is too large'
+  const beforeOversizedPayload = requestCount
+  await oversized.fill('#ask-input', largeDraft)
+  await oversized.click('#ask-btn')
+  await oversized.waitForFunction(() => document.getElementById('composer-error')?.textContent.includes('32 MiB'), { timeout: 10_000 })
+  const oversizedSaved = await readSaved(oversized)
+  const oversizedConversation = oversizedSaved.conversations.find(item => item.id === oversizedConversationId)
+  check(await oversized.locator('#ask-input').inputValue() === largeDraft &&
+    !oversizedConversation.turns.some(turn => turn.role === 'user' && turn.input === largeDraft) &&
+    requestCount === beforeOversizedPayload,
+  'over-32-MiB encoded payload is rejected before admission, keeps the draft and makes no upstream call')
+  await oversized.close()
 
   responseMode = 'long'
   const longAnswer = await openCapture()
@@ -706,15 +797,28 @@ try {
   })
   await longAnswer.fill('#ask-input', 'Continue with the next step.')
   await longAnswer.click('#ask-btn')
-  await longAnswer.waitForFunction(() => {
-    const assistants = [...document.querySelectorAll('.msg.assistant')]
-    return assistants.length === 2 && assistants.at(-1)?.querySelector('.reply-status')?.textContent?.includes('Complete')
-  })
-  const traySpacing = await longAnswer.locator('.msg.assistant').first().evaluate(message => {
-    const tray = message.querySelector('.msg-actions').getBoundingClientRect()
-    const messages = [...message.parentElement.querySelectorAll('.msg')]
-    const next = messages[messages.indexOf(message) + 1]?.getBoundingClientRect()
-    return { trayBottom: tray.bottom, nextMessageTop: next?.top, gap: next ? next.top - tray.bottom : null }
+  try {
+    await longAnswer.waitForFunction(() => {
+      const assistants = [...document.querySelectorAll('.msg.assistant')]
+      return assistants.length === 2 && assistants.at(-1)?.querySelector('.reply-status')?.textContent?.includes('Complete')
+    }, { timeout: 10_000 })
+  } catch (error) {
+    console.log('  DIAG follow-up:', JSON.stringify(await longAnswer.evaluate(() => ({
+      assistants: [...document.querySelectorAll('.msg.assistant')].map(message => ({ body: message.querySelector('.msg-body')?.textContent, status: message.querySelector('.reply-status')?.textContent })),
+      operationError: document.getElementById('operation-error')?.textContent,
+      composerError: document.getElementById('composer-error')?.textContent,
+      input: document.getElementById('ask-input')?.value,
+    }))))
+    console.log('  DIAG backend route statuses:', JSON.stringify(backendLogs.slice(-8).map(({ route, status }) => ({ route, status }))))
+    throw error
+  }
+  const traySpacing = await longAnswer.evaluate(() => {
+    const thread = document.querySelector('#thread')
+    const messages = [...thread.querySelectorAll('.msg')]
+    const message = messages.find(node => node.classList.contains('assistant'))
+    const tray = message?.querySelector('.msg-actions')?.getBoundingClientRect()
+    const next = message ? messages[messages.indexOf(message) + 1]?.getBoundingClientRect() : undefined
+    return { trayBottom: tray?.bottom, nextMessageTop: next?.top, gap: tray && next ? next.top - tray.bottom : null }
   })
   check(traySpacing.gap !== null && traySpacing.gap >= 8,
     'next message clears the tray that extends beyond its bubble (' + JSON.stringify(traySpacing) + ')')
@@ -724,13 +828,13 @@ try {
   // prompt must go out (answerLanguage auto + ru UI resolves to Russian).
   await sw.evaluate(
     async (s) => chrome.storage.local.set({ settings: s }),
-    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'ru', answerLanguage: 'auto' },
+    { uiLanguage: 'ru', answerLanguage: 'auto' },
   )
   const aiRu = await openCapture()
   await aiRu.click('.preset[data-preset="solve"]')
   await waitReply(aiRu)
-  const ruUser = lastAiRequest?.messages?.find((m) => m.role === 'user' && Array.isArray(m.content) && m.content.some(part => part?.type === 'text'))
-  const ruText = Array.isArray(ruUser?.content) ? ruUser.content.find(part => part?.type === 'text')?.text : null
+  const ruUser = [...(lastAiRequest?.messages ?? [])].reverse().find((m) => m.role === 'user' && (typeof m.content === 'string' || Array.isArray(m.content) && m.content.some(part => part?.type === 'text')))
+  const ruText = typeof ruUser?.content === 'string' ? ruUser.content : Array.isArray(ruUser?.content) ? ruUser.content.find(part => part?.type === 'text')?.text : null
   check(
     typeof ruText === 'string' && ruText.startsWith('Реши задачу, показанную на изображении'),
     `RU dictionary selected for ru UI (${String(ruText ?? '').slice(0, 30)}…)`,
@@ -744,7 +848,7 @@ try {
   // Back to EN for the fallback test below.
   await sw.evaluate(
     async (s) => chrome.storage.local.set({ settings: s }),
-    { provider: 'custom', baseUrl: `${origin}/v1`, apiKey: 'sk-test-123', uiLanguage: 'en', answerLanguage: 'auto' },
+    { uiLanguage: 'en', answerLanguage: 'auto' },
   )
 
   // Fallback: make the primary answer 503; the next model must take over and
@@ -765,17 +869,6 @@ try {
     const nodes = [...document.querySelectorAll('.reply-status')]
     return nodes.at(-1)?.textContent?.includes(expected)
   }, status, { timeout: 7000 })
-  const readSaved = (p) => p.evaluate(() => new Promise((resolve, reject) => {
-    const open = indexedDB.open('study-buddy-conversations', 1)
-    open.onsuccess = () => {
-      const db = open.result
-      const tx = db.transaction(['conversations', 'state'], 'readonly')
-      const state = tx.objectStore('state').get('state')
-      const conversations = tx.objectStore('conversations').getAll()
-      tx.oncomplete = () => { db.close(); resolve({ state: state.result, conversations: conversations.result }) }
-      tx.onabort = () => reject(tx.error)
-    }
-  }))
 
   const settingsReadFailure = await openCapture()
   const beforeReadFailure = requestCount
@@ -891,22 +984,29 @@ try {
       const request = conversations.get(conversationId)
       request.onsuccess = () => {
         const conversation = request.result
-        const ids = [crypto.randomUUID(), crypto.randomUUID()]
-        const largeTaskId = crypto.randomUUID()
         const oldAttachmentId = conversation.activeAttachmentId
-        const largeText = 'word  '.repeat(100000)
-        conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Earlier task', display: 'Earlier task', input: 'Earlier task', kind: 'ask', attachmentId: oldAttachmentId, createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' })
-        for (const [index, id] of ids.entries()) {
-          const createdAt = Date.now() + index * 2
-          tx.objectStore('attachments').put({ id, data: new Blob(['fixture ' + index], { type: 'image/png' }), createdAt })
-          conversation.turns.push({ id, role: 'user', text: '', kind: 'capture', attachmentId: id, createdAt, locale: 'en', promptVersion: 'capture' })
-          if (index === 0) conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: largeText, display: 'Longer follow-up outside the current context', input: largeText, kind: 'ask', attachmentId: largeTaskId, createdAt: createdAt + 1, locale: 'en', promptVersion: 'fixture' })
+        const sourceImageRequest = tx.objectStore('attachments').get(oldAttachmentId)
+        sourceImageRequest.onsuccess = () => {
+          const sourceImage = sourceImageRequest.result
+          if (!sourceImage?.data) { reject(new Error('The captured PNG fixture is missing')); return }
+          const ids = [crypto.randomUUID(), crypto.randomUUID()]
+          reusableId = ids[0]
+          const largeTaskId = crypto.randomUUID()
+          const largeText = 'word  '.repeat(100000)
+          conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Earlier task', display: 'Earlier task', input: 'Earlier task', kind: 'ask', attachmentId: oldAttachmentId, createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' })
+          for (const [index, id] of ids.entries()) {
+            const createdAt = Date.now() + index * 2
+            tx.objectStore('attachments').put({ id, data: sourceImage.data, createdAt })
+            conversation.turns.push({ id, role: 'user', text: '', kind: 'capture', attachmentId: id, createdAt, locale: 'en', promptVersion: 'capture' })
+            if (index === 0) conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: largeText, display: 'Longer follow-up outside the current context', input: largeText, kind: 'ask', attachmentId: largeTaskId, createdAt: createdAt + 1, locale: 'en', promptVersion: 'fixture' })
+          }
+          conversation.activeAttachmentId = ids.at(-1)
+          conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Review the newest selection', display: 'Review the newest selection', input: 'Review the newest selection', kind: 'ask', createdAt: Date.now() + 3, locale: 'en', promptVersion: 'fixture' })
+          conversations.put(conversation)
         }
-        conversation.activeAttachmentId = ids.at(-1)
-        conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Review the newest selection', display: 'Review the newest selection', input: 'Review the newest selection', kind: 'ask', createdAt: Date.now() + 3, locale: 'en', promptVersion: 'fixture' })
-        conversations.put(conversation)
-        tx.oncomplete = () => { db.close(); resolve(ids[0]) }
       }
+      let reusableId
+      tx.oncomplete = () => { db.close(); resolve(reusableId) }
       tx.onerror = () => reject(tx.error)
     }
   }))
@@ -948,10 +1048,11 @@ try {
   while (requestCount === reuseRequestCount && Date.now() < reuseDeadline) {
     await new Promise(resolve => setTimeout(resolve, 25))
   }
-  const reusedImageSent = requestCount === reuseRequestCount + 1 &&
-    (lastAiRequest?.messages?.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url')) ?? false)
+  const reusedImageCount = lastAiRequest?.messages?.flatMap(message => Array.isArray(message.content) ? message.content : []).filter(part => part.type === 'image_url').length ?? 0
+  const reuseUiState = await layout.evaluate(() => ({ composerError: document.getElementById('composer-error')?.textContent, operationError: document.getElementById('operation-error')?.textContent, input: document.getElementById('ask-input')?.value, lastStatus: [...document.querySelectorAll('.reply-status')].at(-1)?.textContent }))
+  const reusedImageSent = requestCount === reuseRequestCount + 1 && reusedImageCount > 0
   if (requestCount === reuseRequestCount + 1) await waitSaved(layout, 'Complete')
-  check(reusedImageSent, 'reusing an excluded image sends it in the next request')
+  check(reusedImageSent, `reusing an excluded image sends it in the next request (calls=${requestCount - reuseRequestCount}, images=${reusedImageCount}, state=${JSON.stringify(reuseUiState)})`)
   const narrowToolbar = async (language) => {
     await layout.fill('#ask-input', 'Compare the saved images')
     await layout.setViewportSize({ width: 320, height: 324 })
@@ -966,15 +1067,22 @@ try {
     narrowEnglish.bounds.selection.height === 44 && narrowEnglish.bounds.selection.right <= narrowEnglish.bounds.newChat.left && narrowEnglish.bounds.composer.bottom <= 324 && narrowEnglish.bounds.ask.bottom <= 324 && narrowEnglish.bounds.send.bottom <= 324,
   '320×324 English toolbar keeps New selection, History, New chat and composer accessible (' + JSON.stringify(narrowEnglish) + ')')
   const mobileActionMenu = layout.locator('.msg.assistant').last().locator('.msg-actions')
-  check(await mobileActionMenu.locator('.msg-actions-toggle').isVisible() && await mobileActionMenu.locator('.msg-actions-toggle').evaluate(button => button.getBoundingClientRect().width >= 44 && button.getBoundingClientRect().height >= 44), 'narrow no-hover layout keeps a persistent 44px answer-action menu trigger')
-  await mobileActionMenu.locator('.msg-actions-toggle').click()
-  check(await mobileActionMenu.locator('.msg-actions-toggle').getAttribute('aria-expanded') === 'true' &&
-    await mobileActionMenu.locator('.msg-action-items').isVisible() &&
-    await mobileActionMenu.locator('.msg-action-items button[aria-label="Copy"]').isVisible() &&
-    await mobileActionMenu.locator('.msg-action-items button[aria-label="Explain simpler"]').isVisible(),
-    'touch ellipsis opens visible Copy and Simpler actions')
-  await mobileActionMenu.locator('.msg-actions-toggle').press('Escape')
-  check(await mobileActionMenu.locator('.msg-actions-toggle').getAttribute('aria-expanded') === 'false', 'Escape closes the touch action menu')
+  const mobileToggle = mobileActionMenu.locator('.msg-actions-toggle')
+  const mobileToggleVisible = await mobileToggle.count() > 0 && await mobileToggle.isVisible().catch(() => false)
+  const mobileActionState = await layout.evaluate(() => ({
+    assistants: [...document.querySelectorAll('.msg.assistant')].map(message => ({ status: message.querySelector('.reply-status')?.textContent, actions: [...message.querySelectorAll('.msg-actions button')].map(button => button.className) })),
+  }))
+  check(mobileToggleVisible && await mobileToggle.evaluate(button => button.getBoundingClientRect().width >= 44 && button.getBoundingClientRect().height >= 44), `narrow no-hover layout keeps a persistent 44px answer-action menu trigger (${JSON.stringify(mobileActionState)})`)
+  if (mobileToggleVisible) {
+    await mobileToggle.click()
+    check(await mobileToggle.getAttribute('aria-expanded') === 'true' &&
+      await mobileActionMenu.locator('.msg-action-items').isVisible() &&
+      await mobileActionMenu.locator('.msg-action-items button[aria-label="Copy"]').isVisible() &&
+      await mobileActionMenu.locator('.msg-action-items button[aria-label="Explain simpler"]').isVisible(),
+      'touch ellipsis opens visible Copy and Simpler actions')
+    await mobileToggle.press('Escape')
+    check(await mobileToggle.getAttribute('aria-expanded') === 'false', 'Escape closes the touch action menu')
+  }
   await sw.evaluate(async () => {
     const { settings } = await chrome.storage.local.get('settings')
     await chrome.storage.local.set({ settings: { ...settings, uiLanguage: 'ru' } })
@@ -1186,7 +1294,11 @@ try {
   const checkedConversation = checkedDb.conversations.find(c => c.id === checkedId)
   const checkedTurn = checkedConversation.turns.find(turn => turn.role === 'user' && turn.kind === 'check')
   check(!!checkedTurn && checkedTurn.input === undefined && checkedTurn.attachmentId === capture.id, 'Check is stored as an image-grounded user turn without a required text attempt')
-  check(lastAiRequest.max_tokens === 1024 && lastAiRequest.messages.some(m => Array.isArray(m.content) && m.content.some(p => p.text?.includes('work or answer visible in the current image') && p.text?.includes('no student work or answer that can be checked'))), 'Check asks the model to inspect visible image work and state honestly when there is none')
+  const checkedText = lastAiRequest.messages.flatMap(message => typeof message.content === 'string'
+    ? [message.content]
+    : Array.isArray(message.content) ? message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
+  check(lastAiRequest.max_tokens === 1024 && checkedText.some(text => text.includes('work or answer visible in the current image') && text.includes('no student work or answer that can be checked')),
+    'Check asks the model to inspect visible image work and state honestly when there is none')
   await resetCooldown(checked)
   responseMode = 'slow'
   await checked.fill('#ask-input', 'Accepted draft should clear immediately')
@@ -1234,7 +1346,7 @@ try {
   await checked.waitForFunction((id) => !document.querySelector(`[data-conversation="${id}"]`), checkedId)
   check(!(await readSaved(checked)).conversations.some(c => c.id === checkedId) && await checked.evaluate(() => document.activeElement?.id === 'history-back' || document.activeElement?.classList.contains('history-open')), 'in-app confirmation deletes the selected conversation and focuses a safe remaining target')
 
-  for (const [mode, label, status] of [['truncated', 'Length limit', 'truncated'], ['interrupted', 'Interrupted', 'interrupted'], ['provider-error', 'Provider error', 'provider_error']]) {
+  for (const [mode, label, status] of [['truncated', 'Length limit', 'truncated'], ['interrupted', 'Interrupted', 'interrupted']]) {
     responseMode = mode
     const p = await openCapture()
     await p.click('[data-preset="hint"]')
@@ -1243,6 +1355,19 @@ try {
     check(saved.conversations.find(c => c.id === saved.state.lastConversationId).turns.at(-1).status === status, `${status} preserves partial text and its actual saved status`)
     await p.close()
   }
+  responseMode = 'context-error'
+  const contextRejected = await openCapture()
+  const beforeContextRejected = requestCount
+  await contextRejected.click('[data-preset="hint"]')
+  await waitSaved(contextRejected, 'The selected context exceeds the provider limit')
+  const rejectedConversation = await readSaved(contextRejected)
+  const rejectedAssistant = rejectedConversation.conversations.find(c => c.id === rejectedConversation.state.lastConversationId).turns.at(-1)
+  const contextRejectedStatus = await contextRejected.locator('.msg.assistant .reply-status').last().textContent()
+  check(rejectedAssistant.status === 'interrupted' && rejectedAssistant.text === 'Hello' &&
+    contextRejectedStatus.includes('The selected context exceeds the provider limit') &&
+    requestCount === beforeContextRejected + 1 && lastAiRequest.model === PRIMARY,
+  'partial OpenRouter context rejection keeps emitted text, shows localized recovery and never falls back')
+  await contextRejected.close()
   responseMode = 'normal'
   const quota = await openCapture()
   responseMode = 'slow'
@@ -1842,7 +1967,7 @@ try {
   } finally { await sw.evaluate(() => { Date.now = globalThis.fixtureOriginalNow; delete globalThis.fixtureNow; delete globalThis.fixtureOriginalNow }) }
   check(JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8')).incognito === 'not_allowed', 'incognito is explicitly disabled')
   const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
-  check(!manifest.host_permissions && !manifest.permissions.includes('<all_urls>'), 'native-action capture needs no persistent site grant')
+  check(manifest.host_permissions?.length === 1 && manifest.host_permissions[0] === `${gatewayUrl}/*` && !manifest.permissions.includes('<all_urls>'), 'build grants only the configured gateway host, with no persistent all-sites grant')
   check(manifest.permissions.includes('clipboardWrite'), 'manifest grants extension-scoped clipboard write for the user-triggered Copy action')
   await racePeer.close()
 
@@ -1998,7 +2123,9 @@ try {
   check(pageErrors.length === 0, `no page errors${pageErrors.length ? `: ${pageErrors.join('; ')}` : ''}`)
 } finally {
   await ctx.close()
-  server.close()
+  if (backend) await backend.close()
+  if (vite) await vite.close()
+  await new Promise((resolve) => server.close(() => resolve()))
   rmSync(profile, { recursive: true, force: true })
 }
 

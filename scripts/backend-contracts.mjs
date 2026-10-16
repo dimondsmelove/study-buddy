@@ -24,11 +24,12 @@ const test = async (name, body) => {
   }
 }
 
-const [{ createBackend }, { OperationalStore }, { validateImageDataUrl }, protocol] = await Promise.all([
+const [{ createBackend }, { OperationalStore }, { validateImageDataUrl }, protocol, backendConfig] = await Promise.all([
   vite.ssrLoadModule('/src/backend/app.ts'),
   vite.ssrLoadModule('/src/backend/store.ts'),
   vite.ssrLoadModule('/src/backend/images.ts'),
   vite.ssrLoadModule('/src/shared/gateway-protocol.ts'),
+  vite.ssrLoadModule('/src/backend/config.ts'),
 ])
 
 function crc32(bytes) {
@@ -118,6 +119,20 @@ function jpeg(width, height) {
 
 const nowBase = 1_800_000_000_000
 const secret = 'test-session-hmac-secret-0123456789'
+
+await test('backend startup accepts exact unpacked extension origins and rejects paths', async () => {
+  const config = backendConfig.loadBackendConfig({
+    OPENROUTER_API_KEY: 'FAKE_PROVIDER_KEY',
+    SESSION_HMAC_SECRET: 'test-session-hmac-secret-0123456789',
+    ALLOWED_ORIGINS: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop',
+  })
+  assert.deepEqual(config.allowedOrigins, ['chrome-extension://abcdefghijklmnopabcdefghijklmnop'])
+  assert.throws(() => backendConfig.loadBackendConfig({
+    OPENROUTER_API_KEY: 'FAKE_PROVIDER_KEY',
+    SESSION_HMAC_SECRET: 'test-session-hmac-secret-0123456789',
+    ALLOWED_ORIGINS: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/path',
+  }), /invalid extension origin/)
+})
 
 async function startProvider(responder) {
   const requests = []
@@ -405,7 +420,29 @@ await test('provider context-length rejection is explicit, redacted, and never f
   const fixture = await createFixture({
     responder: async ({ response }) => {
       response.writeHead(400, { 'Content-Type': 'application/json' })
-      response.end(JSON.stringify({ error: { code: 'context_length_exceeded', message: 'PRIVATE_PROVIDER_DETAIL' } }))
+      response.end(JSON.stringify({ error: { code: 400, metadata: { error_type: 'context_length_exceeded' }, message: 'PRIVATE_PROVIDER_DETAIL' } }))
+    },
+  })
+  try {
+    const session = await issueSession(fixture)
+    const response = await postGeneration(fixture, session.token, input())
+    const emitted = events(await response.text())
+    const error = emitted.find((event) => event.event === 'error').data
+    assert.equal(error.code, 'provider.context_too_large')
+    assert.equal(error.partial, false)
+    assert.equal(JSON.stringify(error).includes('PRIVATE_PROVIDER_DETAIL'), false)
+    assert.equal(fixture.provider.requests.length, 1)
+  } finally {
+    await fixture.close()
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+await test('HTTP 200 OpenRouter SSE context rejection is typed and never falls back', async () => {
+  const fixture = await createFixture({
+    responder: async ({ response }) => {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      response.end(sse({ error: { code: 400, metadata: { error_type: 'context_length_exceeded' }, message: 'PRIVATE_PROVIDER_DETAIL' } }))
     },
   })
   try {

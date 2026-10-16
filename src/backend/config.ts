@@ -45,7 +45,7 @@ export function loadBackendConfig(env: NodeJS.ProcessEnv = process.env): Backend
 export function normalizeAllowedOrigin(value: string): string {
   const url = new URL(value)
   if (url.protocol === 'chrome-extension:' || url.protocol === 'moz-extension:') {
-    if (!url.hostname || url.pathname !== '/' || url.search || url.hash || url.username || url.password) {
+    if (!url.hostname || !['', '/'].includes(url.pathname) || url.search || url.hash || url.username || url.password) {
       throw new Error('ALLOWED_ORIGINS contains an invalid extension origin')
     }
     return url.protocol + '//' + url.hostname

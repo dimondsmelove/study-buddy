@@ -170,7 +170,7 @@ async function createFixture(options = {}) {
     providerApiKey: 'FAKE_PROVIDER_KEY',
     sessionHmacSecret: secret,
     allowedOrigins: ['chrome-extension://test-extension'],
-    trustedProxyIps: [],
+    trustedProxyIps: options.trustedProxyIps ?? [],
     operationTimeoutMs: options.timeoutMs ?? 180_000,
   }
   const backend = createBackend(config, {
@@ -192,10 +192,10 @@ async function createFixture(options = {}) {
   }
 }
 
-async function issueSession(fixture, origin) {
+async function issueSession(fixture, origin, extraHeaders = {}) {
   const response = await fetch(fixture.baseUrl + '/api/v1/session', {
     method: 'POST',
-    ...(origin ? { headers: { Origin: origin } } : {}),
+    headers: { ...extraHeaders, ...(origin ? { Origin: origin } : {}) },
   })
   const body = await response.json()
   return { response, body, token: body.token }
@@ -401,6 +401,72 @@ await test('HTTP session, CORS, canonical provider request, final usage chunk, a
   }
 })
 
+await test('provider context-length rejection is explicit, redacted, and never falls back', async () => {
+  const fixture = await createFixture({
+    responder: async ({ response }) => {
+      response.writeHead(400, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify({ error: { code: 'context_length_exceeded', message: 'PRIVATE_PROVIDER_DETAIL' } }))
+    },
+  })
+  try {
+    const session = await issueSession(fixture)
+    const response = await postGeneration(fixture, session.token, input())
+    const emitted = events(await response.text())
+    const error = emitted.find((event) => event.event === 'error').data
+    assert.equal(error.code, 'provider.context_too_large')
+    assert.equal(error.partial, false)
+    assert.equal(JSON.stringify(error).includes('PRIVATE_PROVIDER_DETAIL'), false)
+    assert.equal(fixture.provider.requests.length, 1)
+  } finally {
+    await fixture.close()
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+await test('HTTP forwarding uses X-Forwarded-For only from explicitly trusted peers', async () => {
+  const untrusted = await createFixture()
+  try {
+    for (let index = 0; index < 20; index++) {
+      const issued = await issueSession(untrusted, undefined, { 'X-Forwarded-For': `198.51.100.${index + 1}` })
+      assert.equal(issued.response.status, 201)
+    }
+    const spoofed = await issueSession(untrusted, undefined, { 'X-Forwarded-For': '203.0.113.99' })
+    assert.equal(spoofed.response.status, 429)
+  } finally {
+    await untrusted.close()
+    await rm(untrusted.directory, { recursive: true, force: true })
+  }
+
+  const trusted = await createFixture({ trustedProxyIps: ['127.0.0.1'] })
+  try {
+    for (let index = 0; index < 20; index++) {
+      const issued = await issueSession(trusted, undefined, { 'X-Forwarded-For': '198.51.100.7' })
+      assert.equal(issued.response.status, 201)
+    }
+    for (let index = 0; index < 20; index++) {
+      const issued = await issueSession(trusted, undefined, { 'X-Forwarded-For': '203.0.113.8' })
+      assert.equal(issued.response.status, 201)
+    }
+    const limitedA = await issueSession(trusted, undefined, { 'X-Forwarded-For': '198.51.100.7' })
+    const limitedB = await issueSession(trusted, undefined, { 'X-Forwarded-For': '203.0.113.8' })
+    assert.equal(limitedA.response.status, 429)
+    assert.equal(limitedB.response.status, 429)
+    for (let index = 0; index < 20; index++) {
+      const malformed = await issueSession(trusted, undefined, { 'X-Forwarded-For': 'not-an-ip' })
+      assert.equal(malformed.response.status, 201)
+    }
+    const malformedFallsBackToPeer = await issueSession(trusted, undefined, { 'X-Forwarded-For': 'not-an-ip' })
+    assert.equal(malformedFallsBackToPeer.response.status, 429)
+    const boundedChain = await issueSession(trusted, undefined, { 'X-Forwarded-For': Array.from({ length: 9 }, (_, index) => `192.0.2.${index + 1}`).join(',') })
+    assert.equal(boundedChain.response.status, 429)
+    const overlong = await issueSession(trusted, undefined, { 'X-Forwarded-For': '1'.repeat(513) })
+    assert.equal(overlong.response.status, 429)
+  } finally {
+    await trusted.close()
+    await rm(trusted.directory, { recursive: true, force: true })
+  }
+})
+
 await test('malformed, oversized, image, client-system, and client-parameter requests fail before admission', async () => {
   const fixture = await createFixture()
   try {
@@ -597,6 +663,40 @@ await test('in-flight/session/global admission races, timeout, disconnect cancel
   } finally {
     await cancellation.close()
     await rm(cancellation.directory, { recursive: true, force: true })
+  }
+})
+
+await test('backend shutdown waits for an aborted operation to finalize SQLite state', async () => {
+  let upstreamStarted = false
+  const fixture = await createFixture({
+    responder: async ({ response }) => {
+      upstreamStarted = true
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      response.flushHeaders()
+    },
+    timeoutMs: 20_000,
+  })
+  try {
+    const session = await issueSession(fixture)
+    const response = await postGeneration(fixture, session.token, input())
+    const reader = response.body.getReader()
+    let sawContext = false
+    while (!sawContext) {
+      const { done, value } = await reader.read()
+      if (done) break
+      sawContext ||= new TextDecoder().decode(value).includes('event: context')
+    }
+    assert.equal(sawContext, true)
+    await waitFor(() => upstreamStarted, 'upstream request before shutdown')
+    await fixture.backend.close()
+    const database = new DatabaseSync(join(fixture.directory, 'state.sqlite'))
+    const row = database.prepare('SELECT status FROM operations WHERE request_id = ?').get('request_00000001')
+    assert.equal(row.status, 'cancelled')
+    database.close()
+    await fixture.provider.close()
+  } finally {
+    if (fixture.backend.server.listening) await fixture.close()
+    await rm(fixture.directory, { recursive: true, force: true })
   }
 })
 

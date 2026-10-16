@@ -11,7 +11,6 @@ import { randomUUID } from 'node:crypto'
 const root = resolve(fileURLToPath(import.meta.url), '..', '..')
 const stateDir = join(root, 'review', 'preview')
 const stateFile = join(stateDir, 'state.json')
-const dist = join(root, 'dist')
 const command = process.argv[2] ?? 'start'
 if (command === 'stop' || command === 'health') {
   const state = JSON.parse(readFileSync(stateFile, 'utf8'))
@@ -26,6 +25,7 @@ if (command === 'stop' || command === 'health') {
 if (command !== 'start') throw new Error('Use start, health or stop')
 mkdirSync(stateDir, { recursive: true })
 const runDir = mkdtempSync(join(stateDir, 'run-'))
+const dist = join(runDir, 'dist')
 const portProbe = createNetServer()
 await new Promise((resolve, reject) => portProbe.listen(0, '127.0.0.1', resolve).once('error', reject))
 const gatewayPort = portProbe.address().port
@@ -34,7 +34,7 @@ const gatewayUrl = `http://127.0.0.1:${gatewayPort}`
 const buildEnv = { ...process.env, STUDY_BUDDY_GATEWAY_URL: gatewayUrl }
 delete buildEnv.OPENROUTER_API_KEY
 delete buildEnv.OPENAI_API_KEY
-execFileSync('npm', ['run', 'build'], { cwd: root, env: buildEnv, stdio: 'inherit' })
+execFileSync('npm', ['run', 'build', '--', '--outDir', dist], { cwd: root, env: buildEnv, stdio: 'inherit' })
 const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
 if (manifest.host_permissions?.join(',') !== `${gatewayUrl}/*` || manifest.permissions?.includes('<all_urls>')) {
   throw new Error('Preview build must use only the configured gateway host permission.')

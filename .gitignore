@@ -25,3 +25,6 @@ ocr-buddy-*.zip
 docs/superpowers/
 .backend-dist/
 data/
+
+# Backend runtime secrets
+.env.backend

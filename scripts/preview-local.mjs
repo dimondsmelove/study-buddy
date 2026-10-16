@@ -65,7 +65,7 @@ const screenshots = ['dialog', 'check', 'history', 'minimized', 'narrow']
 const server = createServer((req, res) => {
   if (req.url === '/healthz') {
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ ok: !stopping && !!ctx && captureReady, browser: 'agent-owned Chromium', captured: captureReady, requests, mockOnly: true, pid: process.pid }))
+    res.end(JSON.stringify({ ok: !stopping && !!ctx && captureReady, browser: 'agent-owned Chromium', captured: captureReady, gatewayUrl, requests, mockOnly: true, pid: process.pid }))
     return
   }
   if (req.url === '/stop' && req.method === 'POST') {
@@ -105,7 +105,7 @@ const server = createServer((req, res) => {
     return
   }
   res.setHeader('content-type', 'text/html; charset=utf-8')
-  res.end(req.url === '/demo' ? demo : `<!doctype html><meta charset="utf-8"><title>Study Buddy · приёмка</title><style>body{font:16px system-ui;margin:30px;background:#eef1f5}a{color:#1457ad}main{display:flex;gap:20px;flex-wrap:wrap}figure{margin:0}img{width:300px;max-height:470px;object-fit:contain;object-position:top;background:white}figcaption{padding:10px}</style><h1>Study Buddy · локальный loop</h1><p>Runtime-скриншоты реального расширения с локальным mock. <a href="/demo">Демо-страница</a> · <a href="/healthz">Health</a></p><p>Живой тест — в отдельном Chromium. Исходный main не изменён. Серверного анти-abuse и проверки настоящего AI здесь нет.</p><main>${screenshots.map(name => `<figure><a href="/${name}.png"><img src="/${name}.png" alt="${name}"></a><figcaption>${name}</figcaption></figure>`).join('')}</main>`)
+  res.end(req.url === '/demo' ? demo : `<!doctype html><meta charset="utf-8"><title>Study Buddy · приёмка</title><style>body{font:16px system-ui;margin:30px;background:#eef1f5}a{color:#1457ad}main{display:flex;gap:20px;flex-wrap:wrap}figure{margin:0}img{width:300px;max-height:470px;object-fit:contain;object-position:top;background:white}figcaption{padding:10px}</style><h1>Study Buddy · локальный loop</h1><p>Runtime-скриншоты реального расширения с локальным mock. <a href="/demo">Демо-страница</a> · <a href="/healthz">Health</a></p><p>Живой тест — в отдельном Chromium. Локальный backend применяет cooldown и лимиты допуска; ответы идут от HTTP mock, запросов к настоящей модели нет.</p><main>${screenshots.map(name => `<figure><a href="/${name}.png"><img src="/${name}.png" alt="${name}"></a><figcaption>${name}</figcaption></figure>`).join('')}</main>`)
 })
 try {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(Number(process.env.STUDY_BUDDY_PREVIEW_PORT ?? 4187), '127.0.0.1', resolve) })
@@ -135,9 +135,14 @@ try {
     DATABASE_PATH: join(runDir, 'gateway.sqlite'),
     ALLOWED_ORIGINS: `chrome-extension://${extensionId}`,
   })
-  let backendClock = Date.now()
-  backend = createBackend(backendConfig, { providerBaseUrl: `${origin}/v1`, now: () => { backendClock += 11_000; return backendClock } })
-  await new Promise((resolve, reject) => backend.server.listen(gatewayPort, '127.0.0.1', error => error ? reject(error) : resolve()))
+  backend = createBackend(backendConfig, { providerBaseUrl: `${origin}/v1` })
+  await new Promise((resolve, reject) => {
+    backend.server.once('error', reject)
+    backend.server.listen(gatewayPort, '127.0.0.1', () => {
+      backend.server.off('error', reject)
+      resolve()
+    })
+  })
   await sw.evaluate(settings => chrome.storage.local.set({ settings }), { uiLanguage: 'ru', answerLanguage: 'auto' })
   const page = await ctx.newPage()
   await page.goto(`${origin}/demo`)
@@ -187,7 +192,7 @@ try {
   const cropSize = await chatFrame.locator('.turn-image').evaluate(image => ({ width: image.naturalWidth, height: image.naturalHeight }))
   if (cropSize.width < 4 || cropSize.height < 4) throw new Error('Preview capture produced an empty crop.')
   captureReady = true
-  writeFileSync(stateFile, JSON.stringify({ origin, token, pid: process.pid, runDir, mode: 'localhost backend and fake upstream only' }, null, 2))
+  writeFileSync(stateFile, JSON.stringify({ origin, gatewayUrl, token, pid: process.pid, runDir, mode: 'localhost backend and fake upstream only' }, null, 2))
   console.log(`READY ${origin} · demo ${origin}/demo · captured crop ${cropSize.width}×${cropSize.height}px · isolated profile ${runDir}/profile`)
   process.once('SIGINT', () => void stop())
   process.once('SIGTERM', () => void stop())

@@ -157,6 +157,8 @@ npm run preview:local -- stop
 The preview owns a separate Chromium profile and database, uses synthetic page
 content and makes no external model calls. `-- start --headless` is available
 for background checks. Closing or stopping it does not touch Vivaldi.
+Verification builds to `review/verify-dist/`; each preview builds under its own
+`review/preview/run-*/dist/`. Both leave the normal `dist/` build intact.
 
 Older real-provider quality/compare/review scripts are historical tools. They
 are not part of this gateway acceptance and their reports are not fresh evidence.

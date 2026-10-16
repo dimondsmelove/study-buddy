@@ -40,20 +40,27 @@ function validPng(bytes: Buffer): boolean {
   let sawHeader = false
   let sawData = false
   let sawEnd = false
+  const knownCritical = new Set(['IHDR', 'PLTE', 'IDAT', 'IEND'])
   while (offset + 12 <= bytes.length) {
     const length = bytes.readUInt32BE(offset)
     const end = offset + 12 + length
     if (end > bytes.length) return false
-    const type = bytes.toString('ascii', offset + 4, offset + 8)
+    const typeBytes = bytes.subarray(offset + 4, offset + 8)
+    const type = typeBytes.toString('ascii')
     const data = bytes.subarray(offset + 8, offset + 8 + length)
     const crc = bytes.readUInt32BE(offset + 8 + length)
-    if (crc32(bytes.subarray(offset + 4, offset + 8), data) !== crc) return false
+    if (crc32(typeBytes, data) !== crc) return false
+    if ((typeBytes[0] & 0x20) === 0 && !knownCritical.has(type)) return false
     if (!sawHeader) {
       if (type !== 'IHDR' || length !== 13) return false
-      if (!saneDimensions(data.readUInt32BE(0), data.readUInt32BE(4))) return false
+      if (!saneDimensions(data.readUInt32BE(0), data.readUInt32BE(4)) ||
+          !validPngHeader(data)) return false
       sawHeader = true
     } else if (type === 'IHDR') return false
-    if (type === 'IDAT') sawData = true
+    if (type === 'IDAT') {
+      if (sawEnd) return false
+      if (length > 0) sawData = true
+    }
     offset = end
     if (type === 'IEND') {
       if (length !== 0 || !sawData || offset !== bytes.length) return false
@@ -62,6 +69,20 @@ function validPng(bytes: Buffer): boolean {
     }
   }
   return sawHeader && sawData && sawEnd
+}
+
+function validPngHeader(data: Buffer): boolean {
+  const depth = data[8]
+  const colorType = data[9]
+  const validDepths: Record<number, number[]> = {
+    0: [1, 2, 4, 8, 16],
+    2: [8, 16],
+    3: [1, 2, 4, 8],
+    4: [8, 16],
+    6: [8, 16],
+  }
+  return validDepths[colorType]?.includes(depth) === true &&
+    data[10] === 0 && data[11] === 0 && (data[12] === 0 || data[12] === 1)
 }
 
 function validJpeg(bytes: Buffer): boolean {
@@ -73,8 +94,15 @@ function validJpeg(bytes: Buffer): boolean {
     if (bytes[offset] !== 0xff) return false
     while (bytes[offset] === 0xff) offset++
     const marker = bytes[offset++]
-    if (marker === 0xd9) break
-    if (marker === 0xda) return sawFrame && offset + 2 <= bytes.length - 2
+    if (marker === 0xd9) return false
+    if (marker === 0xda) {
+      if (!sawFrame || offset + 2 > bytes.length - 2) return false
+      const length = bytes.readUInt16BE(offset)
+      const componentCount = bytes[offset + 2]
+      if (length < 6 || !componentCount || length < 6 + componentCount * 2 ||
+          offset + length > bytes.length - 2) return false
+      return offset + length < bytes.length - 2
+    }
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
     if (offset + 2 > bytes.length - 2) return false
     const length = bytes.readUInt16BE(offset)
@@ -88,7 +116,7 @@ function validJpeg(bytes: Buffer): boolean {
     }
     offset += length
   }
-  return sawFrame
+  return false
 }
 
 function isJpegFrame(marker: number): boolean {
@@ -97,42 +125,46 @@ function isJpegFrame(marker: number): boolean {
 }
 
 function validWebp(bytes: Buffer): boolean {
-  if (bytes.length < 20 || bytes.toString('ascii', 0, 4) !== 'RIFF' ||
+  if (bytes.length < 30 || bytes.toString('ascii', 0, 4) !== 'RIFF' ||
       bytes.readUInt32LE(4) + 8 !== bytes.length || bytes.toString('ascii', 8, 12) !== 'WEBP') return false
   let offset = 12
-  let dimensionsValid = false
+  let canvas: { width: number; height: number } | undefined
+  let sawFrame = false
   while (offset + 8 <= bytes.length) {
     const type = bytes.toString('ascii', offset, offset + 4)
     const size = bytes.readUInt32LE(offset + 4)
     const data = offset + 8
     const end = data + size + (size & 1)
-    if (end > bytes.length) return false
+    if (end > bytes.length || ((size & 1) && bytes[end - 1] !== 0)) return false
     if (type === 'VP8X') {
-      if (size < 10) return false
+      if (sawFrame || size !== 10 || canvas) return false
       const width = readUInt24LE(bytes, data + 4) + 1
       const height = readUInt24LE(bytes, data + 7) + 1
       if (!saneDimensions(width, height)) return false
-      dimensionsValid = true
+      canvas = { width, height }
     } else if (type === 'VP8 ') {
-      if (size < 10 || bytes[data + 3] !== 0x9d || bytes[data + 4] !== 0x01 || bytes[data + 5] !== 0x2a) return false
+      if (sawFrame || size < 11 || bytes[data + 3] !== 0x9d ||
+          bytes[data + 4] !== 0x01 || bytes[data + 5] !== 0x2a) return false
       const width = bytes.readUInt16LE(data + 6) & 0x3fff
       const height = bytes.readUInt16LE(data + 8) & 0x3fff
-      if (!saneDimensions(width, height)) return false
-      dimensionsValid = true
+      if (!saneDimensions(width, height) ||
+          (canvas && (canvas.width !== width || canvas.height !== height))) return false
+      sawFrame = true
     } else if (type === 'VP8L') {
-      if (size < 5 || bytes[data] !== 0x2f) return false
+      if (sawFrame || size < 6 || bytes[data] !== 0x2f) return false
       const b1 = bytes[data + 1]
       const b2 = bytes[data + 2]
       const b3 = bytes[data + 3]
       const b4 = bytes[data + 4]
       const width = 1 + b1 + ((b2 & 0x3f) << 8)
       const height = 1 + ((b2 & 0xc0) >> 6) + (b3 << 2) + ((b4 & 0x0f) << 10)
-      if (!saneDimensions(width, height)) return false
-      dimensionsValid = true
+      if (!saneDimensions(width, height) ||
+          (canvas && (canvas.width !== width || canvas.height !== height))) return false
+      sawFrame = true
     }
     offset = end
   }
-  return dimensionsValid && offset === bytes.length
+  return sawFrame && offset === bytes.length
 }
 
 function readUInt24LE(bytes: Buffer, offset: number): number {

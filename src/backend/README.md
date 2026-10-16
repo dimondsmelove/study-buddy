@@ -1,0 +1,23 @@
+# Study Buddy backend
+
+The backend is an independently runnable Node service. Use Node **22.22.2** (the repository .nvmrc pins this version). It uses Node's built-in node:sqlite API, which is experimental in this Node release; startup prints Node's experimental API warning. No SQLite package or provider SDK is installed.
+
+Install dependencies with npm ci, then set these runtime environment variables and run npm run backend:
+
+- OPENROUTER_API_KEY: server-only provider credential.
+- SESSION_HMAC_SECRET: at least 32 UTF-8 bytes, used to hash short-lived issuance IP buckets.
+- DATABASE_PATH: SQLite file path; defaults to ./data/study-buddy.sqlite.
+- HOST: bind address; defaults to 127.0.0.1.
+- PORT: listen port; defaults to 8787.
+- ALLOWED_ORIGINS: comma-separated exact extension origins, for example chrome-extension://extension-id. Empty means requests without an Origin header only. Only exact origins in the allowlist are echoed; unlisted origins are rejected. HTTP/HTTPS origins must be explicitly listed.
+- TRUSTED_PROXY_IPS: optional comma-separated exact proxy peer IPs. Forwarded client IPs are used only when the direct socket peer is listed and the forwarding chain is valid and bounded. Leave empty when binding directly.
+
+Keep both secrets in the backend process environment. They are not Vite defines and must not be placed in extension build variables such as SB_DEFAULT_API_KEY. Provider selection, URL, model chain, prompts, and generation parameters are fixed by server code. A trusted in-process factory option is used by fake-provider tests and an operator-owned proxy; no HTTP request can set the upstream URL.
+
+npm run backend:build emits the Node entry to ignored .backend-dist/. npm run contracts:backend runs deterministic fake-only HTTP, SQLite, image, and SSE contracts; it does not read provider credentials or make provider requests. npm run typecheck:backend checks backend and shared TypeScript.
+
+Operational state contains hashed session tokens, opaque HMAC IP buckets, request fingerprints (SHA-256), cooldowns, and operation statuses. It does not store message text, images, generated output, or provider response bodies. HTTP logs contain only method, route name, status, and duration. The database file is set to mode 0600; the default data directory is created as mode 0700. Keep custom database paths in a private directory.
+
+The HTTP API issues sessions at POST /api/v1/session, renews them at POST /api/v1/session/renew, and streams generations from POST /api/v1/generations. The generation stream emits context, fallback, delta, and a terminal complete or error event.
+
+Each image is limited to 4 MiB decoded, and PNG/JPEG/WebP dimensions are bounded to 16,384 pixels per side and 40 million pixels total. The service validates headers/chunk structure without decompressing pixels. Selected text is estimated heuristically with a 20,000-token reserve under the nominal 200,000-token context budget; this estimate is not a provider tokenizer or exact bound.

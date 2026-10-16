@@ -97,7 +97,7 @@ export function prepareGatewayGeneration(input: GatewayGenerationInput): Prepare
   let canonicalText: string
   if (input.task === 'ask') {
     if (typeof input.taskInput !== 'string' || !input.taskInput.trim()) throw new Error('gateway.askInputRequired')
-    canonicalText = input.taskInput.trim()
+    canonicalText = input.taskInput
   } else if (input.task === 'check') {
     canonicalText = checkPrompt(input.taskInput, promptContext)
   } else if (input.task === 'simpler') {
@@ -137,7 +137,6 @@ export function gatewayFingerprint(input: GatewayGenerationInput, prepared: Prep
     answerLanguage: input.answerLanguage,
     uiLanguage: input.uiLanguage,
     titleNeeded: input.titleNeeded,
-    ...(input.taskInput !== undefined ? { taskInput: input.taskInput.trim() } : {}),
     messages: prepared.messages,
     temperature: prepared.temperature,
     maxTokens: prepared.maxTokens,

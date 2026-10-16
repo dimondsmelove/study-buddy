@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node",
+      "chrome"
+    ]
+  },
+  "include": [
+    "src/backend/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/env.d.ts"
+  ]
+}

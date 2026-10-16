@@ -23,3 +23,5 @@ ocr-buddy-*.zip
 
 # Local design notes (brainstorming specs/plans) — kept off git on purpose
 docs/superpowers/
+.backend-dist/
+data/

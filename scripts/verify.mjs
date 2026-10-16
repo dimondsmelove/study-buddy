@@ -22,7 +22,7 @@ import { join, resolve } from 'node:path'
 
 const root = resolve(fileURLToPath(import.meta.url), '..')
 const repo = resolve(root, '..')
-const dist = resolve(repo, 'dist')
+const dist = resolve(repo, 'review', 'verify-dist')
 const i18nModule = { exports: {} }
 const i18nSource = ts.transpileModule(readFileSync(resolve(root, '..', 'src/shared/i18n.ts'), 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -30,16 +30,15 @@ const i18nSource = ts.transpileModule(readFileSync(resolve(root, '..', 'src/shar
 vm.runInNewContext(`(function(module, exports) {${i18nSource}\n})(module, module.exports)`, { module: i18nModule })
 const answerActionLabels = ['en', 'ru'].map(lang => i18nModule.exports.t(lang, 'msg.actions'))
 
-// Fresh profile each run: a reused persistent profile can restore a STALE
-// service worker from the code cache (an old build!) — which once sent this
-// very test in circles. Fresh dir = always the current dist/ code.
+// Fresh profile and isolated build output each run: a reused persistent profile
+// can restore a stale service worker from the code cache.
 const profile = mkdtempSync(join(tmpdir(), 'study-buddy-verify-'))
 const portProbe = createNetServer()
 await new Promise((resolve, reject) => portProbe.listen(0, '127.0.0.1', resolve).once('error', reject))
 const gatewayPort = portProbe.address().port
 await new Promise((resolve, reject) => portProbe.close((error) => error ? reject(error) : resolve()))
 const gatewayUrl = `http://127.0.0.1:${gatewayPort}`
-execFileSync('npm', ['run', 'build'], {
+execFileSync('npm', ['run', 'build', '--', '--outDir', dist], {
   cwd: repo,
   env: { ...process.env, STUDY_BUDDY_GATEWAY_URL: gatewayUrl },
   stdio: 'inherit',

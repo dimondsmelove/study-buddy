@@ -13,7 +13,7 @@
 ## Общая инструкция — кандидат
 
 ```text
-You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use {{effective_answer_language}} unless the user explicitly requests another language.
+You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use {{effective_answer_language}} unless the current user request explicitly specifies another language.
 ```
 
 ## Task instructions — кандидаты
@@ -55,7 +55,7 @@ Explain the following answer more simply while preserving its meaning:
 **Translate** — target по настройке языка ответа либо языку браузера при `auto`; явно названный пользователем target имеет приоритет.
 
 ```text
-Translate the current image/material or explicitly supplied text into {{effective_answer_language}}, unless the user explicitly names a different target language for this translation. If the source is already in the requested or effective target language, ask which other target language the user wants. Otherwise, provide the translation directly.
+Translate the current image/material or explicitly supplied text into {{effective_answer_language}}, unless the user explicitly names a different target language for this translation. If the source is already in the target language for this translation, ask which other target language the user wants. Otherwise, provide the translation directly.
 ```
 
 **Summarize**
@@ -71,7 +71,7 @@ Summarize the material in the current image or text explicitly supplied by the u
 Добавлять в `system` только если `titleNeeded=true`:
 
 ```text
-Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title on the same line, then a newline and the response body. Write the title in the response language.
+Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title on the same line, then a newline and the response body. Write the title in the response language. Keep the title within 80 Unicode characters.
 ```
 
 Существующий parser ожидает `[[STUDY_BUDDY_TITLE]]<title>\n<body>` (`src/shared/title.ts`). Его acceptance limit — до 80 Unicode-символов в заголовке: длинное значение не обрезается, а отклоняется; предел не касается body. Parser пока не вызывается, а текущие call sites ставят `titleNeeded:false` (`src/chat/chat.ts:568,818`); надо подключить его и выставлять флаг только для первого ответа. Отдельный model call не нужен.
@@ -88,7 +88,7 @@ Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title 
   "messages": [
     {
       "role": "system",
-      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use Russian unless the user explicitly requests another language."
+      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use Russian unless the current user request explicitly specifies another language."
     },
     { "role": "user", "content": "Объясни, почему при делении дроби на дробь вторую дробь переворачивают." }
   ],
@@ -108,7 +108,7 @@ Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title 
   "messages": [
     {
       "role": "system",
-      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use English unless the user explicitly requests another language.\n\nBegin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title on the same line, then a newline and the response body. Write the title in the response language."
+      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use English unless the current user request explicitly specifies another language.\n\nBegin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title on the same line, then a newline and the response body. Write the title in the response language. Keep the title within 80 Unicode characters."
     },
     {
       "role": "user",
@@ -140,11 +140,11 @@ Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title 
   "messages": [
     {
       "role": "system",
-      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use Russian unless the user explicitly requests another language."
+      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use Russian unless the current user request explicitly specifies another language."
     },
     {
       "role": "user",
-      "content": "Translate the current image/material or explicitly supplied text into Russian, unless the user explicitly names a different target language for this translation. If the source is already in the requested or effective target language, ask which other target language the user wants. Otherwise, provide the translation directly.\n\nSource text:\nДоброе утро. Как пройти к библиотеке?"
+      "content": "Translate the current image/material or explicitly supplied text into Russian, unless the user explicitly names a different target language for this translation. If the source is already in the target language for this translation, ask which other target language the user wants. Otherwise, provide the translation directly.\n\nSource text:\nДоброе утро. Как пройти к библиотеке?"
     }
   ],
   "stream": true,
@@ -163,7 +163,7 @@ Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title 
   "messages": [
     {
       "role": "system",
-      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use English unless the user explicitly requests another language."
+      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use English unless the current user request explicitly specifies another language."
     },
     { "role": "user", "content": "What is 2 + 2?" },
     { "role": "assistant", "content": "It is 4." },

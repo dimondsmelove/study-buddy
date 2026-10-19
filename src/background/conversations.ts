@@ -148,7 +148,7 @@ export function installConversationCoordinator(): void {
           const assistant = message.assistant as Turn
           if (assistant.role !== 'assistant' || assistant.status !== 'streaming' || !assistant.replyTo) throw new Error('dialog.invalid')
           if (user) {
-            if (user.role !== 'user' || !user.text.trim() || conversation.turns.some((turn) => turn.id === user.id)) throw new Error('dialog.invalid')
+            if (user.role !== 'user' || (user.kind === 'ask' && !user.text.trim()) || conversation.turns.some((turn) => turn.id === user.id)) throw new Error('dialog.invalid')
             conversation.turns.push(user)
           } else {
             const index = conversation.turns.findIndex((turn) => turn.id === assistant.replyTo && turn.role === 'user')

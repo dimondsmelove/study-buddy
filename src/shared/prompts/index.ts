@@ -1,17 +1,10 @@
-// One place for EVERY text that goes to the model, and for the per-turn
-// request parameters. Changing prompts is editing data here — never logic
-// (BACKLOG §5). The dictionaries are picked by the RESOLVED answer language:
-// Russian answers get the RU templates, everything else the EN ones (for now
-// the two coincide; the RU rewrite is a separate content slice).
+// Compatibility seams for task IDs and per-turn request parameters.
+// Runtime instruction text remains empty until separately approved.
 
 import type { AnswerLanguage } from '../settings'
-import { PROMPT_LANGUAGE_NAMES, RU_LANGUAGE_NAMES } from '../i18n'
-import { buildSystemPrompt, buildSystemPromptRu } from './system'
-import { checkEn, simplerEn, taskPromptsEn } from './tasks.en'
-import { checkRu, simplerRu, taskPromptsRu } from './tasks.ru'
 
 /** Bump on any prompt-text or parameter change; logged/verifiable. */
-export const PROMPTS_VERSION = '2026-10-19.1'
+export const PROMPTS_VERSION = '2026-10-19.2'
 
 export type TaskId = 'solve' | 'quiz' | 'explain' | 'translate' | 'summarize' | 'hint'
 /** Everything that starts a turn: a task button, a free question, "simpler", or checking an attempt. */
@@ -23,51 +16,24 @@ export interface PromptContext {
   uiLang: 'en' | 'ru'
 }
 
-/** English name of the language the model is told to answer in. With `auto`
- *  the fixed actions fall back to the UI language. */
-export function targetLanguageName(ctx: PromptContext): string {
-  if (ctx.answerLanguage !== 'auto') return PROMPT_LANGUAGE_NAMES[ctx.answerLanguage]
-  return ctx.uiLang === 'ru' ? 'Russian' : 'English'
+export function systemPrompt(_ctx: PromptContext): string {
+  return ''
 }
 
-/** Russian name (nominative) for the same — used by the native RU templates. */
-function ruLanguageName(ctx: PromptContext): string {
-  if (ctx.answerLanguage !== 'auto') return RU_LANGUAGE_NAMES[ctx.answerLanguage]
-  return 'русский'
+export function firstAnswerTitleInstruction(_ctx: PromptContext): string {
+  return ''
 }
 
-function isRussian(ctx: PromptContext): boolean {
-  return ctx.answerLanguage === 'auto' ? ctx.uiLang === 'ru' : ctx.answerLanguage === 'ru'
+export function taskPrompt(_task: TaskId, _ctx: PromptContext): string {
+  return ''
 }
 
-export function systemPrompt(ctx: PromptContext): string {
-  return isRussian(ctx)
-    ? buildSystemPromptRu(ruLanguageName(ctx), ctx.answerLanguage !== 'auto')
-    : buildSystemPrompt(targetLanguageName(ctx), ctx.answerLanguage !== 'auto')
+export function checkPrompt(attempt: string | undefined, _ctx: PromptContext): string {
+  return attempt ?? ''
 }
 
-export function firstAnswerTitleInstruction(ctx: PromptContext): string {
-  return isRussian(ctx)
-    ? 'Перед ответом выведи первую строку строго в формате [[STUDY_BUDDY_TITLE]]Краткая тема. Название — короткое, по сути задания, не более 80 символов. Затем на следующей строке дай обычный ответ. Не добавляй пояснений к метаданным.'
-    : 'Before the answer, emit a first line exactly as [[STUDY_BUDDY_TITLE]]Short topic title. Keep the title concise and specific to the task, at most 80 characters. Then give the normal answer on the next line. Do not explain the metadata.'
-}
-
-export function taskPrompt(task: TaskId, ctx: PromptContext): string {
-  return isRussian(ctx)
-    ? taskPromptsRu[task](ruLanguageName(ctx))
-    : taskPromptsEn[task](targetLanguageName(ctx))
-}
-
-export function checkPrompt(attempt: string | undefined, ctx: PromptContext): string {
-  return isRussian(ctx)
-    ? checkRu(attempt, ruLanguageName(ctx))
-    : checkEn(attempt, targetLanguageName(ctx))
-}
-
-export function simplerPrompt(ctx: PromptContext): string {
-  return isRussian(ctx)
-    ? simplerRu(ruLanguageName(ctx))
-    : simplerEn(targetLanguageName(ctx))
+export function simplerPrompt(_ctx: PromptContext): string {
+  return ''
 }
 
 /** Luna uses provider-default sampling and the same response cap for every turn. */

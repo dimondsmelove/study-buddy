@@ -26,7 +26,6 @@ import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
-import { createResponseTitleParser } from '../shared/title'
 import { checkPrompt, PROMPTS_VERSION, simplerPrompt, taskPrompt, type TaskId, type TurnKind } from '../shared/prompts'
 
 type Kind = 'capture' | 'permission' | 'restricted' | 'error'
@@ -562,13 +561,11 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
   let projection: ContextProjection
   try {
     const currentUser = draft?.role === 'user' ? draft : [...turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')
-    const isNewUser = !!draft && !selected.turns.some((turn) => turn.id === draft.id)
-    const previousUserExists = selected.turns.some((turn) => turn.role === 'user' && turn.kind !== 'capture')
-    const generation = isNewUser && currentUser ? {
+    const generation = draft?.role === 'user' && !selected.turns.some((turn) => turn.id === draft.id) && currentUser ? {
       task: currentUser.kind as TurnKind,
       answerLanguage: settingsCache.answerLanguage,
       uiLanguage: currentUser.locale,
-      titleNeeded: isNewUser && !previousUserExists && selected.titleGeneratedAt === undefined,
+      titleNeeded: false,
       ...(currentUser.kind === 'ask' ? { taskInput: currentUser.input ?? currentUser.text } :
         currentUser.kind === 'check' && currentUser.input !== undefined ? { taskInput: currentUser.input } : {}),
     } : undefined
@@ -785,10 +782,6 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   if (!conversation) return false
   const selectedId = conversation.id
   if (source.kind === 'capture') throw new Error('dialog.invalid')
-  const requestTitle = !!user && !conversation.turns.some((turn) => turn.role === 'user' && turn.kind !== 'capture') && conversation.titleGeneratedAt === undefined
-  const titleParser = requestTitle ? createResponseTitleParser() : undefined
-  let generatedTitle: string | undefined
-  let titleParserFinished = false
   const assistant: Turn = { id: crypto.randomUUID(), role: 'assistant', text: '', kind: source.kind, status: 'streaming', replyTo: source.id, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION }
   const controller = new AbortController()
   let lost = false
@@ -803,7 +796,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   let timer: ReturnType<typeof setTimeout> | undefined
   let storageFailed = false
   const persist = (final: ReplyStatus) => {
-    write = write.then(() => connection.request({ action: 'update', text: acc, status: final, error, note: fallbackNote, title: generatedTitle, usage }))
+    write = write.then(() => connection.request({ action: 'update', text: acc, status: final, error, note: fallbackNote, usage }))
     return write
   }
   starting = true
@@ -822,7 +815,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
       task: source.kind,
       answerLanguage: settings.answerLanguage,
       uiLanguage: source.locale,
-      titleNeeded: requestTitle,
+      titleNeeded: false,
       ...(source.kind === 'ask' ? { taskInput: source.input ?? source.text } :
         source.kind === 'check' && source.input !== undefined ? { taskInput: source.input } : {}),
     }
@@ -855,9 +848,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
         }
       },
       onDelta: (delta) => {
-        acc += titleParser ? titleParser.push(delta) : delta
-        generatedTitle = titleParser?.title ?? generatedTitle
-        if (generatedTitle && conversation) el('conversation-title').textContent = conversationDisplayTitle({ ...conversation, title: generatedTitle, titleGeneratedAt: Date.now() }, t(uiLang, 'dialog.new'))
+        acc += delta
         reply!.raw = acc
         reply!.body.textContent = acc
         scrollThread()
@@ -872,7 +863,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
         thread.insertBefore(note.wrap, reply!.wrap)
       },
     })
-    if (!titleParser) acc = result.text
+    acc = result.text
     status = result.status
     usage = { model: result.model, ...result.usage }
   } catch (err) {
@@ -882,15 +873,6 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   } finally {
     if (timer) clearTimeout(timer)
     if (reply) {
-      if (titleParser && !titleParserFinished) {
-        const tail = titleParser.finish()
-        titleParserFinished = true
-        acc += tail.text
-        generatedTitle = tail.title ?? generatedTitle
-        reply.body.textContent = acc || '…'
-        reply.raw = acc
-      }
-      if (titleParser && status === 'complete' && !acc.trim()) status = 'empty'
       if (lost) storageFailed = true
       try { if (!storageFailed) await persist(status) } catch { storageFailed = true }
       const savedTurn = { ...assistant, text: acc, status, error, note: fallbackNote, usage }
@@ -915,7 +897,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
 }
 
 async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string, onAccepted?: () => void, attachmentId?: string, storedText = false, preserveAttachment = false): Promise<boolean> {
-  if (!prompt.trim() || inflight || starting || !conversation || cooldownRemaining(profileState.lastStartedAt) > 0) return false
+  if ((!prompt.trim() && kind === 'ask') || inflight || starting || !conversation || cooldownRemaining(profileState.lastStartedAt) > 0) return false
   starting = true
   setBusy(true)
   try {

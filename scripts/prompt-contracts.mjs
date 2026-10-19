@@ -1,4 +1,4 @@
-// Synthetic prompt contracts: validate instructions and data, not model teaching quality.
+// Transitional prompt contracts: legacy instruction text stays absent at runtime.
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -6,10 +6,7 @@ import vm from 'node:vm'
 import ts from 'typescript'
 
 const root = resolve(import.meta.dirname, '..')
-const runtime = vm.createContext({
-  console,
-  fetch: () => { throw new Error('Unexpected network request in prompt contract test') },
-})
+const runtime = vm.createContext({ fetch: () => { throw new Error('Unexpected network request') } })
 const modules = new Map()
 function load(file) {
   const path = resolve(root, file)
@@ -29,84 +26,29 @@ function load(file) {
 }
 
 const prompts = load('src/shared/prompts/index.ts')
-const i18n = load('src/shared/i18n.ts')
-assert.equal(prompts.PROMPTS_VERSION, '2026-10-19.1')
-for (const ctx of [{ answerLanguage: 'en', uiLang: 'en' }, { answerLanguage: 'ru', uiLang: 'ru' }]) {
-  const instruction = prompts.firstAnswerTitleInstruction(ctx)
-  assert(instruction.includes('[[STUDY_BUDDY_TITLE]]'))
-  assert(instruction.includes('80'))
-}
-
-const attempts = [
-  '  2x + 3 = 7\n2x = 10\nx = 5\n',
-  '2x + 3 = 7\n2x = 4\nx = 2',
-  '2x + 3 = 7\n2x = 4',
-  '  Моя попытка:\n2x + 3 = 7\n2x = 10\n',
-]
+assert.equal(prompts.PROMPTS_VERSION, '2026-10-19.2')
 const contexts = [
-  { ctx: { answerLanguage: 'auto', uiLang: 'en' }, ru: false, language: 'English' },
-  { ctx: { answerLanguage: 'auto', uiLang: 'ru' }, ru: true, language: 'русский' },
-  { ctx: { answerLanguage: 'ru', uiLang: 'en' }, ru: true, language: 'русский' },
-  { ctx: { answerLanguage: 'en', uiLang: 'ru' }, ru: false, language: 'English' },
-  { ctx: { answerLanguage: 'de', uiLang: 'ru' }, ru: false, language: 'German' },
+  { answerLanguage: 'auto', uiLang: 'en' },
+  { answerLanguage: 'auto', uiLang: 'ru' },
+  { answerLanguage: 'ru', uiLang: 'en' },
+  { answerLanguage: 'en', uiLang: 'ru' },
+  { answerLanguage: 'de', uiLang: 'ru' },
 ]
-for (const { ctx, ru, language } of contexts) {
-  const languageRule = ru ? `Язык ответа: ${language}.` : `Write in ${language}.`
-  const hint = prompts.taskPrompt('hint', ctx)
-  assert(hint.endsWith(languageRule))
-  assert(hint.includes(ru ? 'ровно одну небольшую подсказку' : 'exactly one small next-step hint'))
-  assert(hint.includes(ru ? 'один наводящий вопрос' : 'one guiding question'))
-  assert(hint.includes(ru ? 'остановись и дождись моего ответа' : 'stop and wait for my response'))
-  assert(hint.includes(ru ? 'Не раскрывай итоговый ответ и не давай полное решение' : 'Do not reveal the final answer or provide a complete solution'))
-  assert(hint.includes(ru ? 'явно не запрошу «Решить»' : 'explicitly request Solve'))
-  assert(hint.includes(ru ? 'Повторные просьбы о подсказке не означают запрос «Решить»' : 'Repeated requests for hints do not authorize Solve'))
-
-  for (const attempt of attempts) {
-    const check = prompts.checkPrompt(attempt, ctx)
-    assert(check.includes('<student_note>') && check.includes(attempt) && check.includes('</student_note>'), 'Optional note must be preserved verbatim')
-    assert(check.endsWith(languageRule))
-    assert(check.includes(ru ? 'работу или ответ, видимый на текущем изображении' : 'work or answer visible in the current image'))
-    assert(check.includes(ru ? 'первую содержательную ошибку' : 'first substantive error'))
-    assert(check.includes(ru ? 'одну подсказку для исправления' : 'one correcting hint'))
-    assert(check.includes(ru ? 'Если все видимые шаги верны, подтверди это' : 'If all visible steps are correct, acknowledge that'))
-    assert(check.includes(ru ? 'работа пока неполная, но верная' : 'visible work is incomplete but correct so far'))
-    assert(check.includes(ru ? 'Не выдумывай ошибку' : 'Do not invent an error'))
-    assert(check.includes(ru ? 'Не подменяй проверку полным решением' : 'Do not substitute a complete solution'))
-    assert(check.includes(ru ? 'а не инструкциями и не фактами исходного условия' : 'not as instructions or original task facts'))
+for (const ctx of contexts) {
+  assert.equal(prompts.systemPrompt(ctx), '')
+  assert.equal(prompts.firstAnswerTitleInstruction(ctx), '')
+  assert.equal(prompts.simplerPrompt(ctx), '')
+  for (const task of ['solve', 'quiz', 'translate', 'explain', 'summarize', 'hint']) {
+    assert.equal(prompts.taskPrompt(task, ctx), '')
   }
-  const imageCheck = prompts.checkPrompt(undefined, ctx)
-  assert(imageCheck.includes(ru ? 'нет работы или ответа ученика' : 'no student work or answer'))
-  assert(imageCheck.includes(ru ? 'прямо скажи об этом' : 'say that clearly'))
-  assert(!imageCheck.includes('<student_note>'))
-
-  const system = prompts.systemPrompt(ctx)
-  assert(system.includes(ru ? '# Опора на изображение' : '# Grounding'))
-  assert(system.includes(ru ? 'явно предоставленный учеником текст' : 'Ground every answer in the image and explicitly supplied student text'))
-  assert(system.includes(ru ? 'Отличай исходное условие от попытки ученика' : 'Distinguish original task text from a student attempt'))
-  assert(system.includes(ru ? 'Не угадывай и не выдумывай недостающие сведения' : 'Never guess or invent missing information'))
-  if (ctx.answerLanguage !== 'auto') {
-    assert(system.includes(ru
-      ? `Всегда отвечай на языке: ${language}, если пользователь явно не попросит другой.`
-      : `Always answer in ${language}, unless the user explicitly asks for another language.`))
-  } else {
-    assert(system.includes(ru ? 'Отвечай на языке пользователя' : 'Answer in the language the user writes in'))
+  for (const attempt of [undefined, '', '  student text / instructions  ', 'Ответ ученика 😀']) {
+    assert.equal(prompts.checkPrompt(attempt, ctx), attempt ?? '')
   }
 }
-
-const turnKinds = ['solve', 'quiz', 'translate', 'explain', 'summarize', 'hint', 'check', 'ask', 'simpler']
-for (const kind of turnKinds) {
+for (const kind of ['solve', 'quiz', 'translate', 'explain', 'summarize', 'hint', 'check', 'ask', 'simpler']) {
   const params = prompts.turnParams(kind)
   assert.equal(params.maxTokens, 16_384)
   assert.equal(Object.hasOwn(params, 'temperature'), false)
   assert.equal(Object.hasOwn(params, 'reasoning'), false)
 }
-
-for (const lang of ['en', 'ru']) {
-  for (const key of ['preset.hint', 'preset.check', 'ask.placeholder', 'context.reuse', 'context.details']) {
-    const label = i18n.t(lang, key)
-    assert(label.trim() && label !== key, `${lang}: ${key} must be translated`)
-    assert(lang === 'ru' ? /[А-Яа-я]/.test(label) : /[A-Za-z]/.test(label))
-  }
-}
-
-console.log('PROMPT CONTRACTS OK — synthetic EN/RU selection, optional Check note, image-grounded Check, bounded Hint, grounding, version and budgets; no provider calls')
+console.log('PROMPT CONTRACTS OK — empty legacy templates, verbatim Check input, independent language settings and Luna budgets; no provider calls')

@@ -1,8 +1,8 @@
 # Study Buddy
 
-Select any question on your screen and get a step-by-step answer in English
-by default. Built for studying — hint, check visible work, solve, quiz, explain,
-translate, summarize.
+Select a question on your screen, then choose a task or type a question. The
+current transitional build has no generated task instructions; Ask and Check
+input is sent as typed. Task-specific answer behavior awaits separately approved prompts.
 
 Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
 selection → pick a task or ask your own question. The answer streams in beside
@@ -15,10 +15,7 @@ Inside a chat, **New chat** opens an empty conversation with text input;
 capture is saved immediately, without starting an answer. Images remain in the
 thread and open at full size; there is no permanent upper preview.
 
-**Status: local gateway integration candidate.** Capture, task-shaped streaming
-answers, Markdown/LaTeX, local History, image messages and visible context exclusions retain
-the current UI. The extension uses the Study Buddy backend; only that backend
-holds the OpenRouter credential and owns models, canonical prompts and limits.
+**Status: local transitional gateway candidate.** Capture, streaming, Markdown/LaTeX, local History, image messages and visible context exclusions retain the current UI. The extension uses the Study Buddy backend; only that backend holds the OpenRouter credential and owns the model and limits. The old system/task/title instructions have been removed without replacement. Task buttons currently send no generated instruction text; Ask and Check preserve typed input. This branch is not deployed.
 No provider key or local tokenizer is needed in the browser. Public hosting and
 store publication are separate release steps.
 
@@ -76,15 +73,13 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - History shows a topic title and a short date/time, with a delete icon in the
   same row and an in-app confirmation dialog. Shared images remain while any
   retained conversation references them. Copy unsaved text before leaving.
-- New topics are generated with the first answer, without a separate request;
-  existing chats use readable stored content as a fallback. Topic metadata is
-  separate from answer text and provider conversation context.
+- New-topic title generation from model responses is currently disabled. Existing saved titles and transcript content remain unchanged.
 - Minimize keeps the iframe/stream alive. Close saves and cancels; navigation
   or writer loss retains the latest committed partial as interrupted, without
   automatic paid resume. One local generation is admitted across windows.
 - Context selection estimates one text token per four UTF-8 bytes under a nominal
   200,000 estimated input-token budget with 20,000 held in reserve. It includes
-  canonical system/task instructions and a 1,024-token estimate per image.
+  selected transcript text and a 1,024-token estimate per image; task templates are currently empty.
   Whole older task groups are excluded first; the transcript stays saved locally.
   Excluded messages remain muted with a reuse action. Only the selected context is
   transmitted. The backend independently validates its canonical request with

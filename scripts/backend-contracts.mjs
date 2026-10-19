@@ -260,15 +260,36 @@ async function waitFor(predicate, label) {
 
 await test('shared preparation is canonical and text uses the four-byte estimate', async () => {
   const prepared = protocol.prepareGatewayGeneration(input())
-  assert.equal(prepared.messages[0].role, 'system')
-  assert.match(prepared.messages[0].content, /You are|Ты —/)
-  assert.equal(prepared.messages.at(-1).role, 'user')
-  assert.equal(prepared.messages.at(-1).content, 'What is 2 + 2?')
+  assert.deepEqual(prepared.messages, [
+    { role: 'assistant', content: 'HISTORICAL_TRANSCRIPT_SENTINEL' },
+    { role: 'user', content: 'What is 2 + 2?' },
+  ])
   assert.equal('temperature' in prepared, false)
   assert.equal(prepared.maxTokens, 16_384)
   assert.equal(protocol.estimateTextTokens('abcde'), 2)
   assert.equal(protocol.estimateTextTokens('ЯЯЯ'), 2)
   assert.equal(protocol.estimateTextTokens('\u{1f600}'), 1)
+})
+
+await test('empty task prompts are omitted while Ask and Check input and image parts survive', async () => {
+  const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }
+  const solve = protocol.prepareGatewayGeneration(input('emptytask_0000001', {
+    task: 'solve', taskInput: undefined,
+    messages: [{ role: 'user', content: [image] }],
+  }))
+  assert.deepEqual(solve.messages, [{ role: 'user', content: [image] }])
+  const emptySolve = protocol.prepareGatewayGeneration(input('emptytask_0000002', {
+    task: 'solve', taskInput: undefined, messages: [{ role: 'user', content: '' }],
+  }))
+  assert.deepEqual(emptySolve.messages, [])
+  const check = protocol.prepareGatewayGeneration(input('emptytask_0000003', {
+    task: 'check', taskInput: '  raw attempt 😀  ', messages: [{ role: 'user', content: 'legacy generated check template' }],
+  }))
+  assert.equal(check.messages.at(-1).content, '  raw attempt 😀  ')
+  const ask = protocol.prepareGatewayGeneration(input('emptytask_0000004', {
+    taskInput: '  raw Ask text  ', messages: [{ role: 'user', content: 'old app-generated text' }],
+  }))
+  assert.equal(ask.messages.at(-1).content, '  raw Ask text  ')
 })
 
 await test('PNG, JPEG and WebP dimensions validate without pixel decompression', async () => {
@@ -365,7 +386,7 @@ await test('HTTP session, CORS, canonical provider request, final usage chunk, a
     assert.equal('temperature' in upstream, false)
     assert.equal('reasoning' in upstream, false)
     assert.equal(upstream.max_tokens, 16_384)
-    assert.equal(upstream.messages[0].role, 'system')
+    assert.equal(upstream.messages.some((message) => message.role === 'system'), false)
     assert.equal(upstream.messages.at(-1).content, 'What is 2 + 2?')
     assert.equal(JSON.stringify(upstream).includes('client text must be replaced'), false)
     assert.equal(JSON.stringify(upstream).includes('HISTORICAL_TRANSCRIPT_SENTINEL'), true)

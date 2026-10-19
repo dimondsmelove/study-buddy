@@ -653,7 +653,11 @@ try {
   check(reply === 'Hello world', `assistant reply streamed into the thread (${reply ?? 'no reply'})`)
   await ai.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete'))
   const savedAi = await readSaved(ai)
-  const savedUsage = savedAi.conversations.find(item => item.id === savedAi.state.lastConversationId)?.turns.at(-1)?.usage
+  const savedConversation = savedAi.conversations.find(item => item.id === savedAi.state.lastConversationId)
+  const savedTaskTurn = [...(savedConversation?.turns ?? [])].reverse().find(turn => turn.role === 'user')
+  check(savedTaskTurn?.kind === 'solve' && savedTaskTurn.text === '' && !!savedTaskTurn.attachmentId,
+    'empty Solve template is accepted and persisted with its selected image')
+  const savedUsage = savedConversation?.turns.at(-1)?.usage
   check(savedUsage?.model === PRIMARY && savedUsage.promptTokens === 17 && savedUsage.completionTokens === 2 && savedUsage.cost === 0.0001,
     'final usage-only provider chunk is retained on the saved assistant turn')
   await ai.reload()
@@ -668,21 +672,19 @@ try {
     imageMessage.content.some((p) => p?.type === 'image_url' && typeof p.image_url?.url === 'string' && p.image_url.url.startsWith('data:image/png'))
   check(sentImage, 'request carried the crop as an image_url data URL')
   check(lastAiRequest?.model === PRIMARY, `request used the fixed primary model (${lastAiRequest?.model ?? 'MISSING'})`)
-  // Prompt regression: the system prompt carries the grounding rules, the
-  // Solve template goes out verbatim, and the factual-task params are set
-  // (shared max_tokens cutoff from src/shared/prompts).
-  const sysMsg = lastAiRequest?.messages?.[0]
+  // Transitional no-instruction state: action metadata is client-side only;
+  // the provider receives the selected image without system/task/title text.
   check(
-    sysMsg?.role === 'system' &&
-      typeof sysMsg.content === 'string' &&
-      sysMsg.content.includes('# Grounding') &&
-      sysMsg.content.includes('Ground every answer in the image'),
-    'system prompt carries the grounding rules',
+    !lastAiRequest?.messages?.some(message => message.role === 'system'),
+    'provider request omits the removed system and title instructions',
   )
-  const solveText = typeof firstUser?.content === 'string' ? firstUser.content : Array.isArray(firstUser?.content) ? firstUser.content.find(part => part?.type === 'text')?.text : null
   check(
-    typeof solveText === 'string' && solveText.startsWith('Solve the problem shown in the image'),
-    `solve prompt sent as expected (${String(solveText ?? '').slice(0, 40)}…)`,
+    !JSON.stringify(lastAiRequest?.messages ?? []).includes('Solve the problem shown in the image'),
+    'provider request omits removed task templates',
+  )
+  check(
+    imageMessage?.content?.every(part => part.type === 'image_url' || part.text.length === 0),
+    'image-only task request contains no generated text part',
   )
   check(
     lastAiRequest?.max_tokens === 16_384 && !('temperature' in lastAiRequest) && !('reasoning' in lastAiRequest),
@@ -822,8 +824,7 @@ try {
     'next message clears the tray that extends beyond its bubble (' + JSON.stringify(traySpacing) + ')')
   await longAnswer.close()
 
-  // RU dictionary: with uiLanguage 'ru' the NATIVE RU templates and system
-  // prompt must go out (answerLanguage auto + ru UI resolves to Russian).
+  // RU task actions also omit deleted instruction text; language settings remain independent metadata.
   await sw.evaluate(
     async (s) => chrome.storage.local.set({ settings: s }),
     { uiLanguage: 'ru', answerLanguage: 'auto' },
@@ -831,16 +832,10 @@ try {
   const aiRu = await openCapture()
   await aiRu.click('.preset[data-preset="solve"]')
   await waitReply(aiRu)
-  const ruUser = [...(lastAiRequest?.messages ?? [])].reverse().find((m) => m.role === 'user' && (typeof m.content === 'string' || Array.isArray(m.content) && m.content.some(part => part?.type === 'text')))
-  const ruText = typeof ruUser?.content === 'string' ? ruUser.content : Array.isArray(ruUser?.content) ? ruUser.content.find(part => part?.type === 'text')?.text : null
   check(
-    typeof ruText === 'string' && ruText.startsWith('Реши задачу, показанную на изображении'),
-    `RU dictionary selected for ru UI (${String(ruText ?? '').slice(0, 30)}…)`,
-  )
-  const ruSys = lastAiRequest?.messages?.[0]
-  check(
-    ruSys?.role === 'system' && typeof ruSys.content === 'string' && ruSys.content.includes('# Опора на изображение'),
-    'RU system prompt sent for ru UI',
+    !lastAiRequest?.messages?.some(message => message.role === 'system') &&
+      !JSON.stringify(lastAiRequest?.messages ?? []).includes('Реши задачу, показанную на изображении'),
+    'RU task action also omits removed system and task instructions',
   )
   await aiRu.close()
   // Back to EN for the unavailable-model test below.
@@ -968,10 +963,20 @@ try {
   '320×324 toolbar keeps New selection accessible and the menu/composer reachable (' + JSON.stringify(narrowGeometry) + ')')
   await layout.keyboard.press('Escape')
   await layout.getByRole('button', { name: 'More', exact: true }).click()
+  const requestsBeforeExplain = requestCount
   await layout.getByRole('button', { name: 'Explain', exact: true }).click()
   await waitSaved(layout, 'Complete')
-  check(lastAiRequest.messages.some(message => JSON.stringify(message.content).toLowerCase().includes('explain')),
-    'a task selected from More sends the explicit Explain request')
+  const explainSaved = await readSaved(layout)
+  const explainConversation = explainSaved.conversations.find(item => item.id === explainSaved.state.lastConversationId)
+  const explainTurn = [...(explainConversation?.turns ?? [])].reverse().find(turn => turn.role === 'user')
+  const explainHasImage = lastAiRequest?.messages?.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))
+  const explainHasTextInstruction = lastAiRequest?.messages?.some(message => message.role === 'system' ||
+    typeof message.content === 'string' && message.content.length > 0 ||
+    Array.isArray(message.content) && message.content.some(part => part.type === 'text' && part.text.length > 0))
+  check(requestCount === requestsBeforeExplain + 1 && explainTurn?.kind === 'explain' &&
+    explainTurn.text === '' && !!explainTurn.attachmentId && explainHasImage &&
+    !explainHasTextInstruction,
+    'More Explain sends one image-only request, persists kind=explain, and omits removed instructions')
   const seedExtraImages = () => layout.evaluate(() => new Promise((resolve, reject) => {
     const conversationId = new URL(location.href).searchParams.get('conversation')
     const open = indexedDB.open('study-buddy-conversations', 1)
@@ -1293,11 +1298,13 @@ try {
   const checkedConversation = checkedDb.conversations.find(c => c.id === checkedId)
   const checkedTurn = checkedConversation.turns.find(turn => turn.role === 'user' && turn.kind === 'check')
   check(!!checkedTurn && checkedTurn.input === undefined && checkedTurn.attachmentId === capture.id, 'Check is stored as an image-grounded user turn without a required text attempt')
-  const checkedText = lastAiRequest.messages.flatMap(message => typeof message.content === 'string'
-    ? [message.content]
-    : Array.isArray(message.content) ? message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
-  check(lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest) && checkedText.some(text => text.includes('work or answer visible in the current image') && text.includes('no student work or answer that can be checked')),
-    'Check asks the model to inspect visible image work and state honestly when there is none')
+  const checkedHasImage = lastAiRequest.messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))
+  const checkedHasInstruction = lastAiRequest.messages.some(message => message.role === 'system' ||
+    typeof message.content === 'string' && message.content.length > 0 ||
+    Array.isArray(message.content) && message.content.some(part => part.type === 'text' && part.text.length > 0))
+  check(lastAiRequest.messages.length > 0 && checkedHasImage && !checkedHasInstruction &&
+    lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest) && !('reasoning' in lastAiRequest),
+    'Check sends its image without system, task or empty text parts and keeps the Luna request budget')
   await resetCooldown(checked)
   responseMode = 'slow'
   await checked.fill('#ask-input', 'Accepted draft should clear immediately')
@@ -1938,9 +1945,9 @@ try {
   const raceId = (await readSaved(duplicate)).state.lastConversationId
   const racePeer = await ctx.newPage()
   await racePeer.goto(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${raceId}`)
-  const admission = (p) => p.evaluate((id) => new Promise((resolve) => {
+  const admission = (p, text = 'Race fixture', kind = 'ask') => p.evaluate(({ id, text, kind }) => new Promise((resolve) => {
     const port = chrome.runtime.connect({ name: 'study-buddy-generation' })
-    const user = { id: crypto.randomUUID(), role: 'user', text: 'Race fixture', kind: 'ask', createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' }
+    const user = { id: crypto.randomUUID(), role: 'user', text, kind, createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' }
     const assistant = { ...user, id: crypto.randomUUID(), role: 'assistant', text: '', status: 'streaming', replyTo: user.id }
     port.onMessage.addListener((response) => {
       if (response.seq === 1) {
@@ -1949,7 +1956,11 @@ try {
       } else { port.disconnect(); resolve({ ok: true }) }
     })
     port.postMessage({ seq: 1, action: 'start', conversationId: id, user, assistant })
-  }), raceId)
+  }), { id: raceId, text, kind })
+  const requestCountBeforeBlankAsk = requestCount
+  const blankAsk = await admission(duplicate, '  ', 'ask')
+  check(!blankAsk.ok && blankAsk.error === 'dialog.invalid' && requestCount === requestCountBeforeBlankAsk,
+    'generation coordinator rejects blank Ask without a provider request')
   const races = await Promise.all([admission(duplicate), admission(racePeer)])
   check(races.filter(r => r.ok).length === 1 && races.some(r => !r.ok && /dialog.busy|dialog.cooldown/.test(r.error)), 'two concurrent native window starts admit exactly one writer')
   await sw.evaluate(() => {

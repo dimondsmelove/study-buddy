@@ -112,9 +112,6 @@ export interface ContextProjection {
 export interface ContextProjectionOptions {
   /** Optional canonical task metadata makes this estimate match the gateway payload. */
   generation?: Omit<GatewayGenerationInput, 'requestId' | 'messages'>
-  /** Legacy test seam for projections without a current user request. */
-  countTokens?: (text: string) => number
-  systemPrompt?: string
 }
 
 /** Keep the newest whole task groups that fit the estimated prompt budget. */
@@ -162,9 +159,9 @@ export function contextProjection(conversation: Conversation, options: ContextPr
         messages,
       }).estimatedInputTokens
     }
-    const renderedText = [options.systemPrompt ?? '', ...turns.map((turn) => `${turn.role}\n${turn.text}`)].join('\n')
+    const renderedText = messages.map((message) => message.role + '\n' + (typeof message.content === 'string' ? message.content : message.content.filter((part) => part.type === 'text').map((part) => part.text).join(''))).join('\n')
     const imageIds = new Set(turns.flatMap((turn) => turn.role === 'user' && turn.attachmentId ? [turn.attachmentId] : []))
-    return (options.countTokens ?? estimateTextTokens)(renderedText) + turns.length * 8 + imageIds.size * CONTEXT_LIMITS.imageTokenEstimate
+    return estimateTextTokens(renderedText) + messages.length * 8 + imageIds.size * CONTEXT_LIMITS.imageTokenEstimate
   }
   let stoppedAtBoundary = false
   for (const [key, group] of [...orderedGroups].reverse()) {
@@ -233,15 +230,18 @@ function contextItems(turns: Turn[], images: Set<string>): Array<{ turn: Turn; i
 
 function previewContextMessages(turns: Turn[]): ApiMessage[] {
   const messages: ApiMessage[] = []
+  const currentUserId = [...turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')?.id
   for (const { turn, imageId } of contextItems(turns, contextImages(turns))) {
     if (turn.role === 'assistant') {
-      messages.push({ role: 'assistant', content: turn.text })
+      if (turn.text) messages.push({ role: 'assistant', content: turn.text })
       continue
     }
     const content: Exclude<ApiMessage['content'], string> = []
-    if (turn.text) content.push({ type: 'text', text: turn.text })
+    const text = contextTurnText(turn)
+    if (text) content.push({ type: 'text', text })
     if (imageId) content.push({ type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } })
     if (content.length) messages.push({ role: 'user', content })
+    else if (turn.id === currentUserId) messages.push({ role: 'user', content: '' })
   }
   return messages
 }
@@ -251,13 +251,15 @@ export async function requestContext(
   projection: ContextProjection,
 ): Promise<{ messages: ApiMessage[]; omitted: number }> {
   const messages: ApiMessage[] = []
+  const currentUserId = [...projection.turns].reverse().find((turn) => turn.role === 'user' && turn.kind !== 'capture')?.id
   for (const { turn, imageId } of contextItems(projection.turns, projection.images)) {
     if (turn.role === 'assistant') {
-      messages.push({ role: 'assistant', content: turn.text })
+      if (turn.text) messages.push({ role: 'assistant', content: turn.text })
       continue
     }
     const content: Exclude<ApiMessage['content'], string> = []
-    if (turn.text) content.push({ type: 'text', text: turn.text })
+    const text = contextTurnText(turn)
+    if (text) content.push({ type: 'text', text })
     if (imageId) {
       const data = await readImage(imageId)
       if (!data) throw new Error('context.imageMissing')
@@ -265,8 +267,16 @@ export async function requestContext(
       content.push({ type: 'image_url', image_url: { url: await blobDataUrl(data) } })
     }
     if (content.length) messages.push({ role: 'user', content })
+    else if (turn.id === currentUserId) messages.push({ role: 'user', content: '' })
   }
   return { messages, omitted: projection.omitted }
+}
+
+function contextTurnText(turn: Turn): string {
+  if (turn.role === 'assistant') return turn.text
+  if (turn.kind === 'ask') return turn.input ?? turn.text
+  if (turn.kind === 'check') return turn.input ?? ''
+  return ''
 }
 
 export function blobDataUrl(data: Blob): Promise<string> {

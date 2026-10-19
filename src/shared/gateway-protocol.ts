@@ -1,15 +1,6 @@
 import type { ApiContent, ApiMessage } from './api'
 import type { AnswerLanguage } from './settings'
-import {
-  checkPrompt,
-  firstAnswerTitleInstruction,
-  simplerPrompt,
-  systemPrompt,
-  taskPrompt,
-  turnParams,
-  type TurnKind,
-  type TaskId,
-} from './prompts'
+import { turnParams, type TurnKind } from './prompts'
 
 export const GATEWAY_LIMITS = {
   inputTokens: 200_000,
@@ -29,8 +20,8 @@ export const GATEWAY_LIMITS = {
 
 export type GatewayUiLanguage = 'en' | 'ru'
 
-/** Client-supplied intent and selected local context. Prompts and model params
- * are always reconstructed on the server from these allowlisted fields. */
+/** Client-supplied intent, selected local context and explicit user input.
+ * Model parameters are reconstructed on the server from allowlisted fields. */
 export interface GatewayGenerationInput {
   requestId: string
   task: TurnKind
@@ -69,38 +60,28 @@ export function isTurnKind(value: unknown): value is TurnKind {
   return typeof value === 'string' && TASK_KINDS.includes(value as TurnKind)
 }
 
-/** Build the exact provider messages from client-selected user/assistant
- * history. The last user turn keeps its image parts, while its text is replaced
- * by the canonical task prompt or explicit free Ask/Check input. */
+/** Build provider messages from client-selected history. App-generated task
+ * text is absent; Ask and explicit Check input pass through verbatim. */
 export function prepareGatewayGeneration(input: GatewayGenerationInput): PreparedGatewayGeneration {
   const last = input.messages.at(-1)
   if (!last || last.role !== 'user') throw new Error('gateway.currentUserRequired')
 
-  const promptContext = { answerLanguage: input.answerLanguage, uiLang: input.uiLanguage }
-  let canonicalText: string
+  let currentText = ''
   if (input.task === 'ask') {
     if (typeof input.taskInput !== 'string' || !input.taskInput.trim()) throw new Error('gateway.askInputRequired')
-    canonicalText = input.taskInput
+    currentText = input.taskInput
   } else if (input.task === 'check') {
-    canonicalText = checkPrompt(input.taskInput, promptContext)
-  } else if (input.task === 'simpler') {
-    canonicalText = simplerPrompt(promptContext)
-  } else {
-    canonicalText = taskPrompt(input.task as TaskId, promptContext)
+    currentText = input.taskInput ?? ''
   }
 
-  const system = systemPrompt(promptContext) + (input.titleNeeded
-    ? '\n\n' + firstAnswerTitleInstruction(promptContext)
-    : '')
   const messages = input.messages.map((message, index) => {
     if (index !== input.messages.length - 1) return cloneMessage(message)
-    return { role: 'user' as const, content: withCanonicalText(last.content, canonicalText) }
-  })
-  const providerMessages: ApiMessage[] = [{ role: 'system', content: system }, ...messages]
-  const images = countImages(providerMessages)
-  const estimatedInputTokens = estimateInputTokens(providerMessages, images)
+    return { role: 'user' as const, content: withCanonicalText(last.content, currentText) }
+  }).filter(hasContent)
+  const images = countImages(messages)
+  const estimatedInputTokens = estimateInputTokens(messages, images)
   return {
-    messages: providerMessages,
+    messages,
     ...turnParams(input.task),
     estimatedInputTokens,
     inputBudget: GATEWAY_LIMITS.inputTokens,
@@ -132,10 +113,18 @@ export function gatewayFingerprint(input: GatewayGenerationInput, prepared: Prep
 
 function withCanonicalText(content: ApiContent, text: string): ApiContent {
   if (typeof content === 'string') return text
-  const images = content.flatMap((part) => part.type === 'image_url'
+  const parts: Exclude<ApiContent, string> = []
+  if (text) parts.push({ type: 'text', text })
+  parts.push(...content.flatMap((part) => part.type === 'image_url'
     ? [{ type: 'image_url' as const, image_url: { url: part.image_url.url } }]
-    : [])
-  return images.length ? [{ type: 'text', text }, ...images] : text
+    : []))
+  return parts.length ? parts : ''
+}
+
+function hasContent(message: ApiMessage): boolean {
+  return typeof message.content === 'string'
+    ? message.content.length > 0
+    : message.content.some((part) => part.type === 'image_url' || part.text.length > 0)
 }
 
 function cloneMessage(message: ApiMessage): ApiMessage {

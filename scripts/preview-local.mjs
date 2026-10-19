@@ -43,6 +43,7 @@ const token = randomUUID()
 let ctx
 let stopping = false
 let requests = 0
+let previewPrompts
 let origin
 let captureReady = false
 let backend
@@ -82,12 +83,10 @@ const server = createServer((req, res) => {
       try { request = JSON.parse(body) } catch { res.writeHead(400); res.end(); return }
       requests++
       const ru = request.messages?.[0]?.content?.includes('# Опора на изображение')
-      const task = request.messages?.at(-1)?.content ?? ''
-      const hint = typeof task === 'string' && task.toLowerCase().includes('hint')
-      const check = typeof task === 'string' && task.toLowerCase().includes('check')
+      const kind = previewPrompts.classifyPreviewTask(request.messages, previewPrompts)
       const text = ru
-        ? hint ? 'Начни с вычитания 6 из обеих частей равенства. Какое равенство получится?' : check ? 'Первый неверный переход — раскрытие скобок: множитель 2 относится к обоим слагаемым. Проверь произведение 2 · 3.' : 'Демонстрационный ответ локального mock. Реальная модель не вызывается.'
-        : hint ? 'Start by subtracting 6 from both sides. What equation do you get?' : check ? 'The first incorrect step is distributing the brackets: 2 multiplies both terms. Check 2 × 3.' : 'Local mock demonstration. No real model is called.'
+        ? kind === 'hint' ? 'Начни с вычитания 6 из обеих частей равенства. Какое равенство получится?' : kind === 'check' ? 'Первый неверный переход — раскрытие скобок: множитель 2 относится к обоим слагаемым. Проверь произведение 2 · 3.' : 'Демонстрационный ответ локального mock. Реальная модель не вызывается.'
+        : kind === 'hint' ? 'Start by subtracting 6 from both sides. What equation do you get?' : kind === 'check' ? 'The first incorrect step is distributing the brackets: 2 multiplies both terms. Check 2 × 3.' : 'Local mock demonstration. No real model is called.'
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       const chunks = text.match(/.{1,12}/gu) ?? []
       const timer = setInterval(() => {
@@ -124,10 +123,13 @@ try {
   const extensionId = new URL(sw.url()).hostname
   const viteModule = await import('vite')
   vite = await viteModule.createServer({ configFile: false, root, appType: 'custom', server: { middlewareMode: true } })
-  const [{ createBackend }, { loadBackendConfig }] = await Promise.all([
+  const [{ createBackend }, { loadBackendConfig }, prompts, previewTask] = await Promise.all([
     vite.ssrLoadModule('/src/backend/app.ts'),
     vite.ssrLoadModule('/src/backend/config.ts'),
+    vite.ssrLoadModule('/src/shared/prompts/index.ts'),
+    import('./preview-task.mjs'),
   ])
+  previewPrompts = { ...prompts, classifyPreviewTask: previewTask.classifyPreviewTask }
   const backendConfig = loadBackendConfig({
     OPENROUTER_API_KEY: 'FAKE_PREVIEW_PROVIDER_KEY',
     SESSION_HMAC_SECRET: 'local-preview-session-secret-for-tests-012345',

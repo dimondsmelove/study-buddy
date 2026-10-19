@@ -1,8 +1,6 @@
 # Study Buddy
 
-Select a question on your screen, then choose a task or type a question. The
-current transitional build has no generated task instructions; Ask and Check
-input is sent as typed. Task-specific answer behavior awaits separately approved prompts.
+Select a question on your screen, then choose a task or type a question. Approved task instructions are assembled into the canonical backend request. Ask remains free-form, and the selected task, answer language, and saved conversation history stay separate from interface labels.
 
 Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
 selection → pick a task or ask your own question. The answer streams in beside
@@ -15,7 +13,7 @@ Inside a chat, **New chat** opens an empty conversation with text input;
 capture is saved immediately, without starting an answer. Images remain in the
 thread and open at full size; there is no permanent upper preview.
 
-**Status: local transitional gateway candidate.** Capture, streaming, Markdown/LaTeX, local History, image messages and visible context exclusions retain the current UI. The extension uses the Study Buddy backend; only that backend holds the OpenRouter credential and owns the model and limits. The old system/task/title instructions have been removed without replacement. Task buttons currently send no generated instruction text; Ask and Check preserve typed input. This branch is not deployed.
+**Status: local implementation candidate.** Capture, streaming, Markdown/LaTeX, local History, image messages and visible context exclusions use the Study Buddy backend; only the backend holds the OpenRouter credential and owns the model and limits. Approved task and title instructions are assembled server-side. Ask remains free-form, transcript text remains immutable, and this branch is not deployed.
 No provider key or local tokenizer is needed in the browser. Public hosting and
 store publication are separate release steps.
 

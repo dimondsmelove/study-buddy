@@ -78,6 +78,14 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: { message: 'model unavailable' } }))
         return
       }
+      if (responseMode === 'title') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        for (const content of ['[[STUDY_BUDDY_', 'TITLE]]Geometry basics\nThe first ', 'selected answer']) {
+          res.write('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n')
+        }
+        res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n')
+        return
+      }
       if (responseMode === 'clipboard') {
         res.writeHead(200, { 'content-type': 'text/event-stream' })
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'clipboard-real-proof' } }] }) + '\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n')
@@ -633,30 +641,46 @@ try {
       tx.onabort = () => reject(tx.error)
     }
   }))
-  const waitReply = (p) =>
+  const waitReply = (p, expected = 'Hello world') =>
     p
       .waitForFunction(
-        () => {
+        (expected) => {
           // The bubble is rendered as Markdown, so marked's trailing newline is
           // expected — compare on the trimmed text.
-          const body = document.querySelector('.msg.assistant .msg-body')
-          return body && body.textContent?.trim() === 'Hello world' ? 'Hello world' : false
+          const body = [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)
+          return body && body.textContent?.trim() === expected ? expected : false
         },
+        expected,
         { timeout: 5000 },
       )
       .then((h) => h.jsonValue())
       .catch(() => null)
+  const waitForNewReply = async (page, previousCount, expected) => {
+    await page.waitForFunction((count) => document.querySelectorAll('.msg.assistant').length > count, previousCount, { timeout: 5000 })
+    return waitReply(page, expected)
+  }
+  const clickMessageAction = async (page, index, label) => {
+    const message = page.locator('.msg.assistant').nth(index)
+    await message.hover()
+    const toggle = message.locator('.msg-actions-toggle')
+    if (await toggle.isVisible()) await toggle.click()
+    await message.getByRole('button', { name: label, exact: true }).click()
+  }
 
   const ai = await openCapture()
+  responseMode = 'title'
   await ai.click('.preset[data-preset="solve"]')
-  const reply = await waitReply(ai)
-  check(reply === 'Hello world', `assistant reply streamed into the thread (${reply ?? 'no reply'})`)
+  const reply = await waitReply(ai, 'The first selected answer')
+  check(reply === 'The first selected answer', `assistant reply streams with the title envelope hidden (${reply ?? 'no reply'})`)
+  responseMode = 'normal'
   await ai.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete'))
   const savedAi = await readSaved(ai)
   const savedConversation = savedAi.conversations.find(item => item.id === savedAi.state.lastConversationId)
   const savedTaskTurn = [...(savedConversation?.turns ?? [])].reverse().find(turn => turn.role === 'user')
   check(savedTaskTurn?.kind === 'solve' && savedTaskTurn.text === '' && !!savedTaskTurn.attachmentId,
-    'empty Solve template is accepted and persisted with its selected image')
+    'Solve intent and its selected image remain persisted locally')
+  check(savedConversation?.title === 'Geometry basics' && !!savedConversation.titleGeneratedAt && savedConversation.turns.at(-1)?.text === 'The first selected answer',
+    'the title is persisted separately while the assistant transcript contains only the answer body')
   const savedUsage = savedConversation?.turns.at(-1)?.usage
   check(savedUsage?.model === PRIMARY && savedUsage.promptTokens === 17 && savedUsage.completionTokens === 2 && savedUsage.cost === 0.0001,
     'final usage-only provider chunk is retained on the saved assistant turn')
@@ -669,27 +693,61 @@ try {
   const imageMessage = userMessages.find((m) => Array.isArray(m.content) && m.content.some(part => part?.type === 'image_url'))
   const sentImage =
     Array.isArray(imageMessage?.content) &&
-    imageMessage.content.some((p) => p?.type === 'image_url' && typeof p.image_url?.url === 'string' && p.image_url.url.startsWith('data:image/png'))
+    imageMessage.content.some((p) => p?.type === 'image_url' && typeof p.image_url?.url === 'string' && p.image_url.url.startsWith('data:image/'))
   check(sentImage, 'request carried the crop as an image_url data URL')
   check(lastAiRequest?.model === PRIMARY, `request used the fixed primary model (${lastAiRequest?.model ?? 'MISSING'})`)
-  // Transitional no-instruction state: action metadata is client-side only;
-  // the provider receives the selected image without system/task/title text.
   check(
-    !lastAiRequest?.messages?.some(message => message.role === 'system'),
-    'provider request omits the removed system and title instructions',
+    lastAiRequest?.messages?.[0]?.role === 'system' &&
+      lastAiRequest.messages[0].content.includes('[[STUDY_BUDDY_TITLE]]') &&
+      lastAiRequest.messages[0].content.includes('Use the supplied text, images, and relevant conversation history as the source of task-specific facts'),
+    'first response uses the approved common and title instructions in the system message',
   )
   check(
-    !JSON.stringify(lastAiRequest?.messages ?? []).includes('Solve the problem shown in the image'),
-    'provider request omits removed task templates',
+    typeof firstUser?.content === 'string' ? firstUser.content.includes('Solve the problem shown in the image') :
+      firstUser?.content?.some(part => part.type === 'text' && part.text.includes('Solve the problem shown in the image')),
+    'Solve instruction is added to the canonical user message while retaining the image',
   )
   check(
-    imageMessage?.content?.every(part => part.type === 'image_url' || part.text.length === 0),
-    'image-only task request contains no generated text part',
+    Array.isArray(imageMessage?.content) && imageMessage.content.some(part => part.type === 'image_url') &&
+      firstUser?.content && (typeof firstUser.content === 'string'
+        ? firstUser.content.includes('Solve the problem shown in the image')
+        : firstUser.content.some(part => part.type === 'text' && part.text.includes('Solve the problem shown in the image'))),
+    'canonical Solve text and captured image are both present in the request history',
   )
   check(
     lastAiRequest?.max_tokens === 16_384 && !('temperature' in lastAiRequest) && !('reasoning' in lastAiRequest),
     `Luna request carries max_tokens=16384 and provider-default reasoning/sampling (${JSON.stringify(lastAiRequest && { max_tokens: lastAiRequest.max_tokens, temperature: lastAiRequest.temperature, reasoning: lastAiRequest.reasoning })})`,
   )
+  let previousAssistantCount = await ai.locator('.msg.assistant').count()
+  await clickMessageAction(ai, 0, 'Explain simpler')
+  const firstSimplerReply = await waitForNewReply(ai, previousAssistantCount)
+  const firstSimplerPrompt = lastAiRequest.messages.at(-1).content
+  check(firstSimplerReply === 'Hello world' && firstSimplerPrompt.includes('The first selected answer') &&
+    !JSON.stringify(lastAiRequest.messages).includes('[[STUDY_BUDDY_TITLE]]'),
+    'Simpler targets the clicked answer and later requests omit the first-reply title instruction')
+  await resetCooldown(ai)
+  previousAssistantCount = await ai.locator('.msg.assistant').count()
+  await ai.fill('#ask-input', 'A later independent question')
+  await ai.click('#ask-btn')
+  await waitForNewReply(ai, previousAssistantCount)
+  await ai.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete'))
+  await resetCooldown(ai)
+  previousAssistantCount = await ai.locator('.msg.assistant').count()
+  await clickMessageAction(ai, 0, 'Explain simpler')
+  await waitForNewReply(ai, previousAssistantCount)
+  const olderSimplerPrompt = lastAiRequest.messages.at(-1).content
+  const simplerDb = await readSaved(ai)
+  const simplerConversation = simplerDb.conversations.find(item => item.id === simplerDb.state.lastConversationId)
+  const olderSimplerTurn = [...(simplerConversation?.turns ?? [])].reverse().find(turn => turn.role === 'user' && turn.kind === 'simpler')
+  check(olderSimplerPrompt.includes('The first selected answer') &&
+    olderSimplerTurn?.input === 'The first selected answer' && olderSimplerTurn.attachmentId === capture.id,
+    'Simpler uses an older clicked reply even after later answers and stores that target for reuse (' + JSON.stringify({ prompt: olderSimplerPrompt, input: olderSimplerTurn?.input, attachmentId: olderSimplerTurn?.attachmentId, captureId: capture.id }) + ')')
+  await resetCooldown(ai)
+  previousAssistantCount = await ai.locator('.msg.assistant').count()
+  await clickMessageAction(ai, previousAssistantCount - 1, 'Retry')
+  await waitForNewReply(ai, previousAssistantCount)
+  check(lastAiRequest.messages.at(-1).content.includes('The first selected answer'),
+    'Retry preserves the selected Simpler target instead of choosing the latest answer')
   await ai.close()
 
   const oversized = await openCapture()
@@ -824,7 +882,7 @@ try {
     'next message clears the tray that extends beyond its bubble (' + JSON.stringify(traySpacing) + ')')
   await longAnswer.close()
 
-  // RU task actions also omit deleted instruction text; language settings remain independent metadata.
+  // Task response language follows navigator.language independently of UI chrome.
   await sw.evaluate(
     async (s) => chrome.storage.local.set({ settings: s }),
     { uiLanguage: 'ru', answerLanguage: 'auto' },
@@ -833,9 +891,10 @@ try {
   await aiRu.click('.preset[data-preset="solve"]')
   await waitReply(aiRu)
   check(
-    !lastAiRequest?.messages?.some(message => message.role === 'system') &&
-      !JSON.stringify(lastAiRequest?.messages ?? []).includes('Реши задачу, показанную на изображении'),
-    'RU task action also omits removed system and task instructions',
+    lastAiRequest?.messages?.[0]?.role === 'system' &&
+      lastAiRequest.messages[0].content.includes('Respond in ') &&
+      JSON.stringify(lastAiRequest.messages).includes('Solve the problem shown in the image'),
+    'task prompt is present and answer language follows the browser independently of Russian UI chrome',
   )
   await aiRu.close()
   // Back to EN for the unavailable-model test below.
@@ -928,7 +987,7 @@ try {
       viewport: { width: innerWidth, height: innerHeight },
     }
   })
-  check(expandedMore.expanded === 'true' && expandedMore.actions.length === 4 &&
+  check(expandedMore.expanded === 'true' && expandedMore.actions.length === 3 &&
     expandedMore.bounds.left >= 0 && expandedMore.bounds.top >= 0 &&
     expandedMore.bounds.right <= 480 && expandedMore.bounds.bottom <= 564 &&
     requestCount === beforeMoreOpen,
@@ -975,8 +1034,8 @@ try {
     Array.isArray(message.content) && message.content.some(part => part.type === 'text' && part.text.length > 0))
   check(requestCount === requestsBeforeExplain + 1 && explainTurn?.kind === 'explain' &&
     explainTurn.text === '' && !!explainTurn.attachmentId && explainHasImage &&
-    !explainHasTextInstruction,
-    'More Explain sends one image-only request, persists kind=explain, and omits removed instructions')
+    explainHasTextInstruction,
+    'More Explain sends the approved task instruction with its image and persists kind=explain')
   const seedExtraImages = () => layout.evaluate(() => new Promise((resolve, reject) => {
     const conversationId = new URL(location.href).searchParams.get('conversation')
     const open = indexedDB.open('study-buddy-conversations', 1)
@@ -1302,9 +1361,9 @@ try {
   const checkedHasInstruction = lastAiRequest.messages.some(message => message.role === 'system' ||
     typeof message.content === 'string' && message.content.length > 0 ||
     Array.isArray(message.content) && message.content.some(part => part.type === 'text' && part.text.length > 0))
-  check(lastAiRequest.messages.length > 0 && checkedHasImage && !checkedHasInstruction &&
-    lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest) && !('reasoning' in lastAiRequest),
-    'Check sends its image without system, task or empty text parts and keeps the Luna request budget')
+  check(lastAiRequest.messages.length > 0 && checkedHasImage && checkedHasInstruction &&
+    JSON.stringify(lastAiRequest.messages).includes('Check the student\'s work visible in the image') && lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest) && !('reasoning' in lastAiRequest),
+    'Check sends its approved visible-work instruction with the image and keeps the Luna request budget')
   await resetCooldown(checked)
   responseMode = 'slow'
   await checked.fill('#ask-input', 'Accepted draft should clear immediately')

@@ -26,7 +26,8 @@ import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
-import { checkPrompt, PROMPTS_VERSION, simplerPrompt, taskPrompt, type TaskId, type TurnKind } from '../shared/prompts'
+import { createResponseTitleParser } from '../shared/title'
+import { PROMPTS_VERSION, type TaskId, type TurnKind } from '../shared/prompts'
 
 type Kind = 'capture' | 'permission' | 'restricted' | 'error'
 const KINDS: Kind[] = ['capture', 'permission', 'restricted', 'error']
@@ -515,7 +516,7 @@ function applyContextProjection(projection: ContextProjection): void {
     action.onclick = () => {
       const turn = entry.turn
       if (turn.kind === 'capture') {
-        void send(checkPrompt(undefined, promptCtx()), 'check', t(uiLang, 'preset.check'), undefined, undefined, turn.attachmentId).catch(reportError)
+        void send('', 'check', t(uiLang, 'preset.check'), undefined, undefined, turn.attachmentId).catch(reportError)
       } else {
         void send(turn.text, turn.kind, turn.display ?? turn.text, turn.input, undefined, turn.attachmentId, true, true).catch(reportError)
       }
@@ -536,10 +537,10 @@ function previewTurn(): Turn | undefined {
   let text: string
   let display: string
   if (kind === 'check') {
-    text = checkPrompt(undefined, promptCtx())
+    text = ''
     display = t(uiLang, 'preset.check')
   } else if (kind) {
-    text = taskPrompt(kind as TaskId, promptCtx())
+    text = ''
     display = t(uiLang, 'preset.' + kind)
   } else {
     const ask = (el('ask-input') as HTMLInputElement).value
@@ -565,7 +566,9 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
       task: currentUser.kind as TurnKind,
       answerLanguage: settingsCache.answerLanguage,
       uiLanguage: currentUser.locale,
-      titleNeeded: false,
+      browserLanguage: browserLang(),
+      titleNeeded: !selected.turns.some((turn) => turn.role === 'assistant') && !selected.titleGeneratedAt,
+      ...(currentUser.kind === 'simpler' && currentUser.input ? { selectedAnswerText: currentUser.input } : {}),
       ...(currentUser.kind === 'ask' ? { taskInput: currentUser.input ?? currentUser.text } :
         currentUser.kind === 'check' && currentUser.input !== undefined ? { taskInput: currentUser.input } : {}),
     } : undefined
@@ -595,11 +598,6 @@ window.addEventListener('resize', () => {
 function queueContextPreview(): void {
   if (contextPreviewTimer) clearTimeout(contextPreviewTimer)
   contextPreviewTimer = setTimeout(() => { contextPreviewTimer = undefined; void updateContextPreview() }, 120)
-}
-
-/** Prompt context from the current settings (answer language + resolved UI). */
-function promptCtx() {
-  return { answerLanguage: settingsCache.answerLanguage, uiLang }
 }
 
 interface Msg {
@@ -721,7 +719,11 @@ function addActions(msg: Msg, canRegenerate: boolean): void {
 
   const simpler = iconButton('simpler', t(uiLang, 'msg.simpler'))
   simpler.dataset.generation = '1'
-  simpler.onclick = () => void send(simplerPrompt(promptCtx()), 'simpler', t(uiLang, 'msg.simpler')).catch(reportError)
+  simpler.onclick = () => {
+    const selected = conversation?.turns.find((turn) => turn.role === 'assistant' && turn.id === msg.wrap.dataset.turn)
+    const selectedSource = selected?.replyTo ? conversation?.turns.find((turn) => turn.id === selected.replyTo) : undefined
+    if (selected?.text) void send('', 'simpler', t(uiLang, 'msg.simpler'), undefined, undefined, selectedSource?.attachmentId, false, true, selected.text).catch(reportError)
+  }
   actionItems.appendChild(simpler)
 
   if (canRegenerate) {
@@ -788,6 +790,10 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   const connection = new GenerationConnection(() => { lost = true; controller.abort() })
   let reply: Msg | undefined
   let acc = ''
+  let generatedTitle: string | undefined
+  let needsTitle = false
+  let titleParserFinished = false
+  const titleParser = createResponseTitleParser()
   let status: ReplyStatus = 'interrupted'
   let error: string | undefined
   let fallbackNote: string | undefined
@@ -795,8 +801,15 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   let write: Promise<unknown> = Promise.resolve()
   let timer: ReturnType<typeof setTimeout> | undefined
   let storageFailed = false
+  const finishTitle = (): void => {
+    if (!needsTitle || titleParserFinished) return
+    const parsed = titleParser.finish()
+    acc += parsed.text
+    generatedTitle = titleParser.title
+    titleParserFinished = true
+  }
   const persist = (final: ReplyStatus) => {
-    write = write.then(() => connection.request({ action: 'update', text: acc, status: final, error, note: fallbackNote, usage }))
+    write = write.then(() => connection.request({ action: 'update', text: acc, status: final, error, note: fallbackNote, title: generatedTitle, usage }))
     return write
   }
   starting = true
@@ -805,6 +818,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   setBusy(true)
   try {
     const prior = conversation
+    needsTitle = !prior.turns.some((turn) => turn.role === 'assistant') && !prior.titleGeneratedAt
     const sourceIndex = prior.turns.findIndex((turn) => turn.id === source.id)
     const selectedTurns = user
       ? [...prior.turns, user]
@@ -815,7 +829,9 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
       task: source.kind,
       answerLanguage: settings.answerLanguage,
       uiLanguage: source.locale,
-      titleNeeded: false,
+      browserLanguage: browserLang(),
+      titleNeeded: needsTitle,
+      ...(source.kind === 'simpler' && source.input ? { selectedAnswerText: source.input } : {}),
       ...(source.kind === 'ask' ? { taskInput: source.input ?? source.text } :
         source.kind === 'check' && source.input !== undefined ? { taskInput: source.input } : {}),
     }
@@ -848,7 +864,8 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
         }
       },
       onDelta: (delta) => {
-        acc += delta
+        acc += needsTitle ? titleParser.push(delta) : delta
+        generatedTitle = needsTitle ? titleParser.title : undefined
         reply!.raw = acc
         reply!.body.textContent = acc
         scrollThread()
@@ -863,7 +880,8 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
         thread.insertBefore(note.wrap, reply!.wrap)
       },
     })
-    acc = result.text
+    if (needsTitle) finishTitle()
+    else acc = result.text
     status = result.status
     usage = { model: result.model, ...result.usage }
   } catch (err) {
@@ -871,6 +889,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
     status = lost || storageFailed ? 'interrupted' : controller.signal.aborted || err instanceof GatewayError && err.kind === 'cancelled' ? 'cancelled' : err instanceof GatewayError && (err.kind === 'uncertain' || err.partial) ? 'interrupted' : 'provider_error'
     error = err instanceof GatewayError ? gatewayErrorMessage(err, uiLang) : undefined
   } finally {
+    if (needsTitle) finishTitle()
     if (timer) clearTimeout(timer)
     if (reply) {
       if (lost) storageFailed = true
@@ -896,16 +915,16 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   return true
 }
 
-async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string, onAccepted?: () => void, attachmentId?: string, storedText = false, preserveAttachment = false): Promise<boolean> {
+async function send(prompt: string, kind: TurnKind = 'ask', display?: string, input?: string, onAccepted?: () => void, attachmentId?: string, storedText = false, preserveAttachment = false, selectedAnswerText?: string): Promise<boolean> {
   if ((!prompt.trim() && kind === 'ask') || inflight || starting || !conversation || cooldownRemaining(profileState.lastStartedAt) > 0) return false
   starting = true
   setBusy(true)
   try {
     const settings = await requireSettings()
     if (!settings || closing) return false
-    const text = storedText ? prompt : kind === 'ask' ? prompt : kind === 'check' ? checkPrompt(input, promptCtx()) : kind === 'simpler' ? simplerPrompt(promptCtx()) : taskPrompt(kind, promptCtx())
+    const text = kind === 'ask' ? prompt : storedText ? prompt : ''
     const label = display ?? (kind === 'ask' ? prompt : kind === 'check' ? t(uiLang, 'preset.check') : kind === 'simpler' ? t(uiLang, 'msg.simpler') : t(uiLang, 'preset.' + kind))
-    const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: preserveAttachment ? attachmentId : attachmentId ?? conversation.activeAttachmentId }
+    const user: Turn = { id: crypto.randomUUID(), role: 'user', text, display: label, input: input ?? selectedAnswerText ?? (kind === 'ask' ? prompt : undefined), kind, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION, attachmentId: preserveAttachment ? attachmentId : attachmentId ?? conversation.activeAttachmentId }
     previewKind = undefined
     await updateContextPreview(user)
     if (!el('composer-error').hidden) return false
@@ -963,7 +982,7 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
     if (!task) return
     if (moreActions.matches(':popover-open')) moreActions.hidePopover()
     // The bubble shows the button label; the full template goes to the model.
-    void send(taskPrompt(task, promptCtx()), task, t(uiLang, `preset.${task}`)).catch(reportError)
+    void send('', task, t(uiLang, `preset.${task}`)).catch(reportError)
   })
 }
 
@@ -984,7 +1003,7 @@ el('ask-form').addEventListener('submit', (event) => {
 el('check-btn').onclick = () => {
   el('operation-error').hidden = true
   setComposerError()
-  void send(checkPrompt(undefined, promptCtx()), 'check', t(uiLang, 'preset.check')).catch(reportError)
+  void send('', 'check', t(uiLang, 'preset.check')).catch(reportError)
 }
 
 el('new-chat-btn').onclick = () => {

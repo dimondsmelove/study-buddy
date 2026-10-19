@@ -96,7 +96,8 @@ approximate input budget and per-task output caps reduce load but do not impose
 a monetary spending ceiling. Shared NATs share issuance limits. There is no
 hidden queue, cloud history, billing or cross-device recovery.
 
-The 200,000-input-token policy keeps 20,000 in reserve and uses a heuristic.
+The 200,000-input-token policy keeps 20,000 in reserve and estimates one text token
+per four UTF-8 bytes, with a separate allowance per image.
 Provider-native text/image token counts can differ. Stop requests cancellation;
 already processed upstream work can still be billed, and a lost final usage
 chunk means unknown usage. Explicit Retry starts a new operation. Never

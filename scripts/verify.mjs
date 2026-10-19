@@ -991,7 +991,7 @@ try {
           const ids = [crypto.randomUUID(), crypto.randomUUID()]
           reusableId = ids[0]
           const largeTaskId = crypto.randomUUID()
-          const largeText = 'word  '.repeat(100000)
+          const largeText = 'word  '.repeat(130000)
           conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Earlier task', display: 'Earlier task', input: 'Earlier task', kind: 'ask', attachmentId: oldAttachmentId, createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' })
           for (const [index, id] of ids.entries()) {
             const createdAt = Date.now() + index * 2
@@ -1387,10 +1387,12 @@ try {
   await waitSaved(quota, 'Not saved')
   check(await quota.locator('#operation-error').isVisible(), 'mid-stream quota failure stops the request and keeps a visible unsaved-text warning')
   await quota.click('#history-btn')
-  const quotaDb = await readSaved(quota)
-  const quotaId = quotaDb.state.lastConversationId
+  const quotaId = (await readSaved(quota)).state.lastConversationId
   const quotaRow = quota.locator('.history-row:has(.history-open[data-conversation="' + quotaId + '"])')
-  check(await quotaRow.count() === 1 && quotaDb.conversations.find(c => c.id === quotaId).turns.at(-1).status === 'interrupted', 'failed write remains in History with its interrupted partial status and no export affordance')
+  await quotaRow.waitFor({ state: 'visible' })
+  const quotaDb = await readSaved(quota)
+  const quotaStatus = quotaDb.conversations.find(c => c.id === quotaId).turns.at(-1).status
+  check(await quotaRow.count() === 1 && quotaStatus === 'interrupted', 'failed write remains in History with its interrupted partial status and no export affordance (status=' + quotaStatus + ')')
   await quota.close()
   responseMode = 'normal'
   await hint.close()

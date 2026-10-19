@@ -49,26 +49,10 @@ export interface PreparedGatewayGeneration {
   inputBudget: number
 }
 
-/** This heuristic intentionally overestimates many ordinary words and remains
- * approximate. It is not a model tokenizer or a guarantee of provider limits. */
+/** Approximate text budget: one token per four UTF-8 bytes.
+ * This is not a model tokenizer or a guarantee of provider limits. */
 export function estimateTextTokens(text: string): number {
-  const bytes = new TextEncoder().encode(text).byteLength
-  let punctuation = 0
-  let complexSymbols = 0
-  let longAsciiRun = 0
-  let run = 0
-  for (const character of text) {
-    if (/^[\p{P}\p{S}]$/u.test(character)) punctuation++
-    if (/^[\p{Extended_Pictographic}\p{M}]$/u.test(character)) complexSymbols++
-    if (/^[A-Za-z0-9]$/.test(character)) {
-      run++
-    } else {
-      if (run > 32) longAsciiRun += Math.ceil((run - 32) / 2)
-      run = 0
-    }
-  }
-  if (run > 32) longAsciiRun += Math.ceil((run - 32) / 2)
-  return Math.ceil(bytes / 3) + punctuation + complexSymbols * 2 + longAsciiRun
+  return Math.ceil(new TextEncoder().encode(text).byteLength / 4)
 }
 
 const ANSWER_LANGUAGES: readonly AnswerLanguage[] = [
@@ -125,7 +109,7 @@ export function prepareGatewayGeneration(input: GatewayGenerationInput): Prepare
 }
 
 /** Shared client/server estimate includes message framing and a fixed reserve
- * per image in addition to the deliberately conservative text heuristic. */
+ * per image in addition to the approximate UTF-8 text estimate. */
 /** Exact UTF-8 size of the JSON request body sent by the browser gateway client. */
 export function gatewayRequestBytes(input: GatewayGenerationInput): number {
   return new TextEncoder().encode(JSON.stringify(input)).byteLength

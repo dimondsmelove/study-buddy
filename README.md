@@ -82,7 +82,7 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - Minimize keeps the iframe/stream alive. Close saves and cancels; navigation
   or writer loss retains the latest committed partial as interrupted, without
   automatic paid resume. One local generation is admitted across windows.
-- Context selection uses a shared conservative heuristic under a nominal
+- Context selection estimates one text token per four UTF-8 bytes under a nominal
   200,000 estimated input-token budget with 20,000 held in reserve. It includes
   canonical system/task instructions and a 1,024-token estimate per image.
   Whole older task groups are excluded first; the transcript stays saved locally.

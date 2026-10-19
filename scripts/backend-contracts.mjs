@@ -258,7 +258,7 @@ async function waitFor(predicate, label) {
   assert.fail('Timed out waiting for ' + label)
 }
 
-await test('shared preparation and estimate are canonical and conservative for edge text', async () => {
+await test('shared preparation is canonical and text uses the four-byte estimate', async () => {
   const prepared = protocol.prepareGatewayGeneration(input())
   assert.equal(prepared.messages[0].role, 'system')
   assert.match(prepared.messages[0].content, /You are|Ты —/)
@@ -266,10 +266,9 @@ await test('shared preparation and estimate are canonical and conservative for e
   assert.equal(prepared.messages.at(-1).content, 'What is 2 + 2?')
   assert.equal(prepared.temperature, 0.3)
   assert.equal(prepared.maxTokens, 2048)
-  const punctuation = 'punctuation: !?{}[];'
-  assert.ok(protocol.estimateTextTokens(punctuation) > Math.ceil(new TextEncoder().encode(punctuation).length / 3))
-  assert.ok(protocol.estimateTextTokens('\u{1f600}') > Math.ceil(new TextEncoder().encode('\u{1f600}').length / 3))
-  assert.ok(protocol.estimateTextTokens('identifier'.repeat(20)) > protocol.estimateTextTokens('identifier identifier '.repeat(20)))
+  assert.equal(protocol.estimateTextTokens('abcde'), 2)
+  assert.equal(protocol.estimateTextTokens('ЯЯЯ'), 2)
+  assert.equal(protocol.estimateTextTokens('\u{1f600}'), 1)
 })
 
 await test('PNG, JPEG and WebP dimensions validate without pixel decompression', async () => {
@@ -530,6 +529,11 @@ await test('malformed, oversized, image, client-system, and client-parameter req
     }))
     assert.equal(oversizedImage.status, 413)
     assert.equal((await oversizedImage.json()).error.code, 'image.too_large')
+    const textBudget = await postGeneration(fixture, session.token, input('textbudget_00001', {
+      messages: [{ role: 'assistant', content: 'x'.repeat(720_000) }, { role: 'user', content: 'q' }],
+    }))
+    assert.equal(textBudget.status, 422)
+    assert.equal((await textBudget.json()).error.code, 'context.too_large')
     const imageBudget = await postGeneration(fixture, session.token, input('imagebudget_0001', {
       messages: [{ role: 'user', content: Array.from({ length: 176 }, () => ({
         type: 'image_url', image_url: { url: png(1, 1) },

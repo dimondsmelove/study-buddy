@@ -20,4 +20,4 @@ Operational state contains hashed session tokens, opaque HMAC IP buckets, reques
 
 The HTTP API issues sessions at POST /api/v1/session, renews them at POST /api/v1/session/renew, and streams generations from POST /api/v1/generations. The generation stream emits context, fallback, delta, and a terminal complete or error event.
 
-Each image is limited to 4 MiB decoded, and PNG/JPEG/WebP dimensions are bounded to 16,384 pixels per side and 40 million pixels total. The service validates headers/chunk structure without decompressing pixels. Selected text is estimated heuristically with a 20,000-token reserve under the nominal 200,000-token context budget; this estimate is not a provider tokenizer or exact bound.
+Each image is limited to 4 MiB decoded, and PNG/JPEG/WebP dimensions are bounded to 16,384 pixels per side and 40 million pixels total. The service validates headers/chunk structure without decompressing pixels. Selected text is estimated at one token per four UTF-8 bytes with a 20,000-token reserve under the nominal 200,000-token context budget; this estimate is not a provider tokenizer or exact bound.

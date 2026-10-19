@@ -16,7 +16,9 @@ try {
     const count = protocol.estimateTextTokens(sample)
     assert.ok(Number.isSafeInteger(count) && count > 0, 'non-empty text must receive a finite approximate estimate')
   }
-  assert.ok(protocol.estimateTextTokens('!!!') > protocol.estimateTextTokens('abc'), 'punctuation-heavy text must receive a nonzero estimate')
+  for (const [text, expected] of [['', 0], ['abcd', 1], ['abcde', 2], ['ЯЯЯ', 2], ['😀', 1], ['!!!!!', 2]]) {
+    assert.equal(protocol.estimateTextTokens(text), expected, 'text budget uses four UTF-8 bytes, rounded up')
+  }
   assert.ok(protocol.estimateTextTokens('Проверь решение: x + 2 = 5. Объясни каждый шаг.\n'.repeat(2_000)) < protocol.GATEWAY_LIMITS.inputTokens,
     'ordinary long multilingual text remains within the nominal input budget')
 

@@ -18,8 +18,8 @@ WORKDIR /app
 
 COPY --from=build --chown=node:node /app/.backend-dist/ ./.backend-dist/
 COPY --from=build --chown=node:node /app/package.json ./package.json
-RUN mkdir /data && chown node:node /data
+RUN mkdir /data && chown 10001:10001 /data && chmod 0700 /data
 
-USER node
+USER 10001:10001
 EXPOSE 8787
 CMD ["node", ".backend-dist/server.js"]

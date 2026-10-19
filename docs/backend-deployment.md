@@ -32,7 +32,7 @@ These are design candidates, not a selected ingress or provider. In particular, 
 
 ### Docker packaging
 
-The repository now contains a two-stage Dockerfile. Its build stage uses the exact Node 22.22.2 Debian slim image, runs npm ci and the existing backend build, and copies only the bundled server plus package.json (which declares ESM) into the runtime stage. The runtime keeps the official Node base utilities, but no project source, node_modules, frontend bundle, credentials, or build dependencies. Compose runs one non-root backend on a private bridge network, publishes no host ports, grants no Linux capabilities, uses a read-only root filesystem with a small writable /tmp, and mounts a persistent named volume at /data. The bridge allows required provider egress; it limits inbound reachability to containers attached to that network, but it is not a firewall against the Docker host or LAN.
+The repository contains a two-stage Dockerfile. Its build stage uses the exact Node 22.22.2 Debian slim image, runs npm ci and the existing backend build, and copies only the bundled server plus package.json (which declares ESM) into the runtime stage. The runtime keeps the official Node base utilities, but no project source, node_modules, frontend bundle, credentials, or build dependencies. Compose runs one non-root backend on a private bridge network, publishes no host ports, grants no Linux capabilities, uses a read-only root filesystem with a small writable /tmp, and mounts a persistent named volume at /data. The bridge allows required provider egress. A separate, host-scoped nftables guard is described below; packaging alone does not block access to the Docker host, LAN, or other bridge peers.
 
 Keep the runtime env file outside the checkout and image, mode 0600. This setup copies the example only when the file is missing, so rerunning it during upgrades preserves existing values:
 
@@ -45,32 +45,57 @@ fi
 export STUDY_BUDDY_ENV_FILE="$HOME/.config/study-buddy/backend.env"
 export STUDY_BUDDY_IMAGE=study-buddy/backend:release-20261019
 docker compose build backend
-docker compose up -d backend
-docker compose ps
+# After the root-owned guard files and service unit are installed and reviewed:
+sudo systemctl start study-buddy.service
+sudo systemctl status study-buddy.service
 ~~~
 
-The compose file requires STUDY_BUDDY_ENV_FILE and does not publish the Node port. Compose creates the bridge named study-buddy-egress and named data volume study-buddy_backend-data under the default project name. The service also has a 1 GiB memory limit with swap disabled for the container, a two-CPU ceiling, 128-PID limit, and rotating 10 MiB × 3 JSON logs. These are host-resource bounds, not request quotas. A future ingress container must explicitly join that bridge and route to backend:8787. No ingress is included or selected here. Bridge networking alone does not prove that host/LAN access is blocked.
+Do not run `docker compose up` or `docker start` directly on the host: that bypasses the network guard. The service unit pins the selected image tag and env-file path; align them with the reviewed release configuration before installing the unit.
+
+The compose file requires STUDY_BUDDY_ENV_FILE and does not publish the Node port. Compose creates the bridge named study-buddy-egress and named data volume study-buddy_backend-data under the default project name. The service also has a 1 GiB memory limit with swap disabled for the container, a two-CPU ceiling, 128-PID limit, and rotating 10 MiB × 3 JSON logs. These are host-resource bounds, not request quotas. A future ingress must be explicitly reviewed and added to the guarded path; the current bridge peer rule blocks all same-bridge traffic. No ingress is included or selected here.
+
+### Host network guard (ephemeral verification)
+
+The repository includes two narrowly scoped nftables tables and a root-owned service wrapper. The `inet study_buddy_guard` input/forward hooks match only `iifname "study-buddy0"`: new connections to the host are dropped, replies to host-initiated connections are allowed, forwarded private/reserved IPv4 destinations are dropped, DNS is allowed only to 1.1.1.1 and 1.0.0.1 on TCP/UDP 53, public IPv4 TCP 443 is allowed, and the remaining forwarded traffic is dropped. This is broad public HTTPS egress, not an OpenRouter-only allowlist. The `bridge study_buddy_guard` forward hook drops all layer-2 peer traffic entering or leaving only `study-buddy0`; this closes same-bridge container-to-container access without enabling global bridge netfilter. Docker IPv6 is disabled on this bridge and the inet rules drop IPv6 forwarded/input traffic from it. Root can still alter Docker or nftables; these rules are a scoped guard, not a boundary against the host administrator. The guard does not modify Docker, Tailscale, UFW, or global firewall tables.
+
+An initial inet-only trial did not block same-bridge traffic because the host did not have bridge netfilter active; that trial was removed before the reviewed bridge-family peer table was added. On 2026-10-19, an ephemeral host test then applied both tables through the wrapper and removed them after stopping and deleting every test container. Before the guard, a same-bridge listener and a test listener published only on the bridge gateway were reachable; after applying it both were blocked and the bridge-peer and private-destination drop counters increased. A public TCP/80 probe was reachable before and blocked after; DNS through the two approved resolvers and an unauthenticated HTTPS GET to OpenRouter's models endpoint (200) continued to work. A host-initiated connection to a test listener in the backend container returned successfully and incremented the input reply counter; a new connection from the container to a temporary host-gateway listener was blocked and incremented the input drop counter. Removing the guard while a container was attached was refused; removal succeeded after Compose stopped and removed the container. The sanitized runtime/cgroup and counter record is `/tmp/study-buddy-network-stage-20261019/guard-runtime-evidence.txt` on diamondserver. The tested image ran as UID/GID 10001 with `/data` owned 10001:10001 mode 0700, a read-only root filesystem, ephemeral `/tmp`, no capabilities, no published ports, and effective cgroup limits of 1 GiB memory with swap disabled, 2 CPUs, and 128 PIDs. Its 52.7 MB `memory.peak` was measured during this idle network smoke; it is not a peak for four admitted generations.
+
+This test did not exercise IPv6 packets end to end because the Docker bridge has IPv6 disabled, and it did not prove that every host/LAN route is blocked; some direct private routes were already blocked by host policy before the candidate guard. The rules allow any public IPv4 TCP 443 destination. The selected ingress is still open, and any ingress sharing this bridge will need a separately reviewed peer exception rather than a broad allow rule. Temporary test resources and temporary rule files were removed; the guard is not installed and no Study Buddy service is running.
+
+The supported future start path is the root-owned `study-buddy.service` plus `ops/study-buddy-service.sh`: it applies and validates both tables before Compose starts the backend, stops the backend before removing the tables, and orders startup after Docker. The container uses `restart: on-failure` so Docker daemon startup does not independently start it ahead of the guard. Install Compose and the ops files as root-owned files (directories 0755, rules/Compose/unit 0644, executable scripts 0755) under `/opt/study-buddy`, `/usr/local/share/study-buddy`, `/usr/local/libexec`, and `/etc/systemd/system`; never preserve checkout ownership or let an unprivileged operator edit the root-run Compose file. For a reviewed installation, the exact commands are:
+
+~~~sh
+sudo install -d -o root -g root -m 0755 /opt/study-buddy /usr/local/share/study-buddy /usr/local/libexec /etc/systemd/system
+sudo install -o root -g root -m 0644 compose.yaml /opt/study-buddy/compose.yaml
+sudo install -o root -g root -m 0644 ops/study-buddy-guard.nft ops/study-buddy-guard-bridge.nft /usr/local/share/study-buddy/
+sudo install -o root -g root -m 0755 ops/study-buddy-guard.sh ops/study-buddy-service.sh /usr/local/libexec/
+sudo install -o root -g root -m 0644 ops/study-buddy.service /etc/systemd/system/study-buddy.service
+sudo systemd-analyze verify /etc/systemd/system/study-buddy.service
+~~~
+
+Do not start the public backend with raw `docker compose up` or `docker start`, because those paths bypass the guard. The unit and files are not installed or enabled yet; an administrator can bypass any host guard.
 
 For a stopped, consistent backup, stop the single service and copy its entire data directory, including any WAL/SHM sidecars:
 
 ~~~sh
-docker compose stop backend
+sudo systemctl stop study-buddy.service
 install -d -m 700 ./backups
 backup_dir="$(mktemp -d ./backups/study-buddy-data-XXXXXX)"
-docker cp "$(docker compose ps -a -q backend)":/data/. "$backup_dir/"
+docker cp study-buddy-backend-1:/data/. "$backup_dir/"
 ~~~
 
-Keep that backup private. For an application rollback without a destructive schema migration, keep the existing volume and start the previous image tag:
+Keep that backup private. For an application rollback without a destructive schema migration, keep the existing volume, point the root-owned service unit at the previous tested image tag, reload systemd, and start the service through the guarded unit. Do not bypass the guard with a direct Compose start:
 
 ~~~sh
-STUDY_BUDDY_IMAGE=study-buddy/backend:previous docker compose up -d backend
+sudo systemctl daemon-reload
+sudo systemctl start study-buddy.service
 ~~~
 
 The stopped backup is available if the volume must be restored. Do not use down -v: it removes the persistent volume.
 
 Verified on diamondserver on 2026-10-19. Compose built image study-buddy/backend:review-20261019-container (ID sha256:b0cc82e5a83e7563d642c27945d43d1da90ad5566b3d73d89dc044580f8f1e81) from node:22.22.2-bookworm-slim, resolved to base digest sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e. The container started healthy with Node 22.22.2 and the built-in SQLite module, ran as UID 1000 with a read-only root, no Linux capabilities, no published host ports, with /data as a persistent writable volume and /tmp as an ephemeral writable tmpfs. The runtime /app contains only package.json and .backend-dist/server.js. An anonymous session renewed successfully after forced container recreation; SIGTERM returned exit 0 and health passed after restart. The temporary container, network and volume were removed; the review image remains on the build host. Sanitized inspect and smoke evidence: /tmp/study-buddy-container-inspect-20261019.json and /tmp/study-buddy-container-smoke-20261019.log. A 2 MiB unlisted capture plus a fake oddly named credential file stayed out of the allowlisted build context (1.31 kB transferred). The smoke used only a dummy runtime key and HMAC secret and did not call the provider or exercise generation/SSE. A later Compose-only hardening pass added init/SIGTERM grace handling and limits of 1 GiB memory with equal memswap limit (no swap), 2 CPUs, 128 PIDs, and rotating 10 MiB × 3 JSON logs; these effective settings were verified on the ephemeral container without provider calls. Four simultaneous 32 MiB JSON requests with an unsupported field each returned 400 before provider admission; the container stayed healthy, reported no OOM kill, and used about 240 MiB cgroup memory immediately afterward. The 240 MiB figure is a post-completion reading, not a measured peak. This synthetic body-pressure check exercises request reception, JSON parsing and early rejection only; it does not exercise admitted generations, provider serialization, stream buffers, or provider/SSE load. Treat 1 GiB as an initial engineering ceiling pending a fake-provider test with four admitted operations. npm ci printed one high-severity audit warning; no dependency change was made.
 
-These checks establish isolated packaging and session-state persistence only. They do not establish public reachability, ingress SSE behavior, live service operation, or a store release.
+These checks establish packaging, session-state persistence, and the scoped host guard's tested packet paths only. They do not establish public reachability, ingress SSE behavior, live service operation, IPv6 packet enforcement, or a store release.
 
 This is a local integration candidate, not a deployed service. The initial
 architecture is one Node process and one SQLite file on persistent local disk.
@@ -106,8 +131,7 @@ uses a separate profile/database and fake upstream. It does not need credentials
 
 Pin Node 22.22.2 in the runtime image and run exactly one service instance.
 For the approved public-host direction and unresolved ingress choices, see
-[the Stage 1 hosting record above](#public-backend-stage-1-hosting-record-2026-10-19). The
-container and ingress are still unimplemented; deployment is a later stage.
+[the Stage 1 hosting record above](#public-backend-stage-1-hosting-record-2026-10-19). Container packaging and an ephemeral guard test are complete, but neither the guard nor service is installed. Ingress, public deployment, and release are later stages.
 
 - For a non-container process, keep the backend bound to loopback behind HTTPS
   termination. In Docker, bind only to the private container network and publish

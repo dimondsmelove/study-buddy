@@ -6,6 +6,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    dns:
+      - 1.1.1.1
+      - 1.0.0.1
     env_file:
       - ${STUDY_BUDDY_ENV_FILE:?Set STUDY_BUDDY_ENV_FILE to an external runtime env file}
     environment:
@@ -16,7 +19,7 @@ services:
       - backend-data:/data
     networks:
       - study-buddy-egress
-    restart: unless-stopped
+    restart: on-failure
     init: true
     stop_grace_period: 20s
     mem_limit: 1g
@@ -48,8 +51,11 @@ services:
 
 networks:
   study-buddy-egress:
-    name: ${STUDY_BUDDY_NETWORK:-study-buddy-egress}
+    name: study-buddy-egress
     driver: bridge
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.name: study-buddy0
 
 volumes:
   backend-data:

@@ -1,0 +1,10 @@
+table bridge study_buddy_guard {
+  comment "Study Buddy bridge peer guard"
+
+  chain forward {
+    type filter hook forward priority -10; policy accept;
+
+    meta ibrname "study-buddy0" counter drop
+    meta obrname "study-buddy0" counter drop
+  }
+}

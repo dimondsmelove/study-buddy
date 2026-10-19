@@ -3,7 +3,7 @@
 import type { AnswerLanguage } from '../settings'
 import { PROMPT_LANGUAGE_NAMES } from '../i18n'
 
-export const PROMPTS_VERSION = '2026-10-19.3'
+export const PROMPTS_VERSION = '2026-10-19.4'
 export type TaskId = 'solve' | 'quiz' | 'explain' | 'translate' | 'summarize' | 'hint'
 type PromptTaskId = TaskId | 'check'
 export type TurnKind = TaskId | 'ask' | 'simpler' | 'check'
@@ -82,8 +82,8 @@ export function checkPrompt(_attempt: string | undefined, ctx: PromptContext): s
   return taskPrompt('check', ctx)
 }
 
-export function simplerPrompt(_ctx: PromptContext): string {
-  return `Explain the following text more simply while preserving its meaning as accurately as possible:
+export function simplerPrompt(ctx: PromptContext): string {
+  return `Explain the following text more simply in ${effectiveLanguage(ctx)}, while preserving its meaning as accurately as possible:
 
 {{selected_answer_text}}
 

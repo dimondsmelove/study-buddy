@@ -47,6 +47,7 @@ try {
   ])
   assert.equal(prepared.estimatedInputTokens, protocol.estimateInputTokens(prepared.messages))
   const simpler = protocol.prepareGatewayGeneration({ ...input, task: 'simpler', taskInput: undefined, selectedAnswerText: "Formula $& $$ $` $' and \\frac{x}{2}", titleNeeded: false, messages: [{ role: 'assistant', content: 'Intervening later answer' }, { role: 'user', content: '' }] })
+  assert.equal(simpler.messages.at(-1).content.includes('Explain the following text more simply in Russian, while preserving its meaning as accurately as possible:'), true, 'Simpler renders the effective browser answer language')
   assert.equal(simpler.messages.at(-1).content.includes("Formula $& $$ $` $' and \\frac{x}{2}"), true, 'Simpler preserves literal dollar sequences in selected answer text')
   assert.equal(simpler.messages[0].content.includes('STUDY_BUDDY_TITLE'), false, 'title instruction is omitted after the first response')
   assert.ok(protocol.gatewayRequestBytes(input) > JSON.stringify(input).length, 'request preflight counts UTF-8 bytes, including non-ASCII text')

@@ -292,9 +292,10 @@ await test('task prompts preserve image parts, legacy quiz uses Solve, Check use
   }))
   assert.equal(ask.messages.at(-1).content, '  raw Ask text  ')
   const simpler = protocol.prepareGatewayGeneration(input('emptytask_0000005', {
-    task: 'simpler', taskInput: undefined, selectedAnswerText: "selected $& $$ $` $' older reply",
+    task: 'simpler', answerLanguage: 'ru', taskInput: undefined, selectedAnswerText: "selected $& $$ $` $' older reply",
     messages: [{ role: 'assistant', content: 'later answer' }, { role: 'user', content: '' }],
   }))
+  assert.match(simpler.messages.at(-1).content, /^Explain the following text more simply in Russian, while preserving its meaning as accurately as possible:/)
   assert.ok(simpler.messages.at(-1).content.includes("selected $& $$ $` $' older reply"))
 })
 

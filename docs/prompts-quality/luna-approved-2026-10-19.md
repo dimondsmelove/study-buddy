@@ -69,3 +69,22 @@ These small samples do not estimate general model quality. Check without attempt
 - Approved prompt source: docs/prompts-review-stage4.md
 
 The bounded checks used an isolated backend/database and real provider calls. No persistent service, live browser session, installed extension, or deployment was updated.
+
+## Approved Simpler language-line follow-up — prompt version 2026-10-19.4
+
+After the user approved an explicit effective-language target in the first Simpler sentence, the prompt was updated to begin:
+
+> Explain the following text more simply in Russian, while preserving its meaning as accurately as possible:
+
+The same older-answer fractions scenario was run twice against the real provider after the targeted prompt/backend/context contracts and both typechecks passed. Both outputs simplified the selected older answer and were in Russian:
+
+| Run | Observed output | Time | Usage |
+|---|---|---:|---|
+| 1 | Чтобы разделить на дробь, умножь на неё «перевёрнутую» дробь. Например, \(1/2 \div 1/4 = 2\): в одной половине помещаются две четверти. | 9,449 ms | 335 prompt / 143 completion tokens; $0.000105 |
+| 2 | Чтобы разделить на дробь, переверни её и умножь на неё. Например: 1/2 ÷ 1/4 = 2, потому что в одной половине помещаются две четверти. | 7,228 ms | 335 prompt / 119 completion tokens; $0.000093 |
+
+The two follow-up calls total 16,677 ms, 670 prompt tokens, 262 completion tokens, and $0.000198 reported cost. Both used openai/gpt-6-luna through the existing isolated backend harness. These two repetitions support the approved targeted change for this scenario; they do not establish general or all-language compliance. The earlier version-2026-10-19.3 English miss remains in the historical record above.
+
+- Follow-up run 1 output and request evidence: /tmp/study-buddy-real-luna-tK8g0r/
+- Follow-up run 2 output and request evidence: /tmp/study-buddy-real-luna-v8fcVT/
+- Runner logs: /tmp/study-buddy-simpler-approved-run1.log and /tmp/study-buddy-simpler-approved-run2.log

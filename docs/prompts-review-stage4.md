@@ -1,12 +1,12 @@
-# Пакет черновиков инструкций — этап 4
+# Пакет утверждённых инструкций — этап 4
 
-**Статус: APPROVED (2026-10-19).** Семь пользовательских формулировок ниже утверждены после точечных уточнений. Translate и title сохранены без изменений и также утверждены. Runtime использует эти тексты дословно; Solve также обслуживает legacy task id `quiz` для Retry/history compatibility.
+**Статус: APPROVED (2026-10-19).** Семь пользовательских формулировок ниже утверждены после точечных уточнений; последующее уточнение первой строки Simpler также явно одобрено пользователем 2026-10-19. Translate и title сохранены без изменений и также утверждены. Runtime использует эти тексты дословно после подстановки языка; Solve также обслуживает legacy task id `quiz` для Retry/history compatibility.
 
 ## Сборка запроса
 
-Предлагаемый wire layout сохраняет существующий архитектурный шов: один `system` message = общая инструкция и, только для первого ответа при `titleNeeded`, инструкция заголовка. Task instruction добавляется в текст последнего `user` message через canonical-text seam; image parts того же сообщения сохраняются. История остаётся projection существующих turns. Ask передаётся без обрамляющей task-инструкции и без переписывания.
+Реализованный wire layout сохраняет существующий архитектурный шов: один `system` message = общая инструкция и, только для первого ответа при `titleNeeded`, инструкция заголовка. Task instruction добавляется в текст последнего `user` message через canonical-text seam; image parts того же сообщения сохраняются. История остаётся projection существующих turns. Ask передаётся без обрамляющей task-инструкции и без переписывания.
 
-`{{effective_answer_language}}` — понятное имя языка из сохранённого `answerLanguage`, либо языка браузера при `auto`. Явная просьба применяет язык к текущему ответу; для Translate явно названный target имеет приоритет. `uiLanguage` отвечает за интерфейс. Проверить browser helper и fallback в инженерной реализации.
+`{{effective_answer_language}}` — понятное имя языка из сохранённого `answerLanguage`, либо языка браузера при `auto`. Явная просьба применяет язык к текущему ответу; для Translate явно названный target имеет приоритет. `uiLanguage` отвечает за интерфейс. В runtime используется общий resolver языка; browser helper и fallback покрыты контрактами.
 
 Форма сообщений соответствует существующим `ApiMessage` (`src/shared/api.ts:68-75`) и server-side сборке OpenRouter запроса (`src/backend/app.ts:252-269`). Простое разделение общей и task-инструкции согласуется с [официальным руководством OpenAI по prompt engineering](https://developers.openai.com/api/docs/guides/prompt-engineering); это не подтверждает качество конкретных строк.
 
@@ -77,10 +77,10 @@ Focus on what is actually required for this specific problem or text. Prefer con
 Do not solve the problem unless the user explicitly asks for a solution. Stop at the level of understanding needed to approach the task.
 ```
 
-**Simpler** — `{{selected_answer_text}}` заполняется текстом выбранного assistant turn. Для длинного чата нужен click-target turn lookup; отдельный API field в черновик не добавляется.
+**Simpler** — язык первой строки берётся из эффективного языка ответа; `{{selected_answer_text}}` заполняется текстом выбранного assistant turn через безопасную литеральную подстановку.
 
 ```text
-Explain the following text more simply while preserving its meaning as accurately as possible:
+Explain the following text more simply in {{effective_answer_language}}, while preserving its meaning as accurately as possible:
 
 {{selected_answer_text}}
 
@@ -91,7 +91,7 @@ Rules:
 - Do not introduce new ideas or claims; examples and analogies may only illustrate what is already in the original text.
 ```
 
-**Translate — прежний черновик, не утверждён.** Target следует настройке answer language или browser language при `auto`; явный пользовательский target имеет приоритет.
+**Translate — утверждённый текст.** Target следует настройке answer language или browser language при `auto`; явный пользовательский target имеет приоритет.
 
 ```text
 Translate the current image/material or explicitly supplied text into {{effective_answer_language}}, unless the user explicitly names a different target language for this translation. If the source is already in the target language for this translation, ask which other target language the user wants. Otherwise, provide the translation directly.
@@ -232,7 +232,7 @@ Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title 
     },
     {
       "role": "user",
-      "content": "Explain the following text more simply while preserving its meaning as accurately as possible:\n\nIt is 4.\n\nRules:\n- Lower the level of abstraction.\n- Replace complex wording with clearer language.\n- Add a short concrete example or analogy only if it genuinely helps and does not change the meaning.\n- Do not introduce new ideas or claims; examples and analogies may only illustrate what is already in the original text."
+      "content": "Explain the following text more simply in English, while preserving its meaning as accurately as possible:\n\nIt is 4.\n\nRules:\n- Lower the level of abstraction.\n- Replace complex wording with clearer language.\n- Add a short concrete example or analogy only if it genuinely helps and does not change the meaning.\n- Do not introduce new ideas or claims; examples and analogies may only illustrate what is already in the original text."
     }
   ],
   "stream": true,
@@ -250,7 +250,7 @@ Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title 
 - Проверить точное присутствие утверждённых текстов в canonical request и first-reply title parsing.
 - Проверить разрешение browser language и fallback инженерно при реализации; продуктово target — язык браузера, не UI.
 - Подключить существующий title parser к первому ответу; 80 символов — ограничение при приёмке title, не инструкция по длине ответа.
-- После утверждения prompt-текстов провести согласованные representative quality checks; этот пакет не вводит отдельный gate на оплачиваемые вызовы.
+- Ограниченные real-provider observations записаны в [отчёте качества](prompts-quality/luna-approved-2026-10-19.md); они не являются статистической оценкой и не вводят отдельный gate на оплачиваемые вызовы.
 
 ### Риски формулировок для уточнения (вне prompt bodies)
 

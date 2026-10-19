@@ -34,7 +34,7 @@ function approvedBody(markdown, heading) {
 const prompts = load('src/shared/prompts/index.ts')
 const doc = readFileSync(resolve(root, 'docs/prompts-review-stage4.md'), 'utf8')
 assert.match(doc, /Статус: APPROVED/)
-assert.equal(prompts.PROMPTS_VERSION, '2026-10-19.3')
+assert.equal(prompts.PROMPTS_VERSION, '2026-10-19.4')
 const browserRu = { answerLanguage: 'auto', browserLanguage: 'ru', uiLang: 'en' }
 const browserEnUiRu = { answerLanguage: 'auto', browserLanguage: 'en', uiLang: 'ru' }
 const explicitDe = { answerLanguage: 'de', browserLanguage: 'ru', uiLang: 'ru' }
@@ -50,7 +50,9 @@ assert.equal(prompts.checkPrompt(undefined, browserRu), approvedBody(doc, '**Che
 assert.equal(prompts.taskPrompt('explain', browserRu), approvedBody(doc, '**Explain**'))
 assert.equal(prompts.taskPrompt('translate', browserRu), approvedBody(doc, '**Translate').replaceAll('{{effective_answer_language}}', 'Russian'))
 assert.equal(prompts.taskPrompt('summarize', browserRu), approvedBody(doc, '**Summarize**'))
-assert.equal(prompts.simplerPrompt(browserRu), approvedBody(doc, '**Simpler**'))
+assert.equal(prompts.simplerPrompt(browserRu), approvedBody(doc, '**Simpler**').replace('{{effective_answer_language}}', 'Russian'))
+assert.equal(prompts.simplerPrompt(browserEnUiRu), approvedBody(doc, '**Simpler**').replace('{{effective_answer_language}}', 'English'))
+assert.equal(prompts.simplerPrompt(explicitDe), approvedBody(doc, '**Simpler**').replace('{{effective_answer_language}}', 'German'))
 assert.ok(prompts.taskPrompt('translate', explicitDe).includes('into German'))
 
 for (const kind of ['solve', 'quiz', 'translate', 'explain', 'summarize', 'hint', 'check', 'ask', 'simpler']) {

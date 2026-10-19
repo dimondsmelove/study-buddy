@@ -1,6 +1,6 @@
 import type { ApiContent, ApiMessage } from './api'
 import type { AnswerLanguage } from './settings'
-import { turnParams, type TurnKind } from './prompts'
+import { firstAnswerTitleInstruction, simplerPrompt, systemPrompt, taskPrompt, turnParams, type TurnKind } from './prompts'
 
 export const GATEWAY_LIMITS = {
   inputTokens: 200_000,
@@ -26,9 +26,11 @@ export interface GatewayGenerationInput {
   requestId: string
   task: TurnKind
   answerLanguage: AnswerLanguage
+  browserLanguage: string
   uiLanguage: GatewayUiLanguage
   titleNeeded: boolean
   taskInput?: string
+  selectedAnswerText?: string
   messages: ApiMessage[]
 }
 
@@ -60,24 +62,29 @@ export function isTurnKind(value: unknown): value is TurnKind {
   return typeof value === 'string' && TASK_KINDS.includes(value as TurnKind)
 }
 
-/** Build provider messages from client-selected history. App-generated task
- * text is absent; Ask and explicit Check input pass through verbatim. */
+/** Build the canonical provider request from validated intent and selected history. */
 export function prepareGatewayGeneration(input: GatewayGenerationInput): PreparedGatewayGeneration {
   const last = input.messages.at(-1)
   if (!last || last.role !== 'user') throw new Error('gateway.currentUserRequired')
 
   let currentText = ''
+  const promptContext = { answerLanguage: input.answerLanguage, browserLanguage: input.browserLanguage, uiLang: input.uiLanguage }
   if (input.task === 'ask') {
     if (typeof input.taskInput !== 'string' || !input.taskInput.trim()) throw new Error('gateway.askInputRequired')
     currentText = input.taskInput
-  } else if (input.task === 'check') {
-    currentText = input.taskInput ?? ''
+  } else if (input.task === 'simpler') {
+    if (typeof input.selectedAnswerText !== 'string' || !input.selectedAnswerText.trim()) throw new Error('gateway.simplerAnswerRequired')
+    currentText = simplerPrompt(promptContext).replace('{{selected_answer_text}}', () => input.selectedAnswerText!)
+  } else {
+    currentText = taskPrompt(input.task, promptContext)
+    if (input.task === 'check' && input.taskInput !== undefined) currentText += '\n\n' + input.taskInput
   }
 
-  const messages = input.messages.map((message, index) => {
+  const system = [systemPrompt(promptContext), ...(input.titleNeeded ? [firstAnswerTitleInstruction(promptContext)] : [])].join('\n\n')
+  const messages = [{ role: 'system' as const, content: system }, ...input.messages.map((message, index) => {
     if (index !== input.messages.length - 1) return cloneMessage(message)
     return { role: 'user' as const, content: withCanonicalText(last.content, currentText) }
-  }).filter(hasContent)
+  })].filter(hasContent)
   const images = countImages(messages)
   const estimatedInputTokens = estimateInputTokens(messages, images)
   return {
@@ -104,6 +111,8 @@ export function gatewayFingerprint(input: GatewayGenerationInput, prepared: Prep
   return JSON.stringify({
     task: input.task,
     answerLanguage: input.answerLanguage,
+    browserLanguage: input.browserLanguage,
+    selectedAnswerText: input.selectedAnswerText,
     uiLanguage: input.uiLanguage,
     titleNeeded: input.titleNeeded,
     messages: prepared.messages,

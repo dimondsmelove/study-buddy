@@ -25,7 +25,8 @@ try {
   const input = {
     requestId: 'contract-request-0001',
     task: 'ask',
-    answerLanguage: 'en',
+    answerLanguage: 'auto',
+    browserLanguage: 'ru',
     uiLanguage: 'en',
     titleNeeded: false,
     taskInput: 'Help with 😀 this step',
@@ -38,11 +39,16 @@ try {
     ],
   }
   const prepared = protocol.prepareGatewayGeneration(input)
+  assert.equal(prepared.messages[0].role, 'system')
+  assert.match(prepared.messages[0].content, /Respond in Russian/)
   assert.deepEqual(prepared.messages.at(-1).content, [
     { type: 'text', text: input.taskInput },
     { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
   ])
   assert.equal(prepared.estimatedInputTokens, protocol.estimateInputTokens(prepared.messages))
+  const simpler = protocol.prepareGatewayGeneration({ ...input, task: 'simpler', taskInput: undefined, selectedAnswerText: "Formula $& $$ $` $' and \\frac{x}{2}", titleNeeded: false, messages: [{ role: 'assistant', content: 'Intervening later answer' }, { role: 'user', content: '' }] })
+  assert.equal(simpler.messages.at(-1).content.includes("Formula $& $$ $` $' and \\frac{x}{2}"), true, 'Simpler preserves literal dollar sequences in selected answer text')
+  assert.equal(simpler.messages[0].content.includes('STUDY_BUDDY_TITLE'), false, 'title instruction is omitted after the first response')
   assert.ok(protocol.gatewayRequestBytes(input) > JSON.stringify(input).length, 'request preflight counts UTF-8 bytes, including non-ASCII text')
   console.log('CONTEXT ESTIMATOR CONTRACTS OK — multilingual/code/punctuation estimates, canonical preview and exact UTF-8 request bytes')
 } finally {

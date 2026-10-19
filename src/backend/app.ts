@@ -326,12 +326,15 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
 
 function parseGenerationInput(value: unknown): GatewayGenerationInput {
   const root = record(value)
-  exactKeys(root, ['requestId', 'task', 'answerLanguage', 'uiLanguage', 'titleNeeded', 'taskInput', 'messages'])
+  exactKeys(root, ['requestId', 'task', 'answerLanguage', 'browserLanguage', 'uiLanguage', 'titleNeeded', 'taskInput', 'selectedAnswerText', 'messages'])
   if (typeof root.requestId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(root.requestId)) {
     throw failure(400, 'generation.request_id', 'The request identifier is invalid.')
   }
   if (!isTurnKind(root.task)) throw failure(400, 'generation.task', 'The task is invalid.')
   if (!isAnswerLanguage(root.answerLanguage)) throw failure(400, 'generation.language', 'The answer language is invalid.')
+  if (typeof root.browserLanguage !== 'string' || !/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(root.browserLanguage) || root.browserLanguage.length > 35) {
+    throw failure(400, 'generation.language', 'The browser language is invalid.')
+  }
   if (root.uiLanguage !== 'en' && root.uiLanguage !== 'ru') {
     throw failure(400, 'generation.language', 'The interface language is invalid.')
   }
@@ -349,6 +352,16 @@ function parseGenerationInput(value: unknown): GatewayGenerationInput {
   }
   if (taskInput !== undefined && root.task !== 'ask' && root.task !== 'check') {
     throw failure(400, 'generation.task_input', 'This task does not accept extra input.')
+  }
+  let selectedAnswerText: string | undefined
+  if (root.selectedAnswerText !== undefined) {
+    if (typeof root.selectedAnswerText !== 'string' || root.selectedAnswerText.length > GATEWAY_LIMITS.maxTaskInputChars || !root.selectedAnswerText.trim()) {
+      throw failure(400, 'generation.selected_answer', 'The selected answer is invalid.')
+    }
+    selectedAnswerText = root.selectedAnswerText
+  }
+  if ((root.task === 'simpler') !== (selectedAnswerText !== undefined)) {
+    throw failure(400, 'generation.selected_answer', 'Simpler requires the selected answer text.')
   }
   if (!Array.isArray(root.messages) || root.messages.length === 0 || root.messages.length > GATEWAY_LIMITS.maxMessages) {
     throw failure(400, 'generation.messages', 'The selected message history is invalid.')
@@ -418,9 +431,11 @@ function parseGenerationInput(value: unknown): GatewayGenerationInput {
     requestId: root.requestId,
     task: root.task,
     answerLanguage: root.answerLanguage,
+    browserLanguage: root.browserLanguage,
     uiLanguage: root.uiLanguage,
     titleNeeded: root.titleNeeded,
     ...(taskInput !== undefined ? { taskInput } : {}),
+    ...(selectedAnswerText !== undefined ? { selectedAnswerText } : {}),
     messages,
   }
 }

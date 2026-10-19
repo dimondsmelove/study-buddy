@@ -221,6 +221,7 @@ function input(requestId = 'request_00000001', changes = {}) {
     requestId,
     task: 'ask',
     answerLanguage: 'en',
+    browserLanguage: 'en',
     uiLanguage: 'en',
     titleNeeded: false,
     taskInput: 'What is 2 + 2?',
@@ -258,38 +259,43 @@ async function waitFor(predicate, label) {
   assert.fail('Timed out waiting for ' + label)
 }
 
-await test('shared preparation is canonical and text uses the four-byte estimate', async () => {
+await test('shared preparation includes canonical approved prompts and estimates UTF-8 text', async () => {
   const prepared = protocol.prepareGatewayGeneration(input())
-  assert.deepEqual(prepared.messages, [
-    { role: 'assistant', content: 'HISTORICAL_TRANSCRIPT_SENTINEL' },
-    { role: 'user', content: 'What is 2 + 2?' },
-  ])
+  assert.equal(prepared.messages[0].role, 'system')
+  assert.match(prepared.messages[0].content, /Respond in English/)
+  assert.match(prepared.messages.at(-1).content, /What is 2 \+ 2\?/)
   assert.equal('temperature' in prepared, false)
   assert.equal(prepared.maxTokens, 16_384)
   assert.equal(protocol.estimateTextTokens('abcde'), 2)
   assert.equal(protocol.estimateTextTokens('ЯЯЯ'), 2)
-  assert.equal(protocol.estimateTextTokens('\u{1f600}'), 1)
+  assert.equal(protocol.estimateTextTokens('😀'), 1)
 })
 
-await test('empty task prompts are omitted while Ask and Check input and image parts survive', async () => {
+await test('task prompts preserve image parts, legacy quiz uses Solve, Check uses visible work, Ask stays raw, and Simpler uses selected answer', async () => {
   const image = { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }
   const solve = protocol.prepareGatewayGeneration(input('emptytask_0000001', {
     task: 'solve', taskInput: undefined,
     messages: [{ role: 'user', content: [image] }],
   }))
-  assert.deepEqual(solve.messages, [{ role: 'user', content: [image] }])
-  const emptySolve = protocol.prepareGatewayGeneration(input('emptytask_0000002', {
-    task: 'solve', taskInput: undefined, messages: [{ role: 'user', content: '' }],
-  }))
-  assert.deepEqual(emptySolve.messages, [])
+  assert.match(solve.messages[0].content, /Study Buddy/)
+  assert.match(solve.messages.at(-1).content[0].text, /Solve the problem shown in the image/)
+  assert.deepEqual(solve.messages.at(-1).content[1], image)
+  const legacyQuiz = protocol.prepareGatewayGeneration(input('emptytask_0000002', { task: 'quiz', taskInput: undefined, messages: [{ role: 'user', content: '' }] }))
+  assert.match(legacyQuiz.messages.at(-1).content, /multiple-choice questions/i)
   const check = protocol.prepareGatewayGeneration(input('emptytask_0000003', {
-    task: 'check', taskInput: '  raw attempt 😀  ', messages: [{ role: 'user', content: 'legacy generated check template' }],
+    task: 'check', taskInput: undefined, messages: [{ role: 'user', content: [image] }],
   }))
-  assert.equal(check.messages.at(-1).content, '  raw attempt 😀  ')
+  assert.match(check.messages.at(-1).content[0].text, /Check the student's work visible in the image/)
+  assert.deepEqual(check.messages.at(-1).content[1], image)
   const ask = protocol.prepareGatewayGeneration(input('emptytask_0000004', {
     taskInput: '  raw Ask text  ', messages: [{ role: 'user', content: 'old app-generated text' }],
   }))
   assert.equal(ask.messages.at(-1).content, '  raw Ask text  ')
+  const simpler = protocol.prepareGatewayGeneration(input('emptytask_0000005', {
+    task: 'simpler', taskInput: undefined, selectedAnswerText: "selected $& $$ $` $' older reply",
+    messages: [{ role: 'assistant', content: 'later answer' }, { role: 'user', content: '' }],
+  }))
+  assert.ok(simpler.messages.at(-1).content.includes("selected $& $$ $` $' older reply"))
 })
 
 await test('PNG, JPEG and WebP dimensions validate without pixel decompression', async () => {
@@ -386,7 +392,8 @@ await test('HTTP session, CORS, canonical provider request, final usage chunk, a
     assert.equal('temperature' in upstream, false)
     assert.equal('reasoning' in upstream, false)
     assert.equal(upstream.max_tokens, 16_384)
-    assert.equal(upstream.messages.some((message) => message.role === 'system'), false)
+    assert.equal(upstream.messages.some((message) => message.role === 'system'), true)
+    assert.match(upstream.messages[0].content, /Use the supplied text, images, and relevant conversation history as the source of task-specific facts/)
     assert.equal(upstream.messages.at(-1).content, 'What is 2 + 2?')
     assert.equal(JSON.stringify(upstream).includes('client text must be replaced'), false)
     assert.equal(JSON.stringify(upstream).includes('HISTORICAL_TRANSCRIPT_SENTINEL'), true)

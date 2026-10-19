@@ -30,12 +30,44 @@ These are design candidates, not a selected ingress or provider. In particular, 
 - Decide whether anonymous access remains acceptable for the first release and what spend/abuse response is acceptable. Do not silently add login, quotas, or dollar caps.
 - Complete support contact and privacy URL/audience details, then reconcile disclosures with host, ingress, and provider retention. The current listing/privacy drafts also contain stale product claims (Quiz, multiline Check, English default and fallback); review them against the shipped behavior in the store stage.
 
-### Container shape for the next implementation stage
+### Docker packaging
 
-Build a single backend image from the repository using the pinned Node 22.22.2 toolchain; run the existing backend build and deterministic contracts before producing the runtime image. The runtime should contain the built server, its package metadata declaring ESM (the build emits server.js), and the Node runtime; run as a dedicated unprivileged user, bind on the container network interface so the proxy can reach it, and have no public host-published Node port. Mount one persistent private directory for SQLite, keep the env/secret file outside the image and extension assets, and grant the container only the ingress path plus required outbound provider access. Keep one replica. A read-only container root with only the data mount writable is the proposed baseline; verify Node's temp/cache needs against the actual image before enforcing it.
+The repository now contains a two-stage Dockerfile. Its build stage uses the exact Node 22.22.2 Debian slim image, runs npm ci and the existing backend build, and copies only the bundled server plus package.json (which declares ESM) into the runtime stage. The runtime keeps the official Node base utilities, but no project source, node_modules, frontend bundle, credentials, or build dependencies. Compose runs one non-root backend on a private bridge network, publishes no host ports, grants no Linux capabilities, uses a read-only root filesystem with a small writable /tmp, and mounts a persistent named volume at /data. The bridge allows required provider egress; it limits inbound reachability to containers attached to that network, but it is not a firewall against the Docker host or LAN.
 
-Use a stop-and-back-up rollout: stop the single instance, copy the SQLite database with any WAL/SHM sidecars together, start the candidate image, then check health and a controlled synthetic generation through the chosen ingress. Roll back to the prior image and the compatible database backup. Do not claim that the 180-second request path or a 32 MiB upload works until externally exercised through the selected ingress. No service has yet been deployed and no store release has occurred.
+Keep the runtime env file outside the checkout and image, mode 0600. For example, create it from .env.backend.example, fill the real server-only values, and then build/start explicitly:
 
+~~~sh
+install -d -m 700 /etc/study-buddy
+install -m 600 .env.backend.example /etc/study-buddy/backend.env
+# Edit /etc/study-buddy/backend.env with the real values.
+export STUDY_BUDDY_ENV_FILE=/etc/study-buddy/backend.env
+export STUDY_BUDDY_IMAGE=study-buddy/backend:release-<version>
+docker compose build backend
+docker compose up -d backend
+docker compose ps
+~~~
+
+The compose file requires STUDY_BUDDY_ENV_FILE and does not publish the Node port. Compose creates the bridge named study-buddy-egress and named data volume study-buddy_backend-data under the default project name. A future ingress container must explicitly join that bridge and route to backend:8787. No ingress is included or selected here. Bridge networking alone does not prove that host/LAN access is blocked.
+
+For a stopped, consistent backup, stop the single service and copy its entire data directory, including any WAL/SHM sidecars:
+
+~~~sh
+docker compose stop backend
+install -d -m 700 ./backups
+docker cp "$(docker compose ps -a -q backend)":/data ./backups/study-buddy-data
+~~~
+
+Keep that backup private. For an application rollback without a destructive schema migration, keep the existing volume and start the previous image tag:
+
+~~~sh
+STUDY_BUDDY_IMAGE=study-buddy/backend:previous docker compose up -d backend
+~~~
+
+The stopped backup is available if the volume must be restored. Do not use down -v: it removes the persistent volume.
+
+Verified on diamondserver on 2026-10-19. Compose built image study-buddy/backend:review-20261019-container (ID sha256:b0cc82e5a83e7563d642c27945d43d1da90ad5566b3d73d89dc044580f8f1e81) from node:22.22.2-bookworm-slim, resolved to base digest sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e. The container started healthy with Node 22.22.2 and the built-in SQLite module, ran as UID 1000 with a read-only root, no Linux capabilities, no published host ports, and only the persistent /data mount writable. The runtime /app contains only package.json and .backend-dist/server.js. An anonymous session renewed successfully after forced container recreation; SIGTERM returned exit 0 and health passed after restart. The temporary container, network and volume were removed; the review image remains on the build host. Sanitized inspect and smoke evidence: /tmp/study-buddy-container-inspect-20261019.json and /tmp/study-buddy-container-smoke-20261019.log. A 2 MiB unlisted capture plus a fake oddly named credential file stayed out of the allowlisted build context (1.31 kB transferred). The smoke used only a dummy runtime key and HMAC secret and did not call the provider or exercise generation/SSE. npm ci printed one high-severity audit warning; no dependency change was made.
+
+These checks establish isolated packaging and session-state persistence only. They do not establish public reachability, ingress SSE behavior, live service operation, or a store release.
 
 This is a local integration candidate, not a deployed service. The initial
 architecture is one Node process and one SQLite file on persistent local disk.

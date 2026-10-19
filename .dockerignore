@@ -1,0 +1,13 @@
+**
+!Dockerfile
+!.dockerignore
+!compose.yaml
+!package.json
+!package-lock.json
+!vite.backend.config.ts
+!tsconfig.backend.json
+!src
+!src/backend
+!src/backend/**
+!src/shared
+!src/shared/**

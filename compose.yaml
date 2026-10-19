@@ -1,0 +1,44 @@
+name: study-buddy
+
+services:
+  backend:
+    image: ${STUDY_BUDDY_IMAGE:-study-buddy/backend:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ${STUDY_BUDDY_ENV_FILE:?Set STUDY_BUDDY_ENV_FILE to an external runtime env file}
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8787"
+      DATABASE_PATH: /data/study-buddy.sqlite
+    volumes:
+      - backend-data:/data
+    networks:
+      - study-buddy-egress
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/health',{signal:AbortSignal.timeout(2000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+networks:
+  study-buddy-egress:
+    name: ${STUDY_BUDDY_NETWORK:-study-buddy-egress}
+    driver: bridge
+
+volumes:
+  backend-data:

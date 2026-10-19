@@ -1,54 +1,58 @@
 # Пакет черновиков инструкций — этап 4
 
-**Статус: DRAFT FOR USER REVIEW.** Ниже — точные предложения для обсуждения; ни одна строка не утверждена и не добавлена в runtime. Пакет соответствует DECISION в `ToDo.md` и не открывает заново модель/параметры, продуктовые режимы или бюджет.
+**Статус: DRAFT FOR USER REVIEW.** Тексты ниже предложены к ревью и не утверждены/не добавлены в runtime. Они следуют решениям в `ToDo.md`, не меняя режимы, модель или параметры.
 
-## Контракт сборки
+## Сборка запроса
 
-Предлагаю один `system` message, составленный из общей инструкции, инструкции выбранного действия и условной инструкции заголовка; далее идут сообщения текущей projection истории и пользовательский ввод. Ask остаётся исходным текстом пользователя без перефразирования. `{{effective_answer_language}}` — имя языка из сохранённого `answerLanguage`, либо языка браузера при `auto`; явная просьба пользователя применяет язык только к текущему ответу и не меняет настройку. Для Translate явно указанный пользователем target имеет приоритет; иначе target равен `{{effective_answer_language}}`. `uiLanguage` управляет интерфейсом, но не ответом модели. Проверку существующего browser-language helper и fallback выполнить в реализации.
+Предлагаемый wire layout сохраняет существующий архитектурный шов: один `system` message = общая инструкция и, только для первого ответа при `titleNeeded`, инструкция заголовка. Task instruction добавляется в текст последнего `user` message через canonical-text seam; image parts того же сообщения сохраняются. История остаётся projection существующих turns. Ask передаётся без обрамляющей task-инструкции и без переписывания.
 
-Это использует уже поддерживаемые роли и структуру Chat Completions в приложении (`src/shared/api.ts:68-75`; сборка провайдера `src/backend/app.ts:252-269`). Общий текст отделён от task text, как советует [официальное руководство OpenAI по prompt engineering](https://developers.openai.com/api/docs/guides/prompt-engineering); это основание начать с простого явного варианта, а не доказательство качества конкретных строк.
+`{{effective_answer_language}}` — понятное имя языка из сохранённого `answerLanguage`, либо языка браузера при `auto`. Явная просьба применяет язык к текущему ответу; для Translate явно названный target имеет приоритет. `uiLanguage` отвечает за интерфейс. Проверить browser helper и fallback в инженерной реализации.
+
+Форма сообщений соответствует существующим `ApiMessage` (`src/shared/api.ts:68-75`) и server-side сборке OpenRouter запроса (`src/backend/app.ts:252-269`). Простое разделение общей и task-инструкции согласуется с [официальным руководством OpenAI по prompt engineering](https://developers.openai.com/api/docs/guides/prompt-engineering); это не подтверждает качество конкретных строк.
 
 ## Общая инструкция — кандидат
 
 ```text
-You are Study Buddy, helping the user understand and work with material in this conversation. Use the supplied text and images as context. Do not invent details that are missing or unreadable; state what is unclear when it affects the answer. Reply in {{effective_answer_language}}, unless the user explicitly asks for a different response language. A language request applies to this response only and does not change the saved setting. Apply any task-specific guidance supplied for this turn.
+You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use {{effective_answer_language}} unless the user explicitly requests another language.
 ```
 
-`{{effective_answer_language}}` рендерится как понятное имя языка (например, `Russian` или `English`), не как код настроек. Это значение определяется продуктовым правилом выше; точное инженерное разрешение browser locale проверяется в реализации. Общая инструкция не привязывается к UI-языку.
+## Task instructions — кандидаты
 
-## Инструкции действий — кандидаты
+Текст каждой инструкции добавляется в начало последнего user message. В мультимодальном сообщении текстовая часть предшествует существующим image parts.
 
-**Solve** — включает обычные задачи и предоставленные MCQ; отдельной инструкции/кнопки Quiz нет.
+**Solve** — обычные задачи и предоставленные MCQ; генерации тестов нет.
 
 ```text
-Solve the problem shown in the current image or explicitly supplied in the conversation. Give the answer and enough explanation to make the result understandable. For a multiple-choice problem, identify the correct option or options and explain why they are correct. Do not assume options or details that are not visible; state uncertainty when it affects the answer.
+Solve the problem shown in the current image or explicitly supplied in the conversation. Give the answer and enough explanation to make the result understandable. For a multiple-choice problem, identify the correct option or options and explain why they are correct.
 ```
 
 **Hint**
 
 ```text
-Give one useful hint at a time: an approach or next step. Take earlier hints in this conversation into account and make each repeated hint more concrete. Keep this response in hint form; if the user explicitly asks for a complete solution, provide the solution with an explanation.
+Give one useful hint at a time: an approach or next step. Take earlier hints in this conversation into account and make each repeated hint more concrete. If the user explicitly asks for a complete solution, provide it with an explanation.
 ```
 
-**Check** — работает с текущей видимой работой, без отдельной формы попытки.
+**Check**
 
 ```text
-Check the work visible in the current image. Say what is correct and point out a concrete error if one is visible. Do not assume steps that are not shown. If there is no readable work to check, say so briefly; the user can describe an attempt in the ordinary chat.
+Check the work visible in the current image. Explain any errors and how to correct them. Distinguish incomplete work from incorrect work. If only the task is visible and no work is shown, say there is nothing to check.
 ```
 
 **Explain**
 
 ```text
-Explain the concepts, notation, or approach needed to understand the current material. A complete solution is not required unless the user explicitly asks for one.
+Explain the concepts, notation, or approach needed to understand the current material.
 ```
 
-**Simpler** — инструкция использует ответ, на котором нажато действие. Текущий click-handler не передаёт ID выбранного ответа (`src/chat/chat.ts:722-725`), поэтому это требует минимальной привязки к выбранному assistant turn; окончательный wire field здесь не задаётся.
+**Simpler** — текст последнего user turn включает выбранный ответ после инструкции. Идентификатор/связь с turn нужен, чтобы выбрать правильный assistant turn в длинном чате; отдельный API field здесь не предлагается.
 
 ```text
-Explain the selected assistant answer more simply while preserving its meaning and correctness. Keep the explanation focused on that answer.
+Explain the following answer more simply while preserving its meaning:
+
+{{selected_answer_text}}
 ```
 
-**Translate** — целевой язык есть явно выбранный язык ответа агента или язык браузера при `auto`.
+**Translate** — target по настройке языка ответа либо языку браузера при `auto`; явно названный пользователем target имеет приоритет.
 
 ```text
 Translate the current image/material or explicitly supplied text into {{effective_answer_language}}, unless the user explicitly names a different target language for this translation. If the source is already in the requested or effective target language, ask which other target language the user wants. Otherwise, provide the translation directly.
@@ -60,23 +64,23 @@ Translate the current image/material or explicitly supplied text into {{effectiv
 Summarize the material in the current image or text explicitly supplied by the user. Do not summarize the entire chat unless the user asks for that.
 ```
 
-**Ask:** отдельной task-инструкции нет; передаётся исходный пользовательский текст вместе с общей инструкцией.
+**Ask:** отдельной task-инструкции нет; последнему user message передаётся исходный пользовательский текст как есть.
 
 ## Первый ответ и заголовок — кандидат
 
-Добавлять этот фрагмент в `system` только при `titleNeeded=true`:
+Добавлять в `system` только если `titleNeeded=true`:
 
 ```text
-For this first response, begin with the exact marker [[STUDY_BUDDY_TITLE]], followed by a concise title on the same line, then a newline and the response body. Write the title in the response language. Keep the title within 80 Unicode characters. Do not include the marker or title when a title is not requested.
+Begin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title on the same line, then a newline and the response body. Write the title in the response language.
 ```
 
-Существующий протокол ждёт `[[STUDY_BUDDY_TITLE]]<title>\n<body>`; `src/shared/title.ts` нормализует title до 80 Unicode-символов, не body. Сам parser пока нигде не вызывается, а текущие call sites задают `titleNeeded:false` (`src/chat/chat.ts:568,818`); интеграция условного фрагмента, parser и сохранения title ещё нужна. Отдельный model call не предполагается.
+Существующий parser ожидает `[[STUDY_BUDDY_TITLE]]<title>\n<body>` (`src/shared/title.ts`). Его acceptance limit — до 80 Unicode-символов в заголовке: длинное значение не обрезается, а отклоняется; предел не касается body. Parser пока не вызывается, а текущие call sites ставят `titleNeeded:false` (`src/chat/chat.ts:568,818`); надо подключить его и выставлять флаг только для первого ответа. Отдельный model call не нужен.
 
 ## Иллюстративные provider payloads
 
-Все примеры показывают тело OpenRouter Chat Completions после разрешения системных инструкций. Это проектируемые запросы, не наблюдавшиеся ответы. Во всех случаях: `openai/gpt-6-luna`, `max_tokens: 16384`, `stream: true`, usage включён; temperature и reasoning отсутствуют. В примере изображения строка URL — явный placeholder, не реальная картинка/передаваемые байты; точный payload строится существующей projection.
+Это предполагаемые outgoing bodies OpenRouter Chat Completions, не полученные ответы. Во всех примерах `openai/gpt-6-luna`, `max_tokens: 16384`, streaming и usage включены; temperature/reasoning отсутствуют. Значение image URL — очевидный placeholder, не реальный URL или изображение; фактические байты строит существующая projection.
 
-### Свободный Ask на русском
+### Ask: русский текст остаётся неизменным
 
 ```json
 {
@@ -84,7 +88,7 @@ For this first response, begin with the exact marker [[STUDY_BUDDY_TITLE]], foll
   "messages": [
     {
       "role": "system",
-      "content": "You are Study Buddy, helping the user understand and work with material in this conversation. Use the supplied text and images as context. Do not invent details that are missing or unreadable; state what is unclear when it affects the answer. Reply in Russian, unless the user explicitly asks for a different response language. A language request applies to this response only and does not change the saved setting. Apply any task-specific guidance supplied for this turn."
+      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use Russian unless the user explicitly requests another language."
     },
     { "role": "user", "content": "Объясни, почему при делении дроби на дробь вторую дробь переворачивают." }
   ],
@@ -94,11 +98,9 @@ For this first response, begin with the exact marker [[STUDY_BUDDY_TITLE]], foll
 }
 ```
 
-Последний `user.content` — точный текст Ask, без обёртки task-перефразированием.
+### Solve: `auto` разрешился в English; изображение сохранено
 
-### Solve на английском при `answerLanguage=auto`
-
-Здесь условно предполагается, что browser-derived effective language — English. В первом ответе дополнительно включён title instruction.
+Предполагаемый browser-derived язык в примере — English. Task instruction — user content text part; marker/title относится только к system.
 
 ```json
 {
@@ -106,11 +108,15 @@ For this first response, begin with the exact marker [[STUDY_BUDDY_TITLE]], foll
   "messages": [
     {
       "role": "system",
-      "content": "You are Study Buddy, helping the user understand and work with material in this conversation. Use the supplied text and images as context. Do not invent details that are missing or unreadable; state what is unclear when it affects the answer. Reply in English, unless the user explicitly asks for a different response language. A language request applies to this response only and does not change the saved setting. Apply any task-specific guidance supplied for this turn.\n\nSolve the problem shown in the current image or explicitly supplied in the conversation. Give the answer and enough explanation to make the result understandable. For a multiple-choice problem, identify the correct option or options and explain why they are correct. Do not assume options or details that are not visible; state uncertainty when it affects the answer.\n\nFor this first response, begin with the exact marker [[STUDY_BUDDY_TITLE]], followed by a concise title on the same line, then a newline and the response body. Write the title in English for this example. Keep the title within 80 Unicode characters. Do not include the marker or title when a title is not requested."
+      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use English unless the user explicitly requests another language.\n\nBegin the first response with [[STUDY_BUDDY_TITLE]] followed by a concise title on the same line, then a newline and the response body. Write the title in the response language."
     },
     {
       "role": "user",
       "content": [
+        {
+          "type": "text",
+          "text": "Solve the problem shown in the current image or explicitly supplied in the conversation. Give the answer and enough explanation to make the result understandable. For a multiple-choice problem, identify the correct option or options and explain why they are correct."
+        },
         {
           "type": "image_url",
           "image_url": { "url": "<captured image data URL — illustrative placeholder only>" }
@@ -124,29 +130,9 @@ For this first response, begin with the exact marker [[STUDY_BUDDY_TITLE]], foll
 }
 ```
 
-### Translate, когда исходный язык совпадает с эффективным target
+### Translate: источник уже на русском target
 
-Иллюстративный случай: target — русский; источник в контексте тоже русский. Ожидаемое действие по DECISION — спросить целевой язык, а не автоматически переключаться на UI-язык или английский.
-
-```json
-{
-  "model": "openai/gpt-6-luna",
-  "messages": [
-    {
-      "role": "system",
-      "content": "You are Study Buddy, helping the user understand and work with material in this conversation. Use the supplied text and images as context. Do not invent details that are missing or unreadable; state what is unclear when it affects the answer. Reply in Russian, unless the user explicitly asks for a different response language. A language request applies to this response only and does not change the saved setting. Apply any task-specific guidance supplied for this turn.\n\nTranslate the current image/material or explicitly supplied text into Russian, unless the user explicitly names a different target language for this translation. If the source is already in the requested or effective target language, ask which other target language the user wants. Otherwise, provide the translation directly."
-    },
-    { "role": "user", "content": "Доброе утро. Как пройти к библиотеке?" }
-  ],
-  "stream": true,
-  "stream_options": { "include_usage": true },
-  "max_tokens": 16384
-}
-```
-
-### Simpler для выбранного ответа
-
-Это целевая проекция после выбора существующего assistant turn; selection — не новый protocol field. Ответ подстановочный, а не содержимое истории этого проекта.
+Здесь и source, и effective answer language — русский, без явно названного другого target. Ожидается уточнение target, а не переключение на язык UI.
 
 ```json
 {
@@ -154,11 +140,12 @@ For this first response, begin with the exact marker [[STUDY_BUDDY_TITLE]], foll
   "messages": [
     {
       "role": "system",
-      "content": "You are Study Buddy, helping the user understand and work with material in this conversation. Use the supplied text and images as context. Do not invent details that are missing or unreadable; state what is unclear when it affects the answer. Reply in English, unless the user explicitly asks for a different response language. A language request applies to this response only and does not change the saved setting. Apply any task-specific guidance supplied for this turn.\n\nExplain the selected assistant answer more simply while preserving its meaning and correctness. Keep the explanation focused on that answer."
+      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use Russian unless the user explicitly requests another language."
     },
-    { "role": "user", "content": "What is the derivative of x squared?" },
-    { "role": "assistant", "content": "The derivative of x² is 2x, by the power rule: bring the exponent down as a multiplier and reduce the exponent by one." },
-    { "role": "user", "content": "Simplify the selected answer above." }
+    {
+      "role": "user",
+      "content": "Translate the current image/material or explicitly supplied text into Russian, unless the user explicitly names a different target language for this translation. If the source is already in the requested or effective target language, ask which other target language the user wants. Otherwise, provide the translation directly.\n\nSource text:\nДоброе утро. Как пройти к библиотеке?"
+    }
   ],
   "stream": true,
   "stream_options": { "include_usage": true },
@@ -166,13 +153,40 @@ For this first response, begin with the exact marker [[STUDY_BUDDY_TITLE]], foll
 }
 ```
 
-Минимальная будущая wiring-задача для Simpler: определить выбранный assistant turn из click target и включить нужный ответ вместе с достаточным исходным контекстом; документ не задаёт API-поле/ID-схему. Полный transcript и соседняя задача не должны подменять явно выбранный ответ.
+### Simpler: выбран более ранний ответ при наличии двух ответов
 
-## Открытые вопросы для ревью
+Последний user message здесь содержит task instruction и текст более раннего ответа, выбранного нажатием. Второй assistant answer намеренно находится между ним и текущим turn; приложение должно использовать click target, а не предполагать последний ответ.
 
-- Утвердить/отредактировать сами строки common, actions и title до помещения в runtime.
-- Для target-language resolution при `auto` проверить существующий browser helper, список поддержанных языков и fallback как инженерный контракт; продуктово выбран язык браузера, не `uiLanguage`.
-- Подтвердить формат title marker вместе с первым ответом при подключении существующего parser; предел 80 относится только к title.
-- После prompt approval собрать реальные outgoing request fixtures и выполнить representative quality checks; реальные оплачиваемые вызовы — только в согласованной приёмке.
+```json
+{
+  "model": "openai/gpt-6-luna",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are Study Buddy, helping the user understand and work with the supplied material. Use the supplied text, images, and relevant conversation. Do not invent missing or unreadable details. If uncertainty affects the answer, explain what is unclear. For this response, use English unless the user explicitly requests another language."
+    },
+    { "role": "user", "content": "What is 2 + 2?" },
+    { "role": "assistant", "content": "It is 4." },
+    { "role": "user", "content": "Why is 2 + 2 equal to 4?" },
+    { "role": "assistant", "content": "Adding two objects to another two objects gives four objects." },
+    {
+      "role": "user",
+      "content": "Explain the following answer more simply while preserving its meaning:\n\nIt is 4."
+    }
+  ],
+  "stream": true,
+  "stream_options": { "include_usage": true },
+  "max_tokens": 16384
+}
+```
 
-Пакет не утверждает, что prompt уже исправляет ошибки распознавания изображения; не вводит автопрактику, обязательные попытки, новые циклы/профили/scoring, инструменты или дополнительные модели. Основная просьба к ревью — конкретные тексты и примеры их состава.
+Минимальная wiring-задача для Simpler: связать действие с выбранным assistant turn, извлечь его текст и подставить в `{{selected_answer_text}}` последнего user message вместе с достаточным task context. Это ещё не существующий API field или протокол.
+
+## Что ждёт review
+
+- Утвердить или исправить точные строки общей инструкции, действий и заголовка до runtime-изменения.
+- Проверить разрешение browser language и fallback инженерно при реализации; продуктово target — язык браузера, не UI.
+- Подключить существующий title parser к первому ответу; 80 символов — ограничение при приёмке title, не инструкция по длине ответа.
+- После утверждения prompt-текстов провести согласованные representative quality checks; этот пакет не вводит отдельный gate на оплачиваемые вызовы.
+
+Пакет не обещает, что prompt исправит ошибки распознавания изображений; не добавляет автопрактику, обязательные попытки, новые циклы/scoring, инструменты или дополнительные модели. Всё содержимое — draft, кроме ранее зафиксированных продуктовых решений.

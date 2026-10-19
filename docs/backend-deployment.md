@@ -34,14 +34,16 @@ These are design candidates, not a selected ingress or provider. In particular, 
 
 The repository now contains a two-stage Dockerfile. Its build stage uses the exact Node 22.22.2 Debian slim image, runs npm ci and the existing backend build, and copies only the bundled server plus package.json (which declares ESM) into the runtime stage. The runtime keeps the official Node base utilities, but no project source, node_modules, frontend bundle, credentials, or build dependencies. Compose runs one non-root backend on a private bridge network, publishes no host ports, grants no Linux capabilities, uses a read-only root filesystem with a small writable /tmp, and mounts a persistent named volume at /data. The bridge allows required provider egress; it limits inbound reachability to containers attached to that network, but it is not a firewall against the Docker host or LAN.
 
-Keep the runtime env file outside the checkout and image, mode 0600. For example, create it from .env.backend.example, fill the real server-only values, and then build/start explicitly:
+Keep the runtime env file outside the checkout and image, mode 0600. This setup copies the example only when the file is missing, so rerunning it during upgrades preserves existing values:
 
 ~~~sh
-install -d -m 700 /etc/study-buddy
-install -m 600 .env.backend.example /etc/study-buddy/backend.env
-# Edit /etc/study-buddy/backend.env with the real values.
-export STUDY_BUDDY_ENV_FILE=/etc/study-buddy/backend.env
-export STUDY_BUDDY_IMAGE=study-buddy/backend:release-<version>
+install -d -m 700 "$HOME/.config/study-buddy"
+if [ ! -e "$HOME/.config/study-buddy/backend.env" ]; then
+  install -m 600 .env.backend.example "$HOME/.config/study-buddy/backend.env"
+fi
+# Edit the file once to add the real server-only values.
+export STUDY_BUDDY_ENV_FILE="$HOME/.config/study-buddy/backend.env"
+export STUDY_BUDDY_IMAGE=study-buddy/backend:release-20261019
 docker compose build backend
 docker compose up -d backend
 docker compose ps
@@ -54,7 +56,8 @@ For a stopped, consistent backup, stop the single service and copy its entire da
 ~~~sh
 docker compose stop backend
 install -d -m 700 ./backups
-docker cp "$(docker compose ps -a -q backend)":/data ./backups/study-buddy-data
+backup_dir="$(mktemp -d ./backups/study-buddy-data-XXXXXX)"
+docker cp "$(docker compose ps -a -q backend)":/data/. "$backup_dir/"
 ~~~
 
 Keep that backup private. For an application rollback without a destructive schema migration, keep the existing volume and start the previous image tag:
@@ -65,7 +68,7 @@ STUDY_BUDDY_IMAGE=study-buddy/backend:previous docker compose up -d backend
 
 The stopped backup is available if the volume must be restored. Do not use down -v: it removes the persistent volume.
 
-Verified on diamondserver on 2026-10-19. Compose built image study-buddy/backend:review-20261019-container (ID sha256:b0cc82e5a83e7563d642c27945d43d1da90ad5566b3d73d89dc044580f8f1e81) from node:22.22.2-bookworm-slim, resolved to base digest sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e. The container started healthy with Node 22.22.2 and the built-in SQLite module, ran as UID 1000 with a read-only root, no Linux capabilities, no published host ports, and only the persistent /data mount writable. The runtime /app contains only package.json and .backend-dist/server.js. An anonymous session renewed successfully after forced container recreation; SIGTERM returned exit 0 and health passed after restart. The temporary container, network and volume were removed; the review image remains on the build host. Sanitized inspect and smoke evidence: /tmp/study-buddy-container-inspect-20261019.json and /tmp/study-buddy-container-smoke-20261019.log. A 2 MiB unlisted capture plus a fake oddly named credential file stayed out of the allowlisted build context (1.31 kB transferred). The smoke used only a dummy runtime key and HMAC secret and did not call the provider or exercise generation/SSE. npm ci printed one high-severity audit warning; no dependency change was made.
+Verified on diamondserver on 2026-10-19. Compose built image study-buddy/backend:review-20261019-container (ID sha256:b0cc82e5a83e7563d642c27945d43d1da90ad5566b3d73d89dc044580f8f1e81) from node:22.22.2-bookworm-slim, resolved to base digest sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e. The container started healthy with Node 22.22.2 and the built-in SQLite module, ran as UID 1000 with a read-only root, no Linux capabilities, no published host ports, with /data as a persistent writable volume and /tmp as an ephemeral writable tmpfs. The runtime /app contains only package.json and .backend-dist/server.js. An anonymous session renewed successfully after forced container recreation; SIGTERM returned exit 0 and health passed after restart. The temporary container, network and volume were removed; the review image remains on the build host. Sanitized inspect and smoke evidence: /tmp/study-buddy-container-inspect-20261019.json and /tmp/study-buddy-container-smoke-20261019.log. A 2 MiB unlisted capture plus a fake oddly named credential file stayed out of the allowlisted build context (1.31 kB transferred). The smoke used only a dummy runtime key and HMAC secret and did not call the provider or exercise generation/SSE. npm ci printed one high-severity audit warning; no dependency change was made.
 
 These checks establish isolated packaging and session-state persistence only. They do not establish public reachability, ingress SSE behavior, live service operation, or a store release.
 

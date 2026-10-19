@@ -11,7 +11,7 @@ import { checkEn, simplerEn, taskPromptsEn } from './tasks.en'
 import { checkRu, simplerRu, taskPromptsRu } from './tasks.ru'
 
 /** Bump on any prompt-text or parameter change; logged/verifiable. */
-export const PROMPTS_VERSION = '2026-10-11.1'
+export const PROMPTS_VERSION = '2026-10-19.1'
 
 export type TaskId = 'solve' | 'quiz' | 'explain' | 'translate' | 'summarize' | 'hint'
 /** Everything that starts a turn: a task button, a free question, "simpler", or checking an attempt. */
@@ -70,20 +70,19 @@ export function simplerPrompt(ctx: PromptContext): string {
     : simplerEn(targetLanguageName(ctx))
 }
 
-/** temperature / max_tokens per turn. Factual tasks run deterministic;
- *  max_tokens is a hard cutoff, not a length target. */
-const TURN_PARAMS: Record<TurnKind, { temperature: number; maxTokens: number }> = {
-  solve: { temperature: 0, maxTokens: 2048 },
-  quiz: { temperature: 0, maxTokens: 1536 },
-  translate: { temperature: 0, maxTokens: 2048 },
-  explain: { temperature: 0.3, maxTokens: 2048 },
-  summarize: { temperature: 0.3, maxTokens: 1024 },
-  hint: { temperature: 0.3, maxTokens: 512 },
-  check: { temperature: 0, maxTokens: 1024 },
-  ask: { temperature: 0.3, maxTokens: 2048 },
-  simpler: { temperature: 0.3, maxTokens: 1536 },
+/** Luna uses provider-default sampling and the same response cap for every turn. */
+const TURN_PARAMS: Record<TurnKind, { maxTokens: number }> = {
+  solve: { maxTokens: 16_384 },
+  quiz: { maxTokens: 16_384 },
+  translate: { maxTokens: 16_384 },
+  explain: { maxTokens: 16_384 },
+  summarize: { maxTokens: 16_384 },
+  hint: { maxTokens: 16_384 },
+  check: { maxTokens: 16_384 },
+  ask: { maxTokens: 16_384 },
+  simpler: { maxTokens: 16_384 },
 }
 
-export function turnParams(kind: TurnKind): { temperature: number; maxTokens: number } {
+export function turnParams(kind: TurnKind): { maxTokens: number } {
   return TURN_PARAMS[kind]
 }

@@ -1,27 +1,19 @@
-// The one place that decides WHICH model answers.
-//
-// For now the model is not user-selectable: every request goes to DeepSeek,
-// with an ordered fallback chain for when that model is unavailable. The chain
-// is tried only on genuine availability failures (see isRetryable) and only
-// while the failing attempt has produced nothing yet — a model that streamed
-// half an answer and then died must show that error, not silently restart on
-// another model and duplicate the visible text.
+// The one place that decides which model answers. Provider failures surface
+// directly so an unavailable Luna request is never silently sent elsewhere.
 
 import type { ApiMessage, CompletionResult, ProviderSettings } from './api'
-import { chatCompletion, isRetryable } from './api'
+import { chatCompletion } from './api'
 
 /** Primary model. */
-export const MODEL_PRIMARY = 'deepseek/deepseek-v4-flash-vision-exp'
-/** Tried in order when the primary (or a previous fallback) is unavailable. */
-export const MODEL_FALLBACKS = ['google/gemini-3.1-flash-lite', 'openai/gpt-5-nano']
+export const MODEL_PRIMARY = 'openai/gpt-6-luna'
+/** No alternate model is configured for this stage. */
+export const MODEL_FALLBACKS: string[] = []
 /** The full chain, primary first. */
-export const MODEL_CHAIN = [MODEL_PRIMARY, ...MODEL_FALLBACKS]
+export const MODEL_CHAIN = [MODEL_PRIMARY]
 
 /** Friendly names for the UI (fallback notices). */
 const MODEL_LABELS: Record<string, string> = {
-  [MODEL_PRIMARY]: 'DeepSeek',
-  'google/gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
-  'openai/gpt-5-nano': 'GPT-5 Nano',
+  [MODEL_PRIMARY]: 'GPT-6 Luna',
 }
 
 /** Short human name for a model id, falling back to the id itself. */
@@ -32,47 +24,23 @@ export function modelLabel(id: string): string {
 export interface AskOpts {
   settings: ProviderSettings
   messages: ApiMessage[]
-  /** Sampling temperature (0 = deterministic; factual tasks). */
-  temperature?: number
   /** Hard token cutoff for the answer (a cap, not a length target). */
   maxTokens?: number
-  /** Aborts the whole chain (fetch signal). */
+  /** Aborts the request (fetch signal). */
   signal?: AbortSignal
   /** Each text delta from whichever model is currently answering. */
   onDelta?: (delta: string) => void
-  /** Called right before switching models, so the UI can say so. */
-  onFallback?: (from: string, to: string, error: Error) => void
 }
 
-/** Ask the chain until one model answers. Returns the completion; throws the
- *  last error if every model failed (or the first one failed non-retryably). */
+/** Ask Luna once and surface its provider error without switching models. */
 export async function askWithFallback(opts: AskOpts): Promise<CompletionResult> {
-  let lastError: unknown
-  for (let i = 0; i < MODEL_CHAIN.length; i++) {
-    const model = MODEL_CHAIN[i]
-    const next = MODEL_CHAIN[i + 1]
-    let emitted = false
-    try {
-      const result = await chatCompletion({
-        settings: opts.settings,
-        model,
-        messages: opts.messages,
-        temperature: opts.temperature,
-        maxTokens: opts.maxTokens,
-        signal: opts.signal,
-        onDelta: (delta) => {
-          emitted = true
-          opts.onDelta?.(delta)
-        },
-      })
-      return { ...result, model: result.model ?? model }
-    } catch (err) {
-      lastError = err
-      // `isRetryable` already excludes 'aborted'; `emitted` guards the
-      // half-stream case described above.
-      if (!next || emitted || !isRetryable(err)) throw err
-      opts.onFallback?.(model, next, err instanceof Error ? err : new Error(String(err)))
-    }
-  }
-  throw lastError
+  const result = await chatCompletion({
+    settings: opts.settings,
+    model: MODEL_PRIMARY,
+    messages: opts.messages,
+    maxTokens: opts.maxTokens,
+    signal: opts.signal,
+    onDelta: opts.onDelta,
+  })
+  return { ...result, model: result.model ?? MODEL_PRIMARY }
 }

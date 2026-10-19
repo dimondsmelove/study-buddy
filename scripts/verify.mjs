@@ -57,7 +57,7 @@ const pageHtml = `<!doctype html><meta charset="utf-8"><title>target</title>
 
 // This isolated HTTP server serves the local capture page and acts as the
 // injected fake OpenAI-compatible upstream for the real backend process.
-// `failModel` makes one model answer 503, to exercise the backend fallback chain.
+// `failModel` makes the sole model answer 503, to exercise surfaced provider errors.
 let lastAiRequest = null
 let failModel = null
 let responseMode = 'normal'
@@ -567,8 +567,7 @@ try {
   // reply must stream into the thread, and
   // the request must carry the crop as an image_url. The model is fixed by the
   // app's chain (settings.model no longer exists).
-  const PRIMARY = 'deepseek/deepseek-v4-flash-vision-exp'
-  const FALLBACK = 'google/gemini-3.1-flash-lite'
+  const PRIMARY = 'openai/gpt-6-luna'
   // Pin uiLanguage 'en' so the prompt assertions below are deterministic
   // regardless of the test machine's browser locale (auto would follow it).
   await sw.evaluate(
@@ -671,7 +670,7 @@ try {
   check(lastAiRequest?.model === PRIMARY, `request used the fixed primary model (${lastAiRequest?.model ?? 'MISSING'})`)
   // Prompt regression: the system prompt carries the grounding rules, the
   // Solve template goes out verbatim, and the factual-task params are set
-  // (temperature 0 + max_tokens cutoff from src/shared/prompts).
+  // (shared max_tokens cutoff from src/shared/prompts).
   const sysMsg = lastAiRequest?.messages?.[0]
   check(
     sysMsg?.role === 'system' &&
@@ -686,8 +685,8 @@ try {
     `solve prompt sent as expected (${String(solveText ?? '').slice(0, 40)}…)`,
   )
   check(
-    lastAiRequest?.temperature === 0 && lastAiRequest?.max_tokens === 2048,
-    `request carried solve params (t=${lastAiRequest?.temperature}, max_tokens=${lastAiRequest?.max_tokens})`,
+    lastAiRequest?.max_tokens === 16_384 && !('temperature' in lastAiRequest) && !('reasoning' in lastAiRequest),
+    `Luna request carries max_tokens=16384 and provider-default reasoning/sampling (${JSON.stringify(lastAiRequest && { max_tokens: lastAiRequest.max_tokens, temperature: lastAiRequest.temperature, reasoning: lastAiRequest.reasoning })})`,
   )
   await ai.close()
 
@@ -844,22 +843,23 @@ try {
     'RU system prompt sent for ru UI',
   )
   await aiRu.close()
-  // Back to EN for the fallback test below.
+  // Back to EN for the unavailable-model test below.
   await sw.evaluate(
     async (s) => chrome.storage.local.set({ settings: s }),
     { uiLanguage: 'en', answerLanguage: 'auto' },
   )
 
-  // Fallback: make the primary answer 503; the next model must take over and
-  // the thread must note the switch.
+  // The unavailable primary must surface its error after exactly one attempt.
   failModel = PRIMARY
-  const fb = await openCapture()
-  await fb.click('.preset[data-preset="solve"]')
-  const fbReply = await waitReply(fb)
-  check(fbReply === 'Hello world', `fallback model answered (${fbReply ?? 'no reply'})`)
-  check(lastAiRequest?.model === FALLBACK, `fallback used the next model (${lastAiRequest?.model ?? 'MISSING'})`)
-  check(await fb.evaluate(() => !!document.querySelector('.msg.note')), 'fallback notice shown in the thread')
-  await fb.close()
+  const unavailable = await openCapture()
+  const beforeUnavailable = requestCount
+  await unavailable.click('.preset[data-preset="solve"]')
+  await unavailable.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .reply-status')].some(node => node.textContent?.includes('may have reached the answer service')))
+  check(lastAiRequest?.model === PRIMARY && requestCount === beforeUnavailable + 1,
+    'unavailable Luna surfaces the provider error after one request with no model switch')
+  check(!(await unavailable.evaluate(() => !!document.querySelector('.msg.note'))),
+    'no fallback notice is shown when Luna is unavailable')
+  await unavailable.close()
 
   failModel = null
   const evidence = resolve(root, '..', 'review', 'loop')
@@ -1110,7 +1110,7 @@ try {
   await hint.setViewportSize({ width: 480, height: 564 })
   await hint.click('[data-preset="hint"]')
   await waitSaved(hint, 'Complete')
-  check(lastAiRequest.max_tokens === 512 && lastAiRequest.temperature === 0.3, 'Hint UI uses its bounded one-step prompt budget')
+  check(lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest), 'Hint UI uses the shared Luna cap and omits temperature')
   const hintDb = await readSaved(hint)
   const hintId = hintDb.state.lastConversationId
   check(hintDb.conversations.find(c => c.id === hintId).turns.at(-1).status === 'complete', 'completion status committed to IndexedDB')
@@ -1266,7 +1266,7 @@ try {
   await hint.click('[data-retry]')
   await hint.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 3)
   await waitSaved(hint, 'Complete')
-  check(await hint.locator('.msg.user').count() === usersBeforeRetry && lastAiRequest.max_tokens === 2048, 'explicit Regenerate preserves the source user turn and its original turn budget')
+  check(await hint.locator('.msg.user').count() === usersBeforeRetry && lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest), 'explicit Regenerate preserves the source user turn and its original turn budget')
 
   const checked = await openCapture()
   await checked.setViewportSize({ width: 480, height: 564 })
@@ -1296,7 +1296,7 @@ try {
   const checkedText = lastAiRequest.messages.flatMap(message => typeof message.content === 'string'
     ? [message.content]
     : Array.isArray(message.content) ? message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
-  check(lastAiRequest.max_tokens === 1024 && checkedText.some(text => text.includes('work or answer visible in the current image') && text.includes('no student work or answer that can be checked')),
+  check(lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest) && checkedText.some(text => text.includes('work or answer visible in the current image') && text.includes('no student work or answer that can be checked')),
     'Check asks the model to inspect visible image work and state honestly when there is none')
   await resetCooldown(checked)
   responseMode = 'slow'

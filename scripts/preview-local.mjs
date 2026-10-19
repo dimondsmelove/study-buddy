@@ -82,8 +82,9 @@ const server = createServer((req, res) => {
       try { request = JSON.parse(body) } catch { res.writeHead(400); res.end(); return }
       requests++
       const ru = request.messages?.[0]?.content?.includes('# Опора на изображение')
-      const hint = request.max_tokens === 512
-      const check = request.max_tokens === 1024
+      const task = request.messages?.at(-1)?.content ?? ''
+      const hint = typeof task === 'string' && task.toLowerCase().includes('hint')
+      const check = typeof task === 'string' && task.toLowerCase().includes('check')
       const text = ru
         ? hint ? 'Начни с вычитания 6 из обеих частей равенства. Какое равенство получится?' : check ? 'Первый неверный переход — раскрытие скобок: множитель 2 относится к обоим слагаемым. Проверь произведение 2 · 3.' : 'Демонстрационный ответ локального mock. Реальная модель не вызывается.'
         : hint ? 'Start by subtracting 6 from both sides. What equation do you get?' : check ? 'The first incorrect step is distributing the brackets: 2 multiplies both terms. Check 2 × 3.' : 'Local mock demonstration. No real model is called.'

@@ -30,7 +30,7 @@ function load(file) {
 
 const prompts = load('src/shared/prompts/index.ts')
 const i18n = load('src/shared/i18n.ts')
-assert.equal(prompts.PROMPTS_VERSION, '2026-10-11.1')
+assert.equal(prompts.PROMPTS_VERSION, '2026-10-19.1')
 for (const ctx of [{ answerLanguage: 'en', uiLang: 'en' }, { answerLanguage: 'ru', uiLang: 'ru' }]) {
   const instruction = prompts.firstAnswerTitleInstruction(ctx)
   assert(instruction.includes('[[STUDY_BUDDY_TITLE]]'))
@@ -93,16 +93,12 @@ for (const { ctx, ru, language } of contexts) {
   }
 }
 
-const budgets = {
-  solve: [0, 2048], quiz: [0, 1536], translate: [0, 2048],
-  explain: [0.3, 2048], summarize: [0.3, 1024],
-  ask: [0.3, 2048], simpler: [0.3, 1536],
-  hint: [0.3, 512], check: [0, 1024],
-}
-for (const [kind, [temperature, maxTokens]] of Object.entries(budgets)) {
-  const actual = prompts.turnParams(kind)
-  assert.equal(actual.temperature, temperature, `${kind} temperature`)
-  assert.equal(actual.maxTokens, maxTokens, `${kind} token budget`)
+const turnKinds = ['solve', 'quiz', 'translate', 'explain', 'summarize', 'hint', 'check', 'ask', 'simpler']
+for (const kind of turnKinds) {
+  const params = prompts.turnParams(kind)
+  assert.equal(params.maxTokens, 16_384)
+  assert.equal(Object.hasOwn(params, 'temperature'), false)
+  assert.equal(Object.hasOwn(params, 'reasoning'), false)
 }
 
 for (const lang of ['en', 'ru']) {

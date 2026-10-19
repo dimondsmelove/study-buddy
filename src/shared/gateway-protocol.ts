@@ -43,7 +43,6 @@ export interface GatewayGenerationInput {
 
 export interface PreparedGatewayGeneration {
   messages: ApiMessage[]
-  temperature: number
   maxTokens: number
   estimatedInputTokens: number
   inputBudget: number
@@ -127,7 +126,6 @@ export function gatewayFingerprint(input: GatewayGenerationInput, prepared: Prep
     uiLanguage: input.uiLanguage,
     titleNeeded: input.titleNeeded,
     messages: prepared.messages,
-    temperature: prepared.temperature,
     maxTokens: prepared.maxTokens,
   })
 }

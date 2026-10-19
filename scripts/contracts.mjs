@@ -320,28 +320,18 @@ await contract('documented OpenRouter context-length metadata is redacted and ne
   await assert.rejects(ask({ onFallback: () => assert.fail('Context rejections must not fall back') }), (error) => safeError(error, 'context'))
   assert.equal(requests.length, 1)
 })
-await contract('404/429/503 before any delta fall back once with the same per-turn params', async () => {
+await contract('Luna is the sole model and unavailable responses are surfaced after one request', async () => {
+  assert.equal(JSON.stringify(ai.MODEL_CHAIN), JSON.stringify(['openai/gpt-6-luna']))
+  assert.equal(ai.MODEL_FALLBACKS.length, 0)
   for (const status of [404, 429, 503]) {
-    const switches = []
-    const requests = stubFetch((_request, count) => count === 1
-      ? jsonResponse({ error: { message: 'fixture unavailable' } }, status)
-      : streamResponse(delta('fallback') + finish('stop') + done))
-    const result = await ask({ temperature: 0.2, maxTokens: 321, onFallback: (...args) => switches.push(args) })
-    assert.deepEqual(plain(result), expected('fallback', 'complete', 'stop', ai.MODEL_CHAIN[1]))
-    assert.equal(requests.length, 2)
-    assert.equal(switches.length, 1)
-    assert.deepEqual(requests.map((request) => request.body.model), plain(ai.MODEL_CHAIN.slice(0, 2)))
-    for (const request of requests) {
-      assert.equal(request.body.temperature, 0.2)
-      assert.equal(request.body.max_tokens, 321)
-      assert.deepEqual(request.body.messages, messages)
-      assert.equal(request.body.stream, true)
-      assert.deepEqual(request.body.stream_options, { include_usage: true })
-    }
+    const requests = stubFetch(() => jsonResponse({ error: { message: 'fixture unavailable' } }, status))
+    await assert.rejects(ask({ maxTokens: 16_384 }), (error) => error.status === status)
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].body.model, 'openai/gpt-6-luna')
+    assert.equal(requests[0].body.max_tokens, 16_384)
+    assert.equal('temperature' in requests[0].body, false)
+    assert.equal('reasoning' in requests[0].body, false)
   }
-  const requests = stubFetch(() => jsonResponse({}, 503))
-  await assert.rejects(ask(), (error) => safeError(error, 'http', 503))
-  assert.equal(requests.length, ai.MODEL_CHAIN.length)
 })
 await contract('no fallback for partial output, network, abort, parse or HTTP 200 provider errors', async () => {
   for (const [response, kind, partial] of [

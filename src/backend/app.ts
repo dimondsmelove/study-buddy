@@ -260,14 +260,12 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
       const result = await askWithFallback({
         settings,
         messages: prepared.messages,
-        temperature: prepared.temperature,
         maxTokens: prepared.maxTokens,
         signal: controller.signal,
         onDelta: (text) => {
           emittedText = true
           if (!controller.signal.aborted) writeEvent(response, 'delta', { text })
         },
-        onFallback: (from, to) => writeEvent(response, 'fallback', { from, to }),
       })
       const safeResult = completionDto(result)
       operationStatus = result.status === 'interrupted' ? 'interrupted' : 'complete'

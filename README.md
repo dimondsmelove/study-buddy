@@ -23,7 +23,7 @@ No provider key or local tokenizer is needed in the browser. Public hosting and
 store publication are separate release steps.
 
 The backend uses Node 22.22.2 and built-in SQLite for operational state, without
-cloud chat history. The answering/fallback chain remains in `src/shared/ai.ts`.
+cloud chat history. Requests go through the backend using OpenAI GPT-6 Luna via OpenRouter; provider errors are surfaced without switching models.
 Implementation and acceptance evidence for this slice are recorded in `ToDo.md`
 and the local loop ledger; earlier UI acceptance records remain historical.
 Store copy and privacy disclosures in `store/` are drafts until actual hosting,
@@ -98,8 +98,9 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   per-chat usage or conversation text/images/responses.
 - The backend admits one start per session per ten seconds, one in flight per
   session, and four globally; session issuance is limited per network. It owns
-  task output limits, timeout and availability fallback before output. Duplicate
-  request IDs do not restart a generation within the 24-hour idempotency window.
+  a shared 16,384-token response cap and timeout. Provider availability errors
+  surface without switching models. Duplicate request IDs do not restart a generation
+  within the 24-hour idempotency window.
   Anonymous sessions and rate limits do not impose a monetary spending ceiling.
 - Incognito is disabled. There is no cloud sync, telemetry or student profiling.
 

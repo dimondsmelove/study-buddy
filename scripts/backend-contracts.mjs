@@ -171,9 +171,9 @@ async function createFixture(options = {}) {
   const provider = await startProvider(options.responder ?? (async ({ response }) => {
     response.writeHead(200, { 'Content-Type': 'text/event-stream' })
     response.end(
-      sse({ model: 'deepseek/deepseek-v4-flash-vision-exp', choices: [{ delta: { content: 'PROVIDER_OUTPUT_SENTINEL' }, finish_reason: null }] }) +
-      sse({ model: 'deepseek/deepseek-v4-flash-vision-exp', choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
-      sse({ model: 'deepseek/deepseek-v4-flash-vision-exp', choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
+      sse({ model: 'openai/gpt-6-luna', choices: [{ delta: { content: 'PROVIDER_OUTPUT_SENTINEL' }, finish_reason: null }] }) +
+      sse({ model: 'openai/gpt-6-luna', choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
+      sse({ model: 'openai/gpt-6-luna', choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
       sse({ choices: [], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
       'data: [DONE]\n\n',
     )
@@ -264,8 +264,8 @@ await test('shared preparation is canonical and text uses the four-byte estimate
   assert.match(prepared.messages[0].content, /You are|Ты —/)
   assert.equal(prepared.messages.at(-1).role, 'user')
   assert.equal(prepared.messages.at(-1).content, 'What is 2 + 2?')
-  assert.equal(prepared.temperature, 0.3)
-  assert.equal(prepared.maxTokens, 2048)
+  assert.equal('temperature' in prepared, false)
+  assert.equal(prepared.maxTokens, 16_384)
   assert.equal(protocol.estimateTextTokens('abcde'), 2)
   assert.equal(protocol.estimateTextTokens('ЯЯЯ'), 2)
   assert.equal(protocol.estimateTextTokens('\u{1f600}'), 1)
@@ -361,9 +361,10 @@ await test('HTTP session, CORS, canonical provider request, final usage chunk, a
     assert.equal(complete.usage.completionTokens, 4)
     assert.equal(fixture.provider.requests.length, 1)
     const upstream = fixture.provider.requests[0]
-    assert.equal(upstream.model, 'deepseek/deepseek-v4-flash-vision-exp')
-    assert.equal(upstream.temperature, 0.3)
-    assert.equal(upstream.max_tokens, 2048)
+    assert.equal(upstream.model, 'openai/gpt-6-luna')
+    assert.equal('temperature' in upstream, false)
+    assert.equal('reasoning' in upstream, false)
+    assert.equal(upstream.max_tokens, 16_384)
     assert.equal(upstream.messages[0].role, 'system')
     assert.equal(upstream.messages.at(-1).content, 'What is 2 + 2?')
     assert.equal(JSON.stringify(upstream).includes('client text must be replaced'), false)
@@ -559,31 +560,30 @@ await test('malformed, oversized, image, client-system, and client-parameter req
   }
 })
 
-await test('genuine pre-output availability failure falls back; auth and partial output do not', async () => {
-  const fallback = await createFixture({
-    responder: async ({ response, body }) => {
-      if (body.model === 'deepseek/deepseek-v4-flash-vision-exp') {
-        response.writeHead(404)
+await test('unavailable Luna surfaces an error without a second model attempt', async () => {
+  for (const status of [404, 429, 503]) {
+    const unavailable = await createFixture({
+      responder: async ({ response }) => {
+        response.writeHead(status)
         response.end('PROVIDER_BODY_SECRET')
-        return
-      }
-      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
-      response.end(sse({ model: body.model, choices: [{ delta: { content: 'fallback answer' }, finish_reason: null }] }) +
-        sse({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n')
-    },
-  })
-  try {
-    const session = await issueSession(fallback)
-    const response = await postGeneration(fallback, session.token, input())
-    const emitted = events(await response.text())
-    assert.equal(emitted.some((event) => event.event === 'fallback' && event.data.to === 'google/gemini-3.1-flash-lite'), true)
-    const completed = emitted.find((event) => event.event === 'complete').data
-    assert.equal(completed.status, 'complete')
-    assert.equal('usage' in completed, false)
-    assert.equal(fallback.provider.requests.length, 2)
-  } finally {
-    await fallback.close()
-    await rm(fallback.directory, { recursive: true, force: true })
+      },
+    })
+    try {
+      const session = await issueSession(unavailable)
+      const response = await postGeneration(unavailable, session.token, input())
+      const emitted = events(await response.text())
+      const error = emitted.find((event) => event.event === 'error').data
+      assert.equal(error.code, status === 429 ? 'provider.rate_limited' : 'provider.unavailable')
+      assert.equal(emitted.some((event) => event.event === 'fallback'), false)
+      assert.equal(unavailable.provider.requests.length, 1)
+      assert.equal(unavailable.provider.requests[0].model, 'openai/gpt-6-luna')
+      assert.equal(unavailable.provider.requests[0].max_tokens, 16_384)
+      assert.equal('temperature' in unavailable.provider.requests[0], false)
+      assert.equal('reasoning' in unavailable.provider.requests[0], false)
+    } finally {
+      await unavailable.close()
+      await rm(unavailable.directory, { recursive: true, force: true })
+    }
   }
 
   const auth = await createFixture({

@@ -13,14 +13,12 @@ import { captureDialog, closeDialog, installConversationCoordinator, launcherSta
 
 installConversationCoordinator()
 
-declare const __SB_WELCOME_URL__: string
-
 const CHAT_URL = 'src/chat/chat.html'
 const HISTORY_MENU_ID = 'study-buddy-show-history'
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'install') {
-    void chrome.tabs.create({ url: `${__SB_WELCOME_URL__}?id=${encodeURIComponent(chrome.runtime.id)}` })
+    void chrome.tabs.create({ url: `${__SB_WELCOME_URL__}?id=${encodeURIComponent(chrome.runtime.id)}` }).catch(() => {})
   }
   void bootstrapTabs()
   chrome.contextMenus.removeAll(() => {

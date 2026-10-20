@@ -20,7 +20,7 @@ h1 { margin: 34px 0 8px; font-size: clamp(26px, 6vw, 34px); line-height: 1.2; le
 h2 { margin: 1px 0 9px; font-size: 16px; line-height: 1.4; font-weight: 620; }
 ol { margin: 0; padding-left: 21px; color: #526174; font-size: 14px; line-height: 1.6; }
 li + li { margin-top: 2px; }
-.text-button { margin: 8px 0 0 -8px; min-height: 36px; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent; color: #1d4ed8; font: inherit; font-size: 14px; cursor: pointer; }
+.text-button { margin: 8px 0 0 -8px; min-height: 44px; padding: 6px 8px; border: 0; border-radius: 5px; background: transparent; color: #1d4ed8; font: inherit; font-size: 14px; cursor: pointer; }
 .text-button:hover { background: #eff6ff; }
 .exercise { margin-top: 26px; padding: 20px; border: 1px solid #d9e2ed; border-radius: 10px; background: #fff; }
 .eyebrow { margin: 0; color: #526174; font-size: 13px; font-weight: 600; }

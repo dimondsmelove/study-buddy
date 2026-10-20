@@ -2,7 +2,7 @@ const params = new URLSearchParams(location.search)
 const extensionId = params.get('id')
 const pinSection = document.querySelector('#pin')
 const skipButton = document.querySelector('#skip-pin')
-const manualMode = params.get('manual') === '1'
+let skippedPin = false
 let timer
 
 function validExtensionId(value) {
@@ -10,12 +10,12 @@ function validExtensionId(value) {
 }
 
 function showPinGuide() {
-  if (!manualMode && sessionStorage.getItem('skip-pin') !== '1') pinSection.hidden = false
+  if (!skippedPin) pinSection.hidden = false
 }
 
 function checkPinState() {
   if (document.hidden) return
-  if (manualMode || !validExtensionId(extensionId) || typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+  if (!validExtensionId(extensionId) || typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
     showPinGuide()
     return
   }
@@ -26,22 +26,27 @@ function checkPinState() {
     }
     if (response.pinned) {
       pinSection.hidden = true
-      sessionStorage.removeItem('skip-pin')
+      skippedPin = false
     } else showPinGuide()
   })
 }
 
 skipButton.addEventListener('click', () => {
-  sessionStorage.setItem('skip-pin', '1')
+  skippedPin = true
   pinSection.hidden = true
 })
 
-if (!manualMode) {
+function startPolling() {
+  window.clearInterval(timer)
+  if (document.hidden) return
   checkPinState()
   timer = window.setInterval(checkPinState, 1500)
 }
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) window.clearInterval(timer)
-  else { checkPinState(); timer = window.setInterval(checkPinState, 1500) }
-})
+
+const platform = navigator.userAgentData?.platform || navigator.platform
+if (/Mac|iPhone|iPad/.test(platform)) document.querySelector('#capture-modifier').textContent = 'Cmd'
+pinSection.hidden = false
+startPolling()
+document.addEventListener('visibilitychange', startPolling)
+window.addEventListener('pageshow', startPolling)
 window.addEventListener('pagehide', () => window.clearInterval(timer))

@@ -2,14 +2,14 @@
 
 ## Public backend: Stage 1 hosting record (2026-10-19)
 
-This is a verified design record for the approved public-backend direction. It is not a deployment record. The Chrome Web Store release is planned for this week; users must not need Tailscale. Only the Study Buddy backend is in scope for public reachability. The extension, its local chat/image history, and its independent UI/answer-language settings retain their current architecture. The model remains openai/gpt-6-luna through OpenRouter, with the approved prompt package and parameters unchanged.
+This is a verified design record for the approved public-backend direction. It is not a deployment record. Public domain, tunnel, deployment, and store release work is deferred to later sessions; users must not need Tailscale for the eventual public release. Only the Study Buddy backend is in scope for public reachability. The extension, its local chat/image history, and its independent UI/answer-language settings retain their current architecture. The model remains openai/gpt-6-luna through OpenRouter, with the approved prompt package and parameters unchanged.
 
 ### FACT
 
 - The current backend is one Node 22.22.2 process with built-in SQLite and a single-instance assumption. It listens on loopback by default, exposes /health, and serves session and generation APIs, including SSE. Runtime secrets remain server-side.
 - Generation timeout is 180 seconds; maximum JSON request body is 32 MiB. The app emits text/event-stream; the ingress must preserve streaming, Authorization, and request bodies. These are application limits, not proof that a chosen ingress supports them end to end.
 - On diamondserver, Docker 29.3 and Compose 5.1 are available. The host has private IPv4 addresses 192.168.1.7 and .3, default router 192.168.1.1, and no global IPv6. WAN address, CGNAT status, and router port-forward state are unknown. The Docker host has 157 GiB free disk and 5 GiB available memory at inspection; a Node 22 Alpine image is cached, but the project pins Node 22.22.2. Existing application ports are published to private addresses. Bounded checks found no active Caddy, Nginx, Apache, or Cloudflare Tunnel service/configuration and no Study Buddy deployment. This does not establish that the host is unreachable from the Internet.
-- No public hostname/domain has been acquired or selected yet. The user plans to buy a domain on 2026-10-20; Cloudflare account/zone setup, tunnel creation, and DNS routing remain pending. Store privacy/contact and support fields remain draft placeholders. The packed/store extension ID is not yet known; the unpacked placeholder is not a release ID.
+- No public hostname/domain has been acquired or selected yet. Domain acquisition, Cloudflare account/zone setup, tunnel creation, and DNS routing are deferred to a later session. Store privacy/contact and support fields remain draft placeholders. The packed/store extension ID is not yet known; the unpacked placeholder is not a release ID.
 - Anonymous bearer sessions and CORS do not authenticate a person or trusted caller. A durable anonymous installation identity now carries the monthly wallet; clearing extension data, using a new profile, or reinstalling can create another identity. The per-installation budget is described below.
 
 ### DECISION
@@ -28,7 +28,7 @@ Do not use a Cloudflare Quick Tunnel for this release: Cloudflare documents that
 
 ### OPEN
 
-- Acquire the domain (the user plans to buy it on 2026-10-20), decide its stable hostname, and confirm who controls its DNS. Then configure the selected named Cloudflare Tunnel and route; none of these steps is complete yet.
+- In a later public-release session, acquire the domain, decide its stable hostname, confirm DNS control, and configure the selected named Cloudflare Tunnel and route; none of these steps is complete yet.
 - Confirm the actual extension store ID before setting exact ALLOWED_ORIGINS and building the distributed extension.
 - Complete support contact and privacy URL/audience details, then reconcile disclosures with host, ingress, and provider retention. The current listing/privacy drafts also contain stale product claims (Quiz, multiline Check, English default and fallback); review them against the shipped behavior in the store stage.
 
@@ -99,10 +99,60 @@ Verified on diamondserver on 2026-10-19. Compose built image study-buddy/backend
 
 These checks establish packaging, session-state persistence, and the scoped host guard's tested packet paths only. They do not establish public reachability, ingress SSE behavior, live service operation, IPv6 packet enforcement, or a store release.
 
-This is a local integration candidate, not a deployed service. The initial
-architecture is one Node process and one SQLite file on persistent local disk.
-Do not run multiple instances against this database: startup recovery assumes
-that no other instance owns an active generation.
+## Private laptop integration test (2026-10-20)
+
+The merged backend is running as the user service study-buddy-backend.service on
+homelab-laptop. It is bound only to 127.0.0.1:8787 and allowlists the current
+unpacked Vivaldi extension origin chrome-extension://hlclddpmiehffbnjknfnjcaapeoihkbf.
+The installed extension remains at ~/Загрузки/Study-Buddy-Local; its runtime
+bundle points to http://127.0.0.1:8787. This is a private laptop integration
+test, not the public deployment or packed store build.
+
+The unit starts with the user systemd session and restarts on failure. Its
+owner-only runtime env is ~/.config/study-buddy/private-backend.env; the
+OpenRouter key is read from the existing credentials file when this env is
+created and remains server-side. SESSION_HMAC_SECRET is persistent across
+restarts. Operational state is in
+~/.local/share/study-buddy/private/backend.sqlite (directory mode 0700, file
+mode 0600). Run exactly one instance against this file.
+
+~~~sh
+systemctl --user start study-buddy-backend.service
+systemctl --user stop study-buddy-backend.service
+systemctl --user restart study-buddy-backend.service
+systemctl --user status study-buddy-backend.service
+journalctl --user -u study-buddy-backend.service -f
+curl -fsS http://127.0.0.1:8787/health
+~~~
+
+To update from the main checkout, keep the private state and env outside the
+repository. Make a stopped database backup before changing backend code, then
+build and update the unpacked extension in place so Vivaldi retains its path and
+ID. The pre-integration extension bundle is preserved at
+~/.local/share/study-buddy/private/extension-rollback-20261020-0940.tar.
+
+~~~sh
+cd ~/Projects/OCR-AI/study-buddy
+systemctl --user stop study-buddy-backend.service
+tar -C ~/.local/share/study-buddy/private -cf ~/.local/share/study-buddy/private/backend-backup-pre-update.tar backend.sqlite*
+chmod 600 ~/.local/share/study-buddy/private/backend-backup-pre-update.tar
+npm run backend:build
+STUDY_BUDDY_GATEWAY_URL=http://127.0.0.1:8787 npm run build
+rsync -a --delete dist/ ~/Загрузки/Study-Buddy-Local/
+systemctl --user start study-buddy-backend.service
+curl -fsS http://127.0.0.1:8787/health
+~~~
+
+The current feature enforces a $5 monthly budget per anonymous installation and
+a $100 monthly aggregate across this backend's database. Each generation
+reserves $0.275. These limits cover requests routed through this service, not
+other use of the OpenRouter account. The next UI session should branch from the
+merged main baseline at 25df309; the private gateway is available for its
+integration. Public domain/tunnel/DNS work, container deployment, and store
+publication remain deferred.
+
+The architecture is one Node process and one SQLite file on persistent local
+disk. Startup recovery assumes no other instance owns an active generation.
 
 ## Reproduce locally
 

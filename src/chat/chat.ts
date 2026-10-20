@@ -269,11 +269,50 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-goto-setti
 }
 
 // ── answer rendering ─────────────────────────────────────────────────────────
-// Answers are Markdown with LaTeX. Render once the stream ends; during the
-// stream the bubble shows plain text (cheap), so KaTeX never re-typesets on
-// every token. DOMPurify guards the HTML; KaTeX runs with trust:false.
+// The saved reply stays untouched. Only the live preview closes unfinished
+// Markdown and waits for complete math; DOMPurify also guards every stream frame.
 
-function renderAnswer(node: HTMLElement, text: string): void {
+function streamingMarkdown(source: string): string {
+  const emphasis: string[] = []
+  const tokens = /`+|~{3,}|\$\$?|\*\*|__|~~|\*|_|\\[\s\S]?/g
+  const closingEmphasis = () => [...emphasis].reverse().join('')
+  for (let match; (match = tokens.exec(source));) {
+    const token = match[0]
+    const start = match.index
+    const after = start + token.length
+    if (token.startsWith('\\')) {
+      if (token.length === 1) return source.slice(0, start) + closingEmphasis()
+      continue
+    }
+    if (token.startsWith('`') || token.startsWith('~~~')) {
+      const end = source.indexOf(token, after)
+      if (end < 0) return source + (token.length >= 3 ? '\n' : '') + token + closingEmphasis()
+      tokens.lastIndex = end + token.length
+      continue
+    }
+    if (token.startsWith('$')) {
+      let end = after
+      while ((end = source.indexOf(token, end)) >= 0) {
+        let backslashes = 0
+        for (let i = end - 1; i >= 0 && source[i] === '\\'; i--) backslashes++
+        if (backslashes % 2 === 0) break
+        end += token.length
+      }
+      if (end < 0) return source.slice(0, start) + 'SBPENDINGMATH' + closingEmphasis()
+      tokens.lastIndex = end + token.length
+      continue
+    }
+    const before = source[start - 1] ?? ''
+    const next = source[after] ?? ''
+    if (token.includes('_') && /[\p{L}\p{N}]/u.test(before) && /[\p{L}\p{N}]/u.test(next)) continue
+    if (emphasis.at(-1) === token && before && !/\s/.test(before)) emphasis.pop()
+    else if (next && !/\s/.test(next)) emphasis.push(token)
+    else if (!next) return source.slice(0, start) + closingEmphasis()
+  }
+  return source + closingEmphasis()
+}
+
+function renderAnswer(node: HTMLElement, text: string, streaming = false): void {
   // 1) Models sometimes emit TeX delimiters \( \) / \[ \] instead of $ / $$.
   //    marked strips the backslash as a Markdown escape BEFORE KaTeX runs,
   //    which destroys those delimiters — normalize to $ / $$ first.
@@ -282,6 +321,8 @@ function renderAnswer(node: HTMLElement, text: string): void {
     .replace(/\\\]/g, '\n$$\n')
     .replace(/\\\(/g, '$')
     .replace(/\\\)/g, '$')
+
+  if (streaming) src = streamingMarkdown(src)
 
   // 2) With breaks:true, marked turns newlines inside a $$...$$ block into
   //    <br>, splitting the text nodes KaTeX auto-render matches on — multi-line
@@ -304,8 +345,15 @@ function renderAnswer(node: HTMLElement, text: string): void {
   const textNodes: Text[] = []
   while (walker.nextNode()) textNodes.push(walker.currentNode as Text)
   for (const tn of textNodes) {
-    if (!tn.data.includes('SBMATH')) continue
     tn.data = tn.data.replace(/SBMATH(\d+)SB/g, (_, i) => mathSpans[Number(i)])
+    if (streaming && tn.data.includes('SBPENDINGMATH')) {
+      const pending = document.createElement('span')
+      pending.className = 'math-pending'
+      pending.textContent = '…'
+      pending.setAttribute('aria-hidden', 'true')
+      const [before, after] = tn.data.split('SBPENDINGMATH')
+      tn.replaceWith(document.createTextNode(before), pending, document.createTextNode(after))
+    }
   }
   renderMathInElement(node, {
     delimiters: [
@@ -313,6 +361,7 @@ function renderAnswer(node: HTMLElement, text: string): void {
       { left: '$', right: '$', display: false },
     ],
     throwOnError: false,
+    trust: false,
   })
 }
 
@@ -468,7 +517,7 @@ async function renderConversation(): Promise<void> {
         const note = addMessage('note', turn.note)
         thread.insertBefore(note.wrap, msg.wrap)
       }
-      renderAnswer(msg.body, turn.text)
+      renderAnswer(msg.body, turn.text, turn.status === 'streaming')
       const status = document.createElement('div')
       status.className = 'reply-status'
       status.textContent = t(uiLang, `reply.${turn.status ?? 'interrupted'}`) + (turn.error ? ` — ${turn.error}` : '')
@@ -812,6 +861,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   let usage: Turn['usage']
   let write: Promise<unknown> = Promise.resolve()
   let timer: ReturnType<typeof setTimeout> | undefined
+  let renderTimer: ReturnType<typeof setTimeout> | undefined
   let storageFailed = false
   const finishTitle = (): void => {
     if (!needsTitle || titleParserFinished) return
@@ -879,8 +929,11 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
         acc += needsTitle ? titleParser.push(delta) : delta
         generatedTitle = needsTitle ? titleParser.title : undefined
         reply!.raw = acc
-        reply!.body.textContent = acc
-        scrollThread()
+        if (!renderTimer) renderTimer = setTimeout(() => {
+          renderTimer = undefined
+          renderAnswer(reply!.body, acc, true)
+          scrollThread()
+        }, 100)
         if (!timer) timer = setTimeout(() => {
           timer = undefined
           void persist('streaming').catch(() => { storageFailed = true; controller.abort() })
@@ -903,6 +956,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   } finally {
     if (needsTitle) finishTitle()
     if (timer) clearTimeout(timer)
+    if (renderTimer) clearTimeout(renderTimer)
     if (reply) {
       if (lost) storageFailed = true
       try { if (!storageFailed) await persist(status) } catch { storageFailed = true }

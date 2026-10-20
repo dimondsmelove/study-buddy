@@ -77,3 +77,8 @@ FACT — границы evidence: в headless основном embedded-сцен
 ## Общий чат на веб-страницах — 2026-10-20
 
 DECISION: пользователь подтвердил автоматический плавающий значок на всех обычных веб-страницах и один общий активный чат между вкладками. Объявленные при установке site permissions заменяют прежний режим исключительно activeTab/per-site prompt. Сам значок не создаёт iframe, чат или модельный запрос. Новый захват после Close начинает новый чат; History возвращает сохранённый явно. Minimize сохраняет writer, Close закрывает shared chat во всех вкладках, значки остаются доступными. Stop работает из зеркальной панели; навигация writer остаётся interruption без платного auto-resume. Live Vivaldi/установленная сборка в этой работе не изменяются.
+
+
+## Форматирование во время ответа — 2026-10-20
+
+DECISION: пользователь попросил убрать видимые служебные Markdown/LaTeX символы во время генерации. FACT: живой preview использует тот же sanitized Markdown/KaTeX renderer с каденсом 100мс; незакрытые math spans буферизуются, незавершённые emphasis/code закрываются только в preview. Исходный transcript и Copy не переписываются. Зеркальные панели форматируют сохранённый streaming partial тем же способом. Native fake-provider acceptance проверила heading/bold до завершения, незакрытую и затем закрытую формулу, dollar/underscore внутри code/fence, финальный raw transcript и DOMPurify/XSS; общий cross-tab lifecycle повторно прошёл. Typecheck/build прошли; платных запросов не было.

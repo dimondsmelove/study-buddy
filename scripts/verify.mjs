@@ -89,6 +89,29 @@ const server = createServer((req, res) => {
         res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n')
         return
       }
+      if (responseMode === 'formatted') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        const chunks = [
+          '### Working\n\n**First',
+          ' step**: use $$\\frac{',
+          '1}{2}',
+          '$$.\n\n`const total = ',
+          '5` and snake_case.\n\n```js\nconst price = "$5";',
+          '\n```\n\nSafe <img src=x onerror="window.__streamXss=1">',
+        ]
+        const send = () => {
+          const content = chunks.shift()
+          if (content !== undefined) res.write('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n')
+          else {
+            clearInterval(interval)
+            res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+          }
+        }
+        const interval = setInterval(send, 700)
+        send()
+        res.on('close', () => clearInterval(interval))
+        return
+      }
       if (responseMode === 'clipboard') {
         res.writeHead(200, { 'content-type': 'text/event-stream' })
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'clipboard-real-proof' } }] }) + '\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n')
@@ -1643,6 +1666,34 @@ try {
   responseMode = 'normal'
   await hint.close()
   await checked.close()
+
+  const formatted = await openCapture()
+  responseMode = 'formatted'
+  await resetCooldown(formatted)
+  await formatted.fill('#ask-input', 'Render the structured answer while it streams')
+  await formatted.click('#ask-btn')
+  await formatted.waitForFunction(() => document.querySelector('.msg.assistant h3')?.textContent === 'Working' && document.querySelector('.msg.assistant strong')?.textContent === 'First')
+  check(!(await formatted.locator('.msg.assistant .msg-body').textContent()).includes('**'),
+    'a live heading and unfinished bold text render before the answer completes, without Markdown markers')
+  await formatted.waitForSelector('.math-pending')
+  const pendingMath = await formatted.locator('.msg.assistant .msg-body').textContent()
+  check(!pendingMath.includes('\\frac') && !pendingMath.includes('$$') && await formatted.locator('.katex-error').count() === 0,
+    'incomplete streaming math is buffered instead of exposing LaTeX fragments or parser errors')
+  await formatted.waitForSelector('.katex')
+  check(await formatted.locator('.math-pending').count() === 0,
+    'a closed formula renders with KaTeX while the rest of the answer is still streaming')
+  await formatted.waitForFunction(() => document.querySelector('pre code')?.textContent?.includes('const price = "$5";'))
+  check((await formatted.locator('.msg.assistant .msg-body').textContent()).includes('snake_case') &&
+    (await formatted.locator('pre code').textContent()).includes('$5'),
+    'stream preview preserves underscores and dollar signs in code, including an unfinished code fence')
+  await formatted.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete'))
+  const formattedDb = await readSaved(formatted)
+  const formattedTurn = formattedDb.conversations.find(c => c.id === formattedDb.state.lastConversationId).turns.at(-1)
+  check(formattedTurn.text.includes('**First step**') && formattedTurn.text.includes('$$\\frac{1}{2}$$') &&
+    await formatted.evaluate(() => window.__streamXss === undefined && !document.querySelector('.msg.assistant [onerror]')),
+    'final transcript keeps its original Markdown and LaTeX; streamed HTML is sanitized throughout')
+  responseMode = 'normal'
+  await formatted.close()
 
   // Independent fixture scenarios may delete the globally selected chat.
   // Re-enter the native lifecycle with a fresh saved image conversation.

@@ -196,7 +196,7 @@ section {
 }
 .msg-body:has(p) { white-space: normal; }
 .msg.user .msg-body { background: var(--accent-soft-surface); color: var(--ink); border-bottom-right-radius: 3px; }
-.msg.assistant .msg-body { background: var(--surface-raised); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
+.msg.assistant .msg-body { white-space: normal; background: var(--surface-raised); border: 1px solid var(--line); border-bottom-left-radius: 3px; }
 .msg.error .msg-body { background: var(--error-surface); border: 1px solid var(--error-line); color: var(--error-ink); }
 .msg.note { align-items: center; }
 .msg.note .msg-body { padding: 4px 8px; background: transparent; color: var(--muted); font-size: 12px; text-align: center; }
@@ -218,6 +218,7 @@ section {
 .msg-body table { border-collapse: collapse; }
 .msg-body th, .msg-body td { padding: 4px 7px; border: 1px solid var(--line); }
 .msg-body blockquote { margin: 0 0 8px; padding-left: 12px; color: var(--muted); }
+.math-pending { display: inline-block; min-width: 36px; border-radius: 4px; color: var(--muted); background: var(--surface-muted); text-align: center; }
 .katex { font-size: 1em; }
 .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
 .reply-status { margin: 5px 4px 0; color: var(--muted); font-size: 12px; }

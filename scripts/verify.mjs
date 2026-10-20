@@ -999,47 +999,88 @@ try {
     { uiLanguage: 'en', answerLanguage: 'auto' },
   )
 
-  // Exhaust the current installation wallet and verify the real chat UI shows the UTC reset.
+  // Exercise both installation and service-wide denials in the real chat UI.
   const budgetDatabase = new DatabaseSync(backendConfig.databasePath)
   const budgetMonth = new Date().toISOString().slice(0, 7)
   const budgetInstallationId = budgetDatabase.prepare(
     'SELECT installation_id FROM sessions WHERE installation_id IS NOT NULL ORDER BY created_at DESC LIMIT 1',
   ).get()?.installation_id
   if (!budgetInstallationId) throw new Error('The UI fixture has no installation wallet')
-  const priorBudgetWallet = budgetDatabase.prepare(
+  const globalFixtureIds = Array.from({ length: 20 }, (_, index) =>
+    `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`)
+  const walletSnapshot = (installationId) => budgetDatabase.prepare(
     'SELECT spent_nano, reserved_nano FROM monthly_budgets WHERE installation_id = ? AND month_key = ?',
-  ).get(budgetInstallationId, budgetMonth)
-  budgetDatabase.prepare(
-    'INSERT INTO monthly_budgets (installation_id, month_key, spent_nano, reserved_nano) VALUES (?, ?, 4_725_000_001, 0) ' +
-    'ON CONFLICT(installation_id, month_key) DO UPDATE SET spent_nano = excluded.spent_nano, reserved_nano = 0',
-  ).run(budgetInstallationId, budgetMonth)
-  const budgetPage = await openCapture()
-  const beforeBudgetDenied = requestCount
-  await budgetPage.click('.preset[data-preset="solve"]')
-  await budgetPage.waitForFunction(() => {
-    const status = [...document.querySelectorAll('.msg.assistant .reply-status')].at(-1)?.textContent ?? ''
-    return status.includes('monthly limit') && status.includes('resets')
-  })
-  mkdirSync(reviewEvidence, { recursive: true })
-  const budgetStatus = await budgetPage.locator('.msg.assistant .reply-status').last().textContent()
-  await budgetPage.screenshot({ path: join(reviewEvidence, 'budget-limit.png'), animations: 'disabled' })
-  acceptanceEvidence.budgetLimit = {
-    resetDateVisible: !!budgetStatus?.includes('resets'),
-    error: budgetStatus,
-    upstreamDelta: requestCount - beforeBudgetDenied,
-    screenshot: 'review/loop/budget-limit.png',
+  ).get(installationId, budgetMonth)
+  const restoreWallet = (installationId, prior) => {
+    if (prior) {
+      budgetDatabase.prepare('UPDATE monthly_budgets SET spent_nano = ?, reserved_nano = ? WHERE installation_id = ? AND month_key = ?')
+        .run(prior.spent_nano, prior.reserved_nano, installationId, budgetMonth)
+    } else {
+      budgetDatabase.prepare('DELETE FROM monthly_budgets WHERE installation_id = ? AND month_key = ?')
+        .run(installationId, budgetMonth)
+    }
   }
-  check(acceptanceEvidence.budgetLimit.resetDateVisible && acceptanceEvidence.budgetLimit.upstreamDelta === 0,
-    'monthly budget error shows its reset date in chat without an upstream generation')
-  await budgetPage.close()
-  if (priorBudgetWallet) {
-    budgetDatabase.prepare('UPDATE monthly_budgets SET spent_nano = ?, reserved_nano = ? WHERE installation_id = ? AND month_key = ?')
-      .run(priorBudgetWallet.spent_nano, priorBudgetWallet.reserved_nano, budgetInstallationId, budgetMonth)
-  } else {
-    budgetDatabase.prepare('DELETE FROM monthly_budgets WHERE installation_id = ? AND month_key = ?')
-      .run(budgetInstallationId, budgetMonth)
+  const priorBudgetWallet = walletSnapshot(budgetInstallationId)
+  const priorGlobalWallets = new Map(globalFixtureIds.map(id => [id, walletSnapshot(id)]))
+  let budgetPage
+  try {
+    budgetDatabase.prepare(
+      'INSERT INTO monthly_budgets (installation_id, month_key, spent_nano, reserved_nano) VALUES (?, ?, 4_725_000_001, 0) ' +
+      'ON CONFLICT(installation_id, month_key) DO UPDATE SET spent_nano = excluded.spent_nano, reserved_nano = 0',
+    ).run(budgetInstallationId, budgetMonth)
+    budgetPage = await openCapture()
+    const beforeBudgetDenied = requestCount
+    await budgetPage.click('.preset[data-preset="solve"]')
+    await budgetPage.waitForFunction(() => {
+      const status = [...document.querySelectorAll('.msg.assistant .reply-status')].at(-1)?.textContent ?? ''
+      return status.includes('monthly limit') && status.includes('resets')
+    })
+    mkdirSync(reviewEvidence, { recursive: true })
+    const budgetStatus = await budgetPage.locator('.msg.assistant .reply-status').last().textContent()
+    await budgetPage.screenshot({ path: join(reviewEvidence, 'budget-limit.png'), animations: 'disabled' })
+    acceptanceEvidence.budgetLimit = {
+      resetDateVisible: !!budgetStatus?.includes('resets'),
+      error: budgetStatus,
+      upstreamDelta: requestCount - beforeBudgetDenied,
+      screenshot: 'review/loop/budget-limit.png',
+    }
+    check(acceptanceEvidence.budgetLimit.resetDateVisible && acceptanceEvidence.budgetLimit.upstreamDelta === 0,
+      'monthly budget error shows its reset date in chat without an upstream generation')
+    await budgetPage.close()
+    budgetPage = undefined
+    restoreWallet(budgetInstallationId, priorBudgetWallet)
+
+    for (const id of globalFixtureIds) {
+      budgetDatabase.prepare(
+        'INSERT INTO monthly_budgets (installation_id, month_key, spent_nano, reserved_nano) VALUES (?, ?, 5_000_000_000, 0) ' +
+        'ON CONFLICT(installation_id, month_key) DO UPDATE SET spent_nano = excluded.spent_nano, reserved_nano = 0',
+      ).run(id, budgetMonth)
+    }
+    budgetPage = await openCapture()
+    const beforeServiceBudgetDenied = requestCount
+    await budgetPage.click('.preset[data-preset="solve"]')
+    await budgetPage.waitForFunction(() => {
+      const status = [...document.querySelectorAll('.msg.assistant .reply-status')].at(-1)?.textContent ?? ''
+      return status.includes('service-wide monthly usage limit') && status.includes('resets')
+    })
+    const serviceBudgetStatus = await budgetPage.locator('.msg.assistant .reply-status').last().textContent()
+    await budgetPage.screenshot({ path: join(reviewEvidence, 'service-budget-limit.png'), animations: 'disabled' })
+    acceptanceEvidence.serviceBudgetLimit = {
+      resetDateVisible: !!serviceBudgetStatus?.includes('resets'),
+      error: serviceBudgetStatus,
+      upstreamDelta: requestCount - beforeServiceBudgetDenied,
+      screenshot: 'review/loop/service-budget-limit.png',
+    }
+    check(acceptanceEvidence.serviceBudgetLimit.resetDateVisible && acceptanceEvidence.serviceBudgetLimit.upstreamDelta === 0,
+      'service-wide budget error shows its reset date in chat without an upstream generation')
+    await budgetPage.close()
+    budgetPage = undefined
+  } finally {
+    if (budgetPage) await budgetPage.close()
+    restoreWallet(budgetInstallationId, priorBudgetWallet)
+    for (const id of globalFixtureIds) restoreWallet(id, priorGlobalWallets.get(id))
+    budgetDatabase.close()
   }
-  budgetDatabase.close()
 
   // The unavailable primary must surface its error after exactly one attempt.
   failModel = PRIMARY

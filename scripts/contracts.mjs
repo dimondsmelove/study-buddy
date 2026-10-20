@@ -499,5 +499,36 @@ await contract('expired bearer recovers the same origin-bound installation and i
   assert.equal(stored['gateway.installation'].installationId, installation.installationId)
 })
 
+await contract('service-wide budget denial is localized with reset date and is never treated as uncertain', async () => {
+  stored['gateway.session'] = {
+    token: 'service-budget-session-12345678901234567890',
+    expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+    gatewayOrigin: 'https://gateway.test',
+  }
+  stored['gateway.installation'] = {
+    installationId: '323e4567-e89b-12d3-a456-426614174000',
+    installationSecret: 'c'.repeat(43),
+    gatewayOrigin: 'https://gateway.test',
+  }
+  const resetAt = Date.UTC(2026, 10, 1)
+  let requests = 0
+  runtime.fetch = async () => {
+    requests++
+    return jsonResponse({ error: { code: 'budget.service_exhausted', resetAt } }, 429)
+  }
+  await assert.rejects(gateway.createGateway().ask({
+    requestId: 'request-service-budget', task: 'ask', answerLanguage: 'en', uiLanguage: 'en', titleNeeded: false,
+    taskInput: 'current question', messages: [{ role: 'user', content: 'current question' }],
+  }), (error) => {
+    assert.equal(error.code, 'budget.service_exhausted')
+    assert.equal(error.kind, 'rate')
+    assert.equal(error.resetAt, resetAt)
+    assert.match(gateway.gatewayErrorMessage(error, 'ru'), /Общий месячный лимит сервиса исчерпан/)
+    assert(gateway.gatewayErrorMessage(error, 'ru').includes('01.11.2026'))
+    return true
+  })
+  assert.equal(requests, 1, 'global denial makes one request and cannot trigger generation replay')
+})
+
 runtime.fetch = () => { throw new Error('Unexpected network request in contract test') }
 console.log(`API CONTRACTS OK — ${apiCases} groups, synthetic fetch only`)

@@ -92,7 +92,9 @@ The backend also stores monthly per-installation spent and reserved amounts,
 charge status and provider generation IDs needed to reconcile uncertain costs.
 These identity and ledger records have no automatic expiry. The budget is $5 per
 anonymous installation per UTC calendar month, with a $0.275 reserve per
-generation. The reserve is based on a maximum 1,050,000 prompt tokens at
+generation, plus a $100 aggregate monthly cap across installations using this
+service database. This aggregate applies only to requests routed through this
+service, not unrelated use of the provider account. The reserve is based on a maximum 1,050,000 prompt tokens at
 $0.25/M plus 16,384 output tokens at $0.75/M ($0.274788, rounded up). Final
 provider usage replaces the reserve when available; unresolved usage remains
 reserved for reconciliation. The request carries provider-side maximum price

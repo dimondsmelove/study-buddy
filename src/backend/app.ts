@@ -299,6 +299,8 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
                 ? 'This installation already has a generation in progress.'
                 : admission.code === 'budget.exhausted'
                   ? 'The monthly anonymous usage limit has been reached.'
+                  : admission.code === 'budget.service_exhausted'
+                    ? 'The service-wide monthly usage limit has been reached.'
                   : admission.code === 'budget.accounting_review'
                     ? 'A provider charge exceeded its reserved limit. Contact support before continuing.'
                     : admission.code === 'installation.required'

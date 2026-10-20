@@ -6,6 +6,7 @@ import { GATEWAY_LIMITS } from '../shared/gateway-protocol'
 
 const HOUR_MS = 60 * 60 * 1_000
 const MONTHLY_BUDGET_NANO = 5_000_000_000
+const SERVICE_MONTHLY_BUDGET_NANO = 100_000_000_000
 // At the 2026-10-20 OpenRouter max-price snapshot: 1.05M prompt tokens including
 // cache-write at $0.25/M plus 16,384 output tokens at $0.75/M is $0.274788.
 // Round up to $0.275; the byte token estimator is not a monetary bound.
@@ -53,6 +54,7 @@ export class OperationalStore {
       ');',
       'CREATE TABLE IF NOT EXISTS installations (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, last_started_at INTEGER);',
       'CREATE TABLE IF NOT EXISTS monthly_budgets (installation_id TEXT NOT NULL, month_key TEXT NOT NULL, spent_nano INTEGER NOT NULL, reserved_nano INTEGER NOT NULL, PRIMARY KEY(installation_id, month_key));',
+      'CREATE INDEX IF NOT EXISTS monthly_budgets_month ON monthly_budgets(month_key);',
       "CREATE TABLE IF NOT EXISTS budget_charges (installation_id TEXT NOT NULL, request_id TEXT NOT NULL, month_key TEXT NOT NULL, reserved_nano INTEGER NOT NULL, charged_nano INTEGER, status TEXT NOT NULL CHECK(status IN ('reserved','held','settled','released')), provider_generation_id TEXT, updated_at INTEGER NOT NULL, next_reconcile_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(installation_id, request_id));",
       'CREATE INDEX IF NOT EXISTS budget_charges_pending ON budget_charges(status, provider_generation_id);',
       'CREATE TABLE IF NOT EXISTS issuance_buckets (ip_hash TEXT NOT NULL, issued_at INTEGER NOT NULL);',
@@ -240,6 +242,12 @@ export class OperationalStore {
 
       const monthKey = new Date(now).toISOString().slice(0, 7)
       const resetAt = nextMonthStart(now)
+      const serviceBudget = this.db.prepare(
+        'SELECT COALESCE(SUM(spent_nano + reserved_nano), 0) AS total_nano FROM monthly_budgets WHERE month_key = ?',
+      ).get(monthKey) as { total_nano: number }
+      if (Number(serviceBudget.total_nano) + GENERATION_RESERVE_NANO > SERVICE_MONTHLY_BUDGET_NANO) {
+        return { accepted: false, status: 429, code: 'budget.service_exhausted', resetAt }
+      }
       const budget = this.db.prepare('SELECT spent_nano, reserved_nano FROM monthly_budgets WHERE installation_id = ? AND month_key = ?')
         .get(session.installation_id, monthKey) as { spent_nano: number; reserved_nano: number } | undefined
       const spentNano = Number(budget?.spent_nano ?? 0)

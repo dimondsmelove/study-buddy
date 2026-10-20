@@ -202,7 +202,7 @@ async function createFixture(options = {}) {
     get now() { return clock },
     set now(value) { clock = value },
     async close() {
-      await backend.close()
+      await this.backend.close()
       await provider.close()
     },
   }
@@ -476,6 +476,51 @@ await test('monthly installation wallet reserves atomically, settles once, rolls
   await rm(directory, { recursive: true, force: true })
 })
 
+await test('global reserve is restored by release and settlement of the original month charge', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'study-buddy-service-budget-'))
+  const path = join(directory, 'state.sqlite')
+  const now = Date.UTC(2026, 9, 20)
+  const store = new OperationalStore(path, secret, now)
+  const database = databaseFor(path)
+  const a = store.issueInstallation('198.51.100.41', now)
+  const b = store.issueInstallation('198.51.100.42', now)
+  const c = store.issueInstallation('198.51.100.43', now)
+  assert.ok('token' in a && 'token' in b && 'token' in c)
+  if (!('token' in a) || !('token' in b) || !('token' in c)) return
+  const monthKey = '2026-10'
+  database.prepare(
+    'INSERT INTO monthly_budgets(installation_id, month_key, spent_nano, reserved_nano) VALUES (?, ?, ?, 0)',
+  ).run('cccccccc-cccc-4ccc-8ccc-cccccccccccc', monthKey, 99_725_000_000)
+
+  assert.equal(store.admit(a.session.id, 'global_release_0001', 'a', now).accepted, true)
+  assert.equal(store.admit(b.session.id, 'global_denied_0001', 'b', now).code, 'budget.service_exhausted')
+  store.releaseBudget(a.installationId, 'global_release_0001', now + 1)
+  store.finish(a.session.id, 'global_release_0001', 'failed', now + 1)
+  assert.equal(store.admit(b.session.id, 'global_settle_0001', 'b2', now).accepted, true)
+  store.settleBudgetAndFinish(b.session.id, b.installationId, 'global_settle_0001', 'complete', 0, now + 1)
+  assert.equal(store.admit(c.session.id, 'global_after_settle_0001', 'c', now).accepted, true)
+  store.releaseBudget(c.installationId, 'global_after_settle_0001', now + 1)
+  store.finish(c.session.id, 'global_after_settle_0001', 'failed', now + 1)
+
+  const november = Date.UTC(2026, 10, 1)
+  assert.equal(store.admit(c.session.id, 'global_newmonth_0001', 'c2', november).accepted, true,
+    'the new UTC month has an independent global aggregate')
+  store.settleBudgetAndFinish(c.session.id, c.installationId, 'global_newmonth_0001', 'complete', 0, november + 1)
+  const late = store.issueInstallation('198.51.100.44', now)
+  assert.ok('token' in late)
+  if (!('token' in late)) return
+  const octoberLate = Date.UTC(2026, 9, 31, 23, 59, 50)
+  assert.equal(store.admit(late.session.id, 'global_late_october_001', 'late', octoberLate).accepted, true)
+  store.holdBudget(late.installationId, 'global_late_october_001', octoberLate + 1)
+  store.settleBudget(late.installationId, 'global_late_october_001', 0, november + 2)
+  assert.equal(database.prepare(
+    'SELECT COALESCE(SUM(spent_nano + reserved_nano), 0) AS total FROM monthly_budgets WHERE month_key = ?',
+  ).get('2026-11').total, 0, 'late October settlement remains outside the November aggregate')
+  store.close()
+  database.close()
+  await rm(directory, { recursive: true, force: true })
+})
+
 await test('HTTP session, CORS, canonical provider request, final usage chunk, and no content persistence', async () => {
   const fixture = await createFixture()
   try {
@@ -634,6 +679,85 @@ await test('HTTP budget denies legacy sessions and reconciles missing SSE usage 
     assert.equal(settled.charged_nano, 12_345_679)
     assert.equal(fixture.provider.requests.some((entry) => entry.method === 'GET' && entry.url.includes('/generation?id=gen-local-usage')), true)
     pending.close()
+  } finally {
+    await fixture.close()
+  }
+})
+
+await test('global monthly reserve aggregates installations atomically and survives database reopen', async () => {
+  const fixture = await createFixture({
+    responder: async ({ request, response }) => {
+      if (request.method === 'GET') {
+        response.writeHead(404, { 'Content-Type': 'application/json' })
+        response.end('{}')
+        return
+      }
+      response.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Generation-Id': 'gen-global-held' })
+      response.end(
+        sse({ id: 'gen-global-held', model: 'openai/gpt-6-luna', choices: [{ delta: { content: 'answer' }, finish_reason: null }] }) +
+        sse({ id: 'gen-global-held', model: 'openai/gpt-6-luna', choices: [{ delta: {}, finish_reason: 'stop' }] }) +
+        'data: [DONE]\n\n',
+      )
+    },
+  })
+  try {
+    const first = await issueSession(fixture)
+    const second = await issueSession(fixture)
+    const third = await issueSession(fixture)
+    const database = databaseFor(fixture.config.databasePath)
+    const monthKey = new Date(fixture.now).toISOString().slice(0, 7)
+    const priorMonthInstallations = Array.from({ length: 20 }, (_, index) =>
+      `aaaaaaaa-aaaa-4aaa-8aaa-${String(index + 1).padStart(12, '0')}`)
+    const monthlyWalletInsert = database.prepare(
+      'INSERT INTO monthly_budgets(installation_id, month_key, spent_nano, reserved_nano) VALUES (?, ?, ?, 0)',
+    )
+    for (const id of priorMonthInstallations) monthlyWalletInsert.run(id, monthKey, 4_986_250_000)
+    const previousMonthDate = new Date(monthKey + '-01T00:00:00.000Z')
+    previousMonthDate.setUTCMonth(previousMonthDate.getUTCMonth() - 1)
+    const previousMonth = previousMonthDate.toISOString().slice(0, 7)
+    const previousMonthInstallations = Array.from({ length: 20 }, (_, index) =>
+      `bbbbbbbb-bbbb-4bbb-8bbb-${String(index + 1).padStart(12, '0')}`)
+    for (const id of previousMonthInstallations) monthlyWalletInsert.run(id, previousMonth, 5_000_000_000)
+
+    const concurrent = await Promise.all([
+      postGeneration(fixture, first.token, input('global_race_install_1')),
+      postGeneration(fixture, second.token, input('global_race_install_2')),
+    ])
+    const statuses = concurrent.map(response => response.status).sort()
+    assert.deepEqual(statuses, [200, 429], 'only one installation can reserve the final $0.275')
+    const denied = concurrent.find(response => response.status === 429)
+    const deniedBody = await denied.json()
+    assert.equal(deniedBody.error.code, 'budget.service_exhausted')
+    assert.equal(deniedBody.error.resetAt, Date.UTC(
+      Number(monthKey.slice(0, 4)), Number(monthKey.slice(5, 7)), 1,
+    ))
+    const accepted = concurrent.find(response => response.status === 200)
+    await accepted.text()
+    const providerPosts = fixture.provider.requests.filter(entry => entry.method === 'POST')
+    assert.equal(providerPosts.length, 1)
+    database.close()
+    await fixture.backend.close()
+    fixture.backend = createBackend(fixture.config, {
+      now: () => fixture.now,
+      log: (entry) => fixture.logs.push(entry),
+      providerBaseUrl: fixture.provider.baseUrl,
+    })
+    await new Promise((resolve) => fixture.backend.server.listen(0, '127.0.0.1', resolve))
+    fixture.baseUrl = 'http://127.0.0.1:' + fixture.backend.server.address().port
+    const reopened = databaseFor(fixture.config.databasePath)
+    const persisted = reopened.prepare(
+      'SELECT COALESCE(SUM(spent_nano + reserved_nano), 0) AS total FROM monthly_budgets WHERE month_key = ?',
+    ).get(monthKey)
+    assert.equal(persisted.total, 100_000_000_000, 'held reservation persists after restarting the backend and reopening SQLite')
+    assert.equal(reopened.prepare(
+      'SELECT COALESCE(SUM(spent_nano + reserved_nano), 0) AS total FROM monthly_budgets WHERE month_key = ?',
+    ).get(previousMonth).total, 100_000_000_000, 'older-month settlement ledger remains isolated from this month')
+    reopened.close()
+
+    const noCapacity = await postGeneration(fixture, third.token, input('global_denied_install_3'))
+    assert.equal(noCapacity.status, 429)
+    assert.equal((await noCapacity.json()).error.code, 'budget.service_exhausted')
+    assert.equal(fixture.provider.requests.filter(entry => entry.method === 'POST').length, 1)
   } finally {
     await fixture.close()
   }

@@ -40,6 +40,7 @@ export class ApiError extends Error {
     message: string,
     readonly kind: ApiErrorKind,
     readonly status?: number,
+    readonly definitiveRejection = false,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -88,6 +89,8 @@ export interface ChatCompletionOpts {
   signal?: AbortSignal
   /** Streaming callback: each text delta as it arrives. */
   onDelta?: (delta: string) => void
+  onProviderGenerationId?: (id: string) => void
+  onProviderResponseAccepted?: () => void
 }
 
 /** Authorization header shared by /models (models.ts) and /chat/completions. */
@@ -102,19 +105,20 @@ export async function apiHttpError(res: Response): Promise<ApiError> {
   // Inspect only a bounded structured code. Provider prose may echo credentials,
   // request text or URLs and is never surfaced or logged.
   if (res.status === 400 && await hasContextLengthCode(res)) {
-    return new ApiError('The selected context exceeds the provider limit.', 'context', 400)
+    return new ApiError('The selected context exceeds the provider limit.', 'context', 400, true)
   }
   switch (res.status) {
-    case 401: return new ApiError('Invalid API key.', 'auth', 401)
-    case 402: return new ApiError('Insufficient credits on this account.', 'credits', 402)
-    case 403: return new ApiError('Access denied. Check this account’s API permissions.', 'auth', 403)
-    case 404: return new ApiError('The requested API endpoint or model is unavailable.', 'http', 404)
-    case 429: return new ApiError('Rate limited — try again shortly.', 'rate', 429)
+    case 401: return new ApiError('Invalid API key.', 'auth', 401, true)
+    case 402: return new ApiError('Insufficient credits on this account.', 'credits', 402, true)
+    case 403: return new ApiError('Access denied. Check this account’s API permissions.', 'auth', 403, true)
+    case 404: return new ApiError('The requested API endpoint or model is unavailable.', 'http', 404, true)
+    case 429: return new ApiError('Rate limited — try again shortly.', 'rate', 429, true)
     default:
       return new ApiError(
         `The API returned HTTP ${res.status}. Try again or check the endpoint settings.`,
         'http',
         res.status,
+        res.status >= 400 && res.status < 500 && res.status !== 408 && res.status !== 425,
       )
   }
 }
@@ -166,7 +170,7 @@ function isAbort(err: unknown): boolean {
 /** One completion, retaining text even when a stream ends without a terminal
  *  event. Transport, cancellation and provider failures throw typed ApiError. */
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<CompletionResult> {
-  const { settings, model, messages, signal, onDelta, temperature, maxTokens } = opts
+  const { settings, model, messages, signal, onDelta, onProviderGenerationId, onProviderResponseAccepted, temperature, maxTokens } = opts
   // A user error, thrown BEFORE any network call: a request without a model
   // id can only fail, so it must not even be attempted.
   if (!model) throw new ApiError('Choose a model first.', 'response')
@@ -186,6 +190,7 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<Completi
         messages,
         stream: true,
         stream_options: { include_usage: true },
+        provider: { max_price: { prompt: 0.25, completion: 0.75, request: 0, image: 0 } },
         ...(temperature !== undefined ? { temperature } : {}),
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
       }),
@@ -196,16 +201,26 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<Completi
     throw apiNetworkError(err)
   }
   if (!res.ok) throw await apiHttpError(res)
+  onProviderResponseAccepted?.()
+  let savedGenerationId: string | undefined
+  const reportGenerationId = (value: string): void => {
+    if (!savedGenerationId && validGenerationId(value)) {
+      savedGenerationId = value
+      onProviderGenerationId?.(value)
+    }
+  }
 
   // Content-Type is the only honest discriminator between the two answer
   // shapes: event-stream means a live stream, anything JSON-shaped means the
   // server ignored stream:true and answered in one piece.
   const contentType = res.headers.get('content-type') ?? ''
+  const headerGenerationId = res.headers.get('x-generation-id')
+  if (validGenerationId(headerGenerationId)) reportGenerationId(headerGenerationId)
   if (contentType.toLowerCase().includes('text/event-stream')) {
-    const result = await streamSSE(res, onDelta, signal)
+    const result = await streamSSE(res, onDelta, signal, reportGenerationId)
     return { ...result, model: result.model ?? model }
   }
-  const result = await wholeJson(res, onDelta, signal)
+  const result = await wholeJson(res, onDelta, signal, reportGenerationId)
   return { ...result, model: result.model ?? model }
 }
 
@@ -215,6 +230,7 @@ async function streamSSE(
   res: Response,
   onDelta?: (delta: string) => void,
   signal?: AbortSignal,
+  onProviderGenerationId?: (id: string) => void,
 ): Promise<CompletionResult> {
   if (!res.body) throw new ApiError('The API returned an empty stream.', 'response')
   const reader = res.body.getReader()
@@ -256,6 +272,7 @@ async function streamSSE(
     if (eventType === 'error') throw providerError((body as CompletionBody).error)
     if (body.error !== undefined && body.error !== null) throw providerError(body.error)
     usage = readUsage(body.usage) ?? usage
+    if (validGenerationId(body.id)) onProviderGenerationId?.(body.id)
     if (typeof body.model === 'string') reportedModel = body.model
     if (!Array.isArray(body.choices)) {
       malformed = true
@@ -337,6 +354,7 @@ async function streamSSE(
 }
 
 interface CompletionBody {
+  id?: unknown
   error?: unknown
   model?: unknown
   usage?: unknown
@@ -345,6 +363,10 @@ interface CompletionBody {
     message?: { content?: unknown }
     finish_reason?: unknown
   }>
+}
+
+function validGenerationId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 }
 
 function readUsage(value: unknown): CompletionResult['usage'] | undefined {
@@ -398,6 +420,7 @@ async function wholeJson(
   res: Response,
   onDelta?: (delta: string) => void,
   signal?: AbortSignal,
+  onProviderGenerationId?: (id: string) => void,
 ): Promise<CompletionResult> {
   let body: CompletionBody | null
   try {
@@ -410,6 +433,7 @@ async function wholeJson(
   }
   if (signal?.aborted) throw new ApiError('Cancelled.', 'aborted')
   if (body?.error !== undefined && body.error !== null) throw providerError(body.error)
+  if (validGenerationId(body?.id)) onProviderGenerationId?.(body.id)
   const choice = Array.isArray(body?.choices) ? body.choices[0] : undefined
   const content = choice?.message?.content
   const text = content === null ? '' : flattenContent(content)

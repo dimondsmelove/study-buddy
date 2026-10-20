@@ -117,13 +117,14 @@ const fixtureSettings = {
 const messages = [{ role: 'user', content: 'fixture-private-request' }]
 const encoder = new TextEncoder()
 const frame = (choice) => `data: ${JSON.stringify({ choices: [choice] })}\n\n`
+const payload = (body) => `data: ${JSON.stringify(body)}\n\n`
 const delta = (text) => frame({ delta: { content: text } })
 const finish = (reason) => frame({ delta: {}, finish_reason: reason })
 const done = 'data: [DONE]\n\n'
 const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { 'content-type': 'application/json' },
 })
-function streamResponse(text, { width = 4096, failure } = {}) {
+function streamResponse(text, { width = 4096, failure, headers = {} } = {}) {
   const bytes = encoder.encode(text)
   let offset = 0
   return new Response(new ReadableStream({
@@ -134,7 +135,7 @@ function streamResponse(text, { width = 4096, failure } = {}) {
       } else if (failure) controller.error(failure)
       else controller.close()
     },
-  }), { headers: { 'content-type': 'text/event-stream' } })
+  }), { headers: { 'content-type': 'text/event-stream', ...headers } })
 }
 function stubFetch(handler) {
   const requests = []
@@ -180,6 +181,44 @@ await contract('SSE UTF-8, CRLF, comments, role and multi-line events at byte/ch
     assert.equal(deltas.join(''), 'Привет 🧪')
   }
 })
+await contract('provider spend cap, generation ID capture, and rejection provenance', async () => {
+  const id = 'gen_contract_0123'
+  const ids = []
+  const accepted = []
+  const requests = stubFetch(() => streamResponse(
+    payload({ id, choices: [{ delta: { content: 'answer' }, finish_reason: null }] }) +
+      payload({ id, choices: [{ delta: {}, finish_reason: 'stop' }] }) +
+      payload({ id, choices: [], usage: { cost: 0.001 } }) + done,
+    { headers: { 'x-generation-id': id } },
+  ))
+  const result = await complete({
+    onProviderGenerationId: value => ids.push(value),
+    onProviderResponseAccepted: () => accepted.push(true),
+  })
+  assert.equal(result.usage.cost, 0.001)
+  assert.deepEqual(ids, [id], 'header and repeated stream IDs persist once')
+  assert.deepEqual(accepted, [true])
+  assert.deepEqual(plain(requests[0].body.provider), {
+    max_price: { prompt: 0.25, completion: 0.75, request: 0, image: 0 },
+  })
+
+  let acceptedRejected = false
+  stubFetch(() => jsonResponse({}, 402))
+  await assert.rejects(complete({ onProviderResponseAccepted: () => { acceptedRejected = true } }), error => {
+    assert.equal(error.definitiveRejection, true)
+    return true
+  })
+  assert.equal(acceptedRejected, false)
+
+  let streamAccepted = false
+  stubFetch(() => streamResponse('event: error\ndata: {"error":{"code":"provider_error"}}\n\n'))
+  await assert.rejects(complete({ onProviderResponseAccepted: () => { streamAccepted = true } }), error => {
+    assert.equal(error.definitiveRejection, false)
+    return true
+  })
+  assert.equal(streamAccepted, true)
+})
+
 await contract('stop, length, DONE, usage-only events, CR-only lines and final line without newline', async () => {
   for (const [text, result] of [
     [delta('answer') + finish('stop'), expected('answer', 'complete', 'stop')],

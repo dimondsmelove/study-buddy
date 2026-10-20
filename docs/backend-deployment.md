@@ -10,15 +10,15 @@ This is a verified design record for the approved public-backend direction. It i
 - Generation timeout is 180 seconds; maximum JSON request body is 32 MiB. The app emits text/event-stream; the ingress must preserve streaming, Authorization, and request bodies. These are application limits, not proof that a chosen ingress supports them end to end.
 - On diamondserver, Docker 29.3 and Compose 5.1 are available. The host has private IPv4 addresses 192.168.1.7 and .3, default router 192.168.1.1, and no global IPv6. WAN address, CGNAT status, and router port-forward state are unknown. The Docker host has 157 GiB free disk and 5 GiB available memory at inspection; a Node 22 Alpine image is cached, but the project pins Node 22.22.2. Existing application ports are published to private addresses. Bounded checks found no active Caddy, Nginx, Apache, or Cloudflare Tunnel service/configuration and no Study Buddy deployment. This does not establish that the host is unreachable from the Internet.
 - No public hostname/domain has been acquired or selected yet. The user plans to buy a domain on 2026-10-20; Cloudflare account/zone setup, tunnel creation, and DNS routing remain pending. Store privacy/contact and support fields remain draft placeholders. The packed/store extension ID is not yet known; the unpacked placeholder is not a release ID.
-- Anonymous bearer sessions and CORS do not authenticate a person or trusted caller and do not impose a monetary spending cap. Existing IP/session rate controls are not an installation identity or a spend cap. No dollar-cap period or reset behavior has been approved.
+- Anonymous bearer sessions and CORS do not authenticate a person or trusted caller. A durable anonymous installation identity now carries the monthly wallet; clearing extension data, using a new profile, or reinstalling can create another identity. The per-installation budget is described below.
 
 ### DECISION
 
 - Public access is required for the planned store release this week; users are not required to join a private mesh. Host the backend on this server in Docker, expose only this service, keep the OpenRouter key server-side, and retain local browser chat/image persistence and separate UI/answer languages.
 - The user selected a **named Cloudflare Tunnel** as ingress. Direct router HTTPS is not selected. A domain and stable hostname are still required; purchase and Cloudflare/DNS setup have not happened.
 - Access should be free to anyone installing the extension, with no account or invitation gate. The API remains anonymous: an extension install does not identify a caller, and public clients outside the extension can also call the endpoint. CORS is not authorization. No login or registration behavior is being added.
-- The user proposed a **$5 total-spend cap**. Its period/reset behavior remains OPEN, and no cap has been implemented; current rate/concurrency controls do not cap provider spend.
-- No prompt, model, parameter, or local persistence changes are included in this hosting slice.
+- Each anonymous installation receives **$5 per UTC calendar month**. Each new generation atomically reserves $0.275; trusted final usage replaces the reserve, while missing or ambiguous usage remains reserved until reconciled. An installation with less than $0.275 available cannot start a request. A known charge above its reserve blocks that installation pending operator review. This is not a global provider-account cap; the amount of any separate emergency global cap remains OPEN.
+- The reserve uses the documented maximum prompt and completion rates: 1,050,000 prompt tokens × $0.25/M + 16,384 output tokens × $0.75/M = $0.274788, rounded up to $0.275. The request carries OpenRouter provider max_price limits for prompt/completion and zero request/image surcharges. Sources: [OpenRouter provider max price](https://openrouter.ai/docs/guides/routing/provider-selection#max-price), [usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting), and [generation metadata](https://openrouter.ai/docs/api/api-reference/generations/get-generation). Prompts, model, and output cap are unchanged.
 
 ### Selected ingress — named Cloudflare Tunnel
 
@@ -30,7 +30,7 @@ Do not use a Cloudflare Quick Tunnel for this release: Cloudflare documents that
 
 - Acquire the domain (the user plans to buy it on 2026-10-20), decide its stable hostname, and confirm who controls its DNS. Then configure the selected named Cloudflare Tunnel and route; none of these steps is complete yet.
 - Confirm the actual extension store ID before setting exact ALLOWED_ORIGINS and building the distributed extension.
-- Confirm the proposed $5 cap period/reset and enforcement response. Until decided, no cap is implemented; anonymous access remains open to public API callers, subject to existing rate/concurrency controls.
+- Decide whether to add a separate emergency cap for the shared OpenRouter account; no global amount is imposed by this slice.
 - Complete support contact and privacy URL/audience details, then reconcile disclosures with host, ingress, and provider retention. The current listing/privacy drafts also contain stale product claims (Quiz, multiline Check, English default and fallback); review them against the shipped behavior in the store stage.
 
 ### Docker packaging
@@ -190,12 +190,23 @@ public gateway release path.
 
 ## Known boundaries
 
-Anonymous sessions are renewable bearer tokens, not accounts or unique people.
-A determined caller can reset sessions or change networks. The 10-second/session
-interval, one in-flight/session, four globally, 20 issued sessions/IP/hour,
-approximate input budget and per-task output caps reduce load but do not impose
-a monetary spending ceiling. Shared NATs share issuance limits. There is no
-hidden queue, cloud history, billing or cross-device recovery.
+Anonymous installation identities are durable server-issued subjects held by
+an origin-bound local credential; expiring bearer sessions can be recovered for
+the same installation. Clearing extension data, creating a new profile, or
+reinstalling can create a new anonymous identity. There are no accounts or
+cross-device recovery. Shared NATs share the 20 new-installation issuances per
+IP/hour limit.
+
+Each anonymous installation has a $5 budget per UTC calendar month. New
+requests reserve $0.275; the reservation is replaced by trusted provider usage
+when available. If a generation's usage is missing, its reservation remains
+held until provider metadata confirms the final cost. This conservative reserve
+means an installation with less than $0.275 remaining cannot start a request,
+even if its eventual actual cost might be lower. A charge that exceeds its
+reservation blocks further generations for that installation pending review.
+The 10-second cooldown, one in-flight request per installation, four globally,
+approximate input budget and per-task output caps remain additional controls.
+There is no hidden queue, cloud history, or account billing.
 
 The 200,000-input-token policy keeps 20,000 in reserve and estimates one text token
 per four UTF-8 bytes, with a separate allowance per image.

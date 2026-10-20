@@ -30,6 +30,8 @@ export interface AskOpts {
   signal?: AbortSignal
   /** Each text delta from whichever model is currently answering. */
   onDelta?: (delta: string) => void
+  onProviderGenerationId?: (id: string) => void
+  onProviderResponseAccepted?: () => void
 }
 
 /** Ask Luna once and surface its provider error without switching models. */
@@ -41,6 +43,8 @@ export async function askWithFallback(opts: AskOpts): Promise<CompletionResult> 
     maxTokens: opts.maxTokens,
     signal: opts.signal,
     onDelta: opts.onDelta,
+    onProviderGenerationId: opts.onProviderGenerationId,
+    onProviderResponseAccepted: opts.onProviderResponseAccepted,
   })
   return { ...result, model: result.model ?? MODEL_PRIMARY }
 }

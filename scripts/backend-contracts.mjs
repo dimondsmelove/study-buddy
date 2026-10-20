@@ -140,8 +140,9 @@ async function startProvider(responder) {
     const chunks = []
     try {
       for await (const chunk of request) chunks.push(Buffer.from(chunk))
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-      requests.push(body)
+      const bytes = Buffer.concat(chunks)
+      const body = request.method === 'GET' || !bytes.length ? undefined : JSON.parse(bytes.toString('utf8'))
+      requests.push({ method: request.method, body, url: request.url, ...(body && typeof body === 'object' ? body : {}) })
       await responder({ request, response, body, requests })
     } catch (error) {
       if (!response.destroyed && !response.writableEnded) response.destroy(error)
@@ -405,6 +406,76 @@ await test('durable installation recovery, legacy claim, and cross-session admis
   await rm(directory, { recursive: true, force: true })
 })
 
+await test('monthly installation wallet reserves atomically, settles once, rolls over at UTC, and keeps uncertain holds', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'study-buddy-budget-'))
+  const path = join(directory, 'state.sqlite')
+  const monthEnd = Date.UTC(2026, 9, 31, 23, 58, 40)
+  let store = new OperationalStore(path, secret, monthEnd)
+  const issued = store.issueInstallation('198.51.100.30', monthEnd)
+  assert.ok('token' in issued)
+  if (!('token' in issued)) return
+  const database = new DatabaseSync(path)
+
+  assert.equal(store.admit(issued.session.id, 'budget_first_0001', 'f1', monthEnd).accepted, true)
+  let wallet = database.prepare('SELECT spent_nano, reserved_nano FROM monthly_budgets WHERE installation_id = ?')
+    .get(issued.installationId)
+  assert.equal(wallet.spent_nano, 0)
+  assert.equal(wallet.reserved_nano, 275_000_000)
+  store.recordProviderGeneration(issued.installationId, 'budget_first_0001', 'gen_budget_first', monthEnd + 1)
+  const firstSettlement = store.settleBudgetAndFinish(
+    issued.session.id, issued.installationId, 'budget_first_0001', 'complete', 275_000_000, monthEnd + 2,
+  )
+  assert.equal(firstSettlement.exceededReserve, false)
+  store.settleBudget(issued.installationId, 'budget_first_0001', 275_000_000, monthEnd + 3)
+  wallet = database.prepare('SELECT spent_nano, reserved_nano FROM monthly_budgets WHERE installation_id = ?')
+    .get(issued.installationId)
+  assert.equal(wallet.spent_nano, 275_000_000)
+  assert.equal(wallet.reserved_nano, 0)
+
+  database.prepare('UPDATE monthly_budgets SET spent_nano = ? WHERE installation_id = ?')
+    .run(4_725_000_000, issued.installationId)
+  assert.equal(store.admit(issued.session.id, 'budget_exact_0001', 'f2', monthEnd + 10_000).accepted, true)
+  store.settleBudgetAndFinish(issued.session.id, issued.installationId, 'budget_exact_0001', 'complete', 275_000_000, monthEnd + 10_001)
+  const exhausted = store.admit(issued.session.id, 'budget_over_00001', 'f3', monthEnd + 20_000)
+  assert.equal(exhausted.code, 'budget.exhausted')
+  assert.equal(exhausted.resetAt, Date.UTC(2026, 10, 1))
+  assert.equal(store.admit(issued.session.id, 'budget_newmonth_01', 'f4', Date.UTC(2026, 10, 1) + 1).accepted, true)
+  store.settleBudgetAndFinish(issued.session.id, issued.installationId, 'budget_newmonth_01', 'complete', 275_000_001, Date.UTC(2026, 10, 1) + 2)
+  assert.equal(store.admit(issued.session.id, 'budget_overrun_001', 'f5', Date.UTC(2026, 10, 1) + 10_001).code, 'budget.accounting_review')
+
+  const rollover = store.issueInstallation('198.51.100.32', monthEnd)
+  assert.ok('token' in rollover)
+  if (!('token' in rollover)) return
+  const lateAdmission = Date.UTC(2026, 9, 31, 23, 59, 50)
+  assert.equal(store.admit(rollover.session.id, 'budget_late_00001', 'f8', lateAdmission).accepted, true)
+  store.holdBudget(rollover.installationId, 'budget_late_00001', lateAdmission + 1)
+  store.settleBudget(rollover.installationId, 'budget_late_00001', 100_000_000, Date.UTC(2026, 10, 1) + 1)
+  assert.equal(database.prepare('SELECT spent_nano FROM monthly_budgets WHERE installation_id = ? AND month_key = ?')
+    .get(rollover.installationId, '2026-10').spent_nano, 100_000_000)
+  assert.equal(database.prepare('SELECT spent_nano FROM monthly_budgets WHERE installation_id = ? AND month_key = ?')
+    .get(rollover.installationId, '2026-11'), undefined)
+
+  const uncertain = store.issueInstallation('198.51.100.31', monthEnd)
+  assert.ok('token' in uncertain)
+  if (!('token' in uncertain)) return
+  assert.equal(store.admit(uncertain.session.id, 'budget_held_0001', 'f6', monthEnd).accepted, true)
+  store.recordProviderGeneration(uncertain.installationId, 'budget_held_0001', 'gen_budget_pending', monthEnd + 1)
+  store.holdBudget(uncertain.installationId, 'budget_held_0001', monthEnd + 2)
+  store.finish(uncertain.session.id, 'budget_held_0001', 'interrupted', monthEnd + 2)
+  store.close()
+  store = new OperationalStore(path, secret, monthEnd + 3)
+  const pending = store.pendingBudgetReconciliation(monthEnd + 3, 10)
+  assert.equal(pending.some((charge) => charge.generationId === 'gen_budget_pending'), true)
+  assert.equal(store.admit(uncertain.session.id, 'budget_held_0002', 'f7', monthEnd + 20_000).accepted, true,
+    'an uncertain hold reduces available balance without locking the installation')
+  store.markBudgetReconciliationAttempt(uncertain.installationId, 'budget_held_0001', monthEnd + 3)
+  assert.equal(store.pendingBudgetReconciliation(monthEnd + 4, 10).some((charge) => charge.generationId === 'gen_budget_pending'), false)
+  assert.equal(store.pendingBudgetReconciliation(monthEnd + 30_003, 10).some((charge) => charge.generationId === 'gen_budget_pending'), true)
+  store.close()
+  database.close()
+  await rm(directory, { recursive: true, force: true })
+})
+
 await test('HTTP session, CORS, canonical provider request, final usage chunk, and no content persistence', async () => {
   const fixture = await createFixture()
   try {
@@ -509,6 +580,62 @@ await test('HTTP session, CORS, canonical provider request, final usage chunk, a
   } finally {
     if (fixture.backend.server.listening) await fixture.close()
     await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+function databaseFor(path) { return new DatabaseSync(path) }
+
+await test('HTTP budget denies legacy sessions and reconciles missing SSE usage before a new paid request', async () => {
+  const fixture = await createFixture({
+    responder: async ({ request, response, body, requests }) => {
+      if (request.method === 'GET') {
+        const id = new URL(request.url, 'http://provider.invalid').searchParams.get('id')
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ data: {
+          id, model: 'openai/gpt-6-luna', finish_reason: 'stop', generation_time: 1, total_cost: 0.0123456781,
+        } }))
+        return
+      }
+      response.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Generation-Id': 'gen-local-usage' })
+      response.end(
+        sse({ id: 'gen-local-usage', model: 'openai/gpt-6-luna', choices: [{ delta: { content: 'answer' }, finish_reason: null }] }) +
+        sse({ id: 'gen-local-usage', model: 'openai/gpt-6-luna', choices: [{ delta: {}, finish_reason: 'stop' }] }) +
+        'data: [DONE]\n\n',
+      )
+    },
+  })
+  try {
+    const issued = await issueSession(fixture)
+    const database = new DatabaseSync(fixture.config.databasePath)
+    // Exercise the old bearer path by detaching its durable subject in place.
+    const sessionId = database.prepare('SELECT id FROM sessions ORDER BY created_at LIMIT 1').get().id
+    database.prepare('UPDATE sessions SET installation_id = NULL WHERE id = ?').run(sessionId)
+    const legacy = await postGeneration(fixture, issued.token, input('legacy_no_identity'))
+    assert.equal(legacy.status, 401)
+    assert.equal((await legacy.json()).error.code, 'installation.required')
+    database.prepare('UPDATE sessions SET installation_id = ? WHERE id = ?').run(issued.body.installationId, sessionId)
+    database.close()
+
+    const first = await postGeneration(fixture, issued.token, input('usage_missing_0001'))
+    assert.equal(first.status, 200)
+    await first.text()
+    const pending = databaseFor(fixture.config.databasePath)
+    const charge = pending.prepare('SELECT status, provider_generation_id FROM budget_charges WHERE request_id = ?')
+      .get('usage_missing_0001')
+    assert.equal(charge.status, 'held')
+    assert.equal(charge.provider_generation_id, 'gen-local-usage')
+    fixture.now += 10_000
+    const second = await postGeneration(fixture, issued.token, input('usage_missing_0002'))
+    assert.equal(second.status, 200)
+    await second.text()
+    const settled = pending.prepare('SELECT status, charged_nano FROM budget_charges WHERE request_id = ?')
+      .get('usage_missing_0001')
+    assert.equal(settled.status, 'settled')
+    assert.equal(settled.charged_nano, 12_345_679)
+    assert.equal(fixture.provider.requests.some((entry) => entry.method === 'GET' && entry.url.includes('/generation?id=gen-local-usage')), true)
+    pending.close()
+  } finally {
+    await fixture.close()
   }
 })
 

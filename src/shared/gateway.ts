@@ -28,6 +28,7 @@ export class GatewayError extends Error {
     readonly kind: 'unavailable' | 'session' | 'rate' | 'context' | 'uncertain' | 'provider' | 'cancelled' | 'request',
     readonly retryAfter?: number,
     readonly partial = false,
+    readonly resetAt?: number,
   ) {
     super(code)
     this.name = 'GatewayError'
@@ -259,11 +260,14 @@ async function responseError(response: Response, defaultCode = 'gateway.error'):
   const root = asRecord(body)
   const error = asRecord(root?.error)
   const code = typeof error?.code === 'string' ? error.code : defaultCode
+  const resetAt = typeof error?.resetAt === 'number' && Number.isFinite(error.resetAt) ? error.resetAt : undefined
   const retryHeader = Number(response.headers.get('Retry-After'))
   const retryAfter = Number.isFinite(retryHeader) && retryHeader > 0 ? retryHeader : undefined
   if (code === 'session.invalid') return new GatewayError(code, 'session')
-  if (code === 'session.rate_limited') return new GatewayError(code, 'rate', retryAfter)
-  if (code === 'generation.cooldown' || code === 'generation.capacity' || code === 'generation.in_progress') {
+  if (code === 'budget.accounting_review') return new GatewayError(code, 'provider')
+  if (code === 'session.rate_limited') return new GatewayError(code, 'rate', retryAfter, false, resetAt)
+  if (code === 'budget.exhausted') return new GatewayError(code, 'rate', undefined, false, resetAt)
+  if (code === 'budget.exhausted' || code === 'generation.cooldown' || code === 'generation.capacity' || code === 'generation.in_progress') {
     return new GatewayError(code, 'rate', retryAfter)
   }
   if (code === 'context.too_large' || code === 'provider.context_too_large') return new GatewayError(code, 'context')
@@ -426,7 +430,9 @@ async function readGenerationStream(stream: ReadableStream<Uint8Array>, request:
 
 export function gatewayErrorMessage(error: GatewayError, language: UiLang): string {
   const key = error.code === 'generation.timeout' ? 'err.gatewayTimeout'
-    : error.code === 'session.rate_limited' ? 'err.gatewaySessionRate'
+    : error.code === 'budget.exhausted' ? 'err.gatewayBudget'
+      : error.code === 'budget.accounting_review' ? 'err.gatewayAccountingReview'
+          : error.code === 'session.rate_limited' ? 'err.gatewaySessionRate'
       : error.code === 'generation.cooldown' ? 'err.gatewayRate'
         : error.code === 'generation.capacity' || error.code === 'generation.in_progress' ? 'err.gatewayBusy'
           : error.code === 'generation.request_id_conflict' || error.code === 'generation.already_started' ? 'err.gatewayDuplicate'
@@ -437,6 +443,18 @@ export function gatewayErrorMessage(error: GatewayError, language: UiLang): stri
                     : error.kind === 'rate' ? 'err.gatewayRate'
                       : error.kind === 'cancelled' ? 'err.gatewayCancelled'
                         : 'err.gatewayProvider'
+  if (error.code === 'budget.exhausted') {
+    const date = error.resetAt
+      ? new Date(error.resetAt).toLocaleDateString(language === 'ru' ? 'ru-RU' : 'en-US', { timeZone: 'UTC' })
+      : ''
+    return t(language, key, { date })
+  }
+  if (error.code === 'budget.exhausted') {
+    const date = error.resetAt
+      ? new Date(error.resetAt).toLocaleDateString(language === 'ru' ? 'ru-RU' : 'en-US', { timeZone: 'UTC' })
+      : ''
+    return t(language, key, { date })
+  }
   return t(language, key, { seconds: Math.max(1, Math.ceil(error.retryAfter ?? 10)) })
 }
 
@@ -444,7 +462,7 @@ function gatewayErrorKind(code: unknown): GatewayError['kind'] {
   if (typeof code !== 'string') return 'provider'
   if (code === 'generation.cancelled') return 'cancelled'
   if (code === 'generation.timeout') return 'uncertain'
-  if (code === 'generation.cooldown' || code === 'generation.capacity' || code === 'generation.in_progress' || code === 'session.rate_limited' || code === 'provider.rate_limited') return 'rate'
+  if (code === 'budget.exhausted' || code === 'generation.cooldown' || code === 'generation.capacity' || code === 'generation.in_progress' || code === 'session.rate_limited' || code === 'provider.rate_limited') return 'rate'
   if (code === 'session.invalid') return 'session'
   if (code === 'context.too_large' || code === 'provider.context_too_large') return 'context'
   if (code === 'provider.unavailable' || code === 'backend.internal') return 'uncertain'

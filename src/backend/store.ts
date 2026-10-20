@@ -5,6 +5,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { GATEWAY_LIMITS } from '../shared/gateway-protocol'
 
 const HOUR_MS = 60 * 60 * 1_000
+const MONTHLY_BUDGET_NANO = 5_000_000_000
+const GENERATION_RESERVE_NANO = 275_000_000
 
 export interface Session {
   id: string
@@ -20,7 +22,7 @@ export interface InstallationCredential {
 
 export type Admission =
   | { accepted: true }
-  | { accepted: false; status: number; code: string; retryAfter?: number }
+  | { accepted: false; status: number; code: string; retryAfter?: number; resetAt?: number }
 
 export class OperationalStore {
   private readonly db: DatabaseSync
@@ -47,6 +49,9 @@ export class OperationalStore {
       '  installation_id TEXT',
       ');',
       'CREATE TABLE IF NOT EXISTS installations (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, last_started_at INTEGER);',
+      'CREATE TABLE IF NOT EXISTS monthly_budgets (installation_id TEXT NOT NULL, month_key TEXT NOT NULL, spent_nano INTEGER NOT NULL, reserved_nano INTEGER NOT NULL, PRIMARY KEY(installation_id, month_key));',
+      "CREATE TABLE IF NOT EXISTS budget_charges (installation_id TEXT NOT NULL, request_id TEXT NOT NULL, month_key TEXT NOT NULL, reserved_nano INTEGER NOT NULL, charged_nano INTEGER, status TEXT NOT NULL CHECK(status IN ('reserved','held','settled','released')), provider_generation_id TEXT, updated_at INTEGER NOT NULL, next_reconcile_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(installation_id, request_id));",
+      'CREATE INDEX IF NOT EXISTS budget_charges_pending ON budget_charges(status, provider_generation_id);',
       'CREATE TABLE IF NOT EXISTS issuance_buckets (ip_hash TEXT NOT NULL, issued_at INTEGER NOT NULL);',
       'CREATE INDEX IF NOT EXISTS issuance_buckets_issued_at ON issuance_buckets(issued_at);',
       "CREATE TABLE IF NOT EXISTS operations (",
@@ -64,9 +69,11 @@ export class OperationalStore {
     ].join('\n'))
     this.ensureColumn('sessions', 'installation_id', 'TEXT')
     this.ensureColumn('operations', 'installation_id', 'TEXT')
+    this.ensureColumn('budget_charges', 'next_reconcile_at', 'INTEGER NOT NULL DEFAULT 0')
     this.db.exec('CREATE INDEX IF NOT EXISTS operations_installation_status ON operations(installation_id, status)')
     this.transaction(() => {
       this.db.prepare("UPDATE operations SET status = 'interrupted', finished_at = ? WHERE status = 'active'").run(now)
+      this.db.prepare("UPDATE budget_charges SET status = 'held', updated_at = ? WHERE status = 'reserved'").run(now)
       this.prune(now)
     })
   }
@@ -98,7 +105,7 @@ export class OperationalStore {
     })
   }
 
-  recoverInstallation(installationId: string, installationSecret: string, now: number): { token: string; session: Session } | { retryAfter: number } | undefined {
+  recoverInstallation(installationId: string, installationSecret: string, now: number): { token: string; session: Session } | undefined {
     const token = randomBytes(32).toString('base64url')
     const id = randomUUID()
     return this.transaction(() => {
@@ -108,7 +115,16 @@ export class OperationalStore {
       if (!installation) return undefined
       const sessions = this.db.prepare('SELECT COUNT(*) AS count FROM sessions WHERE installation_id = ? AND expires_at > ?')
         .get(installationId, now) as { count: number }
-      if (Number(sessions.count) >= 20) return { retryAfter: 60 }
+      if (Number(sessions.count) >= 20) {
+        this.db.prepare([
+          'DELETE FROM sessions WHERE id = (',
+          '  SELECT id FROM sessions',
+          '  WHERE installation_id = ?',
+          "    AND id NOT IN (SELECT session_id FROM operations WHERE status = 'active')",
+          '  ORDER BY created_at LIMIT 1',
+          ')',
+        ].join('\n')).run(installationId)
+      }
       const expiresAt = now + GATEWAY_LIMITS.sessionTtlMs
       this.db.prepare('INSERT INTO sessions(id, token_hash, created_at, expires_at, installation_id) VALUES (?, ?, ?, ?, ?)')
         .run(id, hashToken(token), now, expiresAt, installationId)
@@ -180,6 +196,8 @@ export class OperationalStore {
         return { accepted: false, status: 401, code: 'session.expired' }
       }
 
+      if (!session.installation_id) return { accepted: false, status: 401, code: 'installation.required' }
+
       const existing = this.db.prepare(
         'SELECT fingerprint FROM operations WHERE request_id = ? AND (session_id = ? OR installation_id = ?)',
       ).get(requestId, sessionId, session.installation_id) as { fingerprint: string } | undefined
@@ -189,6 +207,15 @@ export class OperationalStore {
           : { accepted: false, status: 409, code: 'generation.request_id_conflict' }
       }
 
+      const existingCharge = this.db.prepare(
+        'SELECT 1 FROM budget_charges WHERE installation_id = ? AND request_id = ?',
+      ).get(session.installation_id, requestId)
+      if (existingCharge) return { accepted: false, status: 409, code: 'generation.already_started' }
+      const reserveOverrun = this.db.prepare([
+        "SELECT 1 FROM budget_charges WHERE installation_id = ? AND status = 'settled'",
+        'AND charged_nano > reserved_nano LIMIT 1',
+      ].join(' ')).get(session.installation_id)
+      if (reserveOverrun) return { accepted: false, status: 503, code: 'budget.accounting_review' }
       const activeForSession = this.db.prepare(
         "SELECT 1 FROM operations WHERE status = 'active' AND (session_id = ? OR installation_id = ?) LIMIT 1",
       ).get(sessionId, session.installation_id)
@@ -208,6 +235,24 @@ export class OperationalStore {
         return { accepted: false, status: 429, code: 'generation.capacity', retryAfter: 5 }
       }
 
+      const monthKey = new Date(now).toISOString().slice(0, 7)
+      const resetAt = nextMonthStart(now)
+      const budget = this.db.prepare('SELECT spent_nano, reserved_nano FROM monthly_budgets WHERE installation_id = ? AND month_key = ?')
+        .get(session.installation_id, monthKey) as { spent_nano: number; reserved_nano: number } | undefined
+      const spentNano = Number(budget?.spent_nano ?? 0)
+      const reservedNano = Number(budget?.reserved_nano ?? 0)
+      if (spentNano + reservedNano + GENERATION_RESERVE_NANO > MONTHLY_BUDGET_NANO) {
+        return { accepted: false, status: 429, code: 'budget.exhausted', resetAt }
+      }
+      this.db.prepare([
+        'INSERT INTO monthly_budgets(installation_id, month_key, spent_nano, reserved_nano) VALUES (?, ?, 0, ?)',
+        'ON CONFLICT(installation_id, month_key) DO UPDATE SET reserved_nano = reserved_nano + excluded.reserved_nano',
+      ].join(' ')).run(session.installation_id, monthKey, GENERATION_RESERVE_NANO)
+      this.db.prepare([
+        "INSERT INTO budget_charges(installation_id, request_id, month_key, reserved_nano, status, updated_at)",
+        "VALUES (?, ?, ?, ?, 'reserved', ?)",
+      ].join(' ')).run(session.installation_id, requestId, monthKey, GENERATION_RESERVE_NANO, now)
+
       this.db.prepare('UPDATE sessions SET last_started_at = ? WHERE id = ?').run(now, sessionId)
       if (session.installation_id) this.db.prepare('UPDATE installations SET last_started_at = ? WHERE id = ?').run(now, session.installation_id)
       this.db.prepare(
@@ -221,6 +266,101 @@ export class OperationalStore {
     this.db.prepare(
       'UPDATE operations SET status = ?, finished_at = ? WHERE session_id = ? AND request_id = ? AND status = ?',
     ).run(status, now, sessionId, requestId, 'active')
+  }
+
+  recordProviderGeneration(installationId: string, requestId: string, generationId: string, now: number): void {
+    this.db.prepare([
+      "UPDATE budget_charges SET provider_generation_id = COALESCE(provider_generation_id, ?), updated_at = ?, next_reconcile_at = 0",
+      "WHERE installation_id = ? AND request_id = ? AND status IN ('reserved','held')",
+    ].join(' ')).run(generationId, now, installationId, requestId)
+  }
+
+  settleBudgetAndFinish(
+    sessionId: string,
+    installationId: string,
+    requestId: string,
+    status: 'complete' | 'failed' | 'cancelled' | 'interrupted',
+    chargedNano: number | undefined,
+    now: number,
+  ): { exceededReserve: boolean } | undefined {
+    return this.transaction(() => {
+      let result: { exceededReserve: boolean } | undefined
+      if (chargedNano === undefined) {
+        this.db.prepare([
+          "UPDATE budget_charges SET status = 'held', updated_at = ?",
+          "WHERE installation_id = ? AND request_id = ? AND status = 'reserved'",
+        ].join(' ')).run(now, installationId, requestId)
+      } else {
+        result = this.settleBudgetInTransaction(installationId, requestId, chargedNano, now)
+      }
+      this.db.prepare([
+        'UPDATE operations SET status = ?, finished_at = ?',
+        "WHERE session_id = ? AND request_id = ? AND status = 'active'",
+      ].join(' ')).run(status, now, sessionId, requestId)
+      return result
+    })
+  }
+
+  holdBudget(installationId: string, requestId: string, now: number): void {
+    this.db.prepare([
+      "UPDATE budget_charges SET status = 'held', updated_at = ?",
+      "WHERE installation_id = ? AND request_id = ? AND status = 'reserved'",
+    ].join(' ')).run(now, installationId, requestId)
+  }
+
+  releaseBudget(installationId: string, requestId: string, now: number): void {
+    this.transaction(() => {
+      const charge = this.budgetCharge(installationId, requestId)
+      if (!charge || charge.status !== 'reserved') return
+      this.db.prepare('UPDATE monthly_budgets SET reserved_nano = reserved_nano - ? WHERE installation_id = ? AND month_key = ?')
+        .run(Number(charge.reserved_nano), installationId, charge.month_key)
+      this.db.prepare("UPDATE budget_charges SET status = 'released', updated_at = ? WHERE installation_id = ? AND request_id = ?")
+        .run(now, installationId, requestId)
+    })
+  }
+
+  settleBudget(installationId: string, requestId: string, chargedNano: number, now: number): { exceededReserve: boolean } | undefined {
+    return this.transaction(() => this.settleBudgetInTransaction(installationId, requestId, chargedNano, now))
+  }
+
+  pendingBudgetReconciliation(now: number, limit = 20): Array<{ installationId: string; requestId: string; monthKey: string; generationId: string }> {
+    return this.db.prepare([
+      "SELECT installation_id AS installationId, request_id AS requestId, month_key AS monthKey, provider_generation_id AS generationId",
+      "FROM budget_charges WHERE status = 'held' AND provider_generation_id IS NOT NULL AND next_reconcile_at <= ?",
+      'ORDER BY next_reconcile_at, updated_at LIMIT ?',
+    ].join(' ')).all(now, Math.max(1, Math.min(100, limit))) as Array<{
+      installationId: string; requestId: string; monthKey: string; generationId: string
+    }>
+  }
+
+  markBudgetReconciliationAttempt(installationId: string, requestId: string, now: number): void {
+    this.db.prepare([
+      'UPDATE budget_charges SET next_reconcile_at = ?, updated_at = ?',
+      "WHERE installation_id = ? AND request_id = ? AND status = 'held'",
+    ].join(' ')).run(now + 30_000, now, installationId, requestId)
+  }
+
+  private settleBudgetInTransaction(installationId: string, requestId: string, chargedNano: number, now: number): { exceededReserve: boolean } | undefined {
+    const charge = this.budgetCharge(installationId, requestId)
+    if (!charge) return undefined
+    if (charge.status === 'settled') return { exceededReserve: Number(charge.charged_nano) > Number(charge.reserved_nano) }
+    if (charge.status === 'released') return undefined
+    this.db.prepare([
+      'UPDATE monthly_budgets SET reserved_nano = reserved_nano - ?, spent_nano = spent_nano + ?',
+      'WHERE installation_id = ? AND month_key = ?',
+    ].join(' ')).run(Number(charge.reserved_nano), chargedNano, installationId, charge.month_key)
+    this.db.prepare("UPDATE budget_charges SET status = 'settled', charged_nano = ?, updated_at = ? WHERE installation_id = ? AND request_id = ?")
+      .run(chargedNano, now, installationId, requestId)
+    return { exceededReserve: chargedNano > Number(charge.reserved_nano) }
+  }
+
+  private budgetCharge(installationId: string, requestId: string): {
+    month_key: string; reserved_nano: number; charged_nano: number | null; status: string
+  } | undefined {
+    return this.db.prepare('SELECT month_key, reserved_nano, charged_nano, status FROM budget_charges WHERE installation_id = ? AND request_id = ?')
+      .get(installationId, requestId) as {
+        month_key: string; reserved_nano: number; charged_nano: number | null; status: string
+      } | undefined
   }
 
   close(): void {
@@ -264,6 +404,11 @@ export class OperationalStore {
       throw error
     }
   }
+}
+
+function nextMonthStart(timestamp: number): number {
+  const date = new Date(timestamp)
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1)
 }
 
 function hashToken(token: string): string {

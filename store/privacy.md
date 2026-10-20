@@ -82,9 +82,25 @@ injected on explicit capture or History actions.
 
 The backend stores access-session identifiers, token hashes, expiry and
 cooldown timestamps. Sessions expire after 30 days unless renewed; renewal
-retains the same identity and service limits. Expired sessions become invalid
-immediately. Physical cleanup runs at startup and on session issuance or
-generation admission; an idle database can retain expired records until then.
+retains the same installation identity and service limits. A separate durable
+installation ID and hashed secret allow the extension to recover a session
+after bearer expiry. Clearing extension data, creating a new profile or
+reinstalling may create a new anonymous installation; it does not delete the
+previous server-side identity or its budget ledger.
+
+The backend also stores monthly per-installation spent and reserved amounts,
+charge status and provider generation IDs needed to reconcile uncertain costs.
+These identity and ledger records have no automatic expiry. The budget is $5 per
+anonymous installation per UTC calendar month, with a $0.275 reserve per
+generation. The reserve is based on a maximum 1,050,000 prompt tokens at
+$0.25/M plus 16,384 output tokens at $0.75/M ($0.274788, rounded up). Final
+provider usage replaces the reserve when available; unresolved usage remains
+reserved for reconciliation. The request carries provider-side maximum price
+limits. Prompts, model and output cap are unchanged.
+
+Expired bearer sessions and issuance buckets are physically cleaned lazily at
+startup and on session issuance or generation admission; an idle database can
+retain expired records until then.
 
 Duplicate-request protection uses an operation identifier, a fingerprint of
 the accepted request, status and timestamps for a 24-hour window. Finished
@@ -100,9 +116,7 @@ in its database or ordinary logs. This identifier is pseudonymous, not a claim
 of irreversible anonymization. Shared networks can share an issuance limit.
 
 These technical records are not a learning profile or advertising analytics.
-Clearing local chats does not remove still-needed operational records; their
-validity windows expire independently and physical cleanup follows the schedule
-above. Public deployment must also configure proxy,
+Clearing local chats does not remove still-needed operational records. Session and issuance records follow their stated cleanup windows; installation identity and budget ledger records persist without automatic deletion. The backend does not store the extension's raw installation secret. Public deployment must also configure proxy,
 hosting and error-reporting logs consistently with these disclosures.
 
 ## Permissions

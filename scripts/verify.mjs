@@ -10,6 +10,7 @@
 // requires a headed browser.
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
+import { DatabaseSync } from 'node:sqlite'
 import { createServer as createNetServer } from 'node:net'
 import { execFileSync } from 'node:child_process'
 import { createServer as createViteServer } from 'vite'
@@ -612,12 +613,19 @@ try {
     }
     request.onerror = () => reject(request.error)
   }))
-  // An invalid persisted gateway session is explicit and never auto-replays a paid request.
-  await sw.evaluate((origin) => chrome.storage.local.set({ 'gateway.session': {
-    token: 'invalid-session-token-12345678901234567890',
-    expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
-    gatewayOrigin: origin,
-  } }), gatewayUrl)
+  // An invalid bearer plus invalid durable credential fails closed without replacing identity.
+  await sw.evaluate((origin) => chrome.storage.local.set({
+    'gateway.session': {
+      token: 'invalid-session-token-12345678901234567890',
+      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+      gatewayOrigin: origin,
+    },
+    'gateway.installation': {
+      installationId: '223e4567-e89b-12d3-a456-426614174000',
+      installationSecret: 'x'.repeat(43),
+      gatewayOrigin: origin,
+    },
+  }), gatewayUrl)
   const disconnected = await openCapture()
   const beforeDisconnected = requestCount
   await disconnected.click('.preset[data-preset="solve"]')
@@ -625,10 +633,12 @@ try {
   check(
     (await disconnected.locator('.msg.assistant .reply-status').last().textContent())?.includes('The answer session expired. Start a new request to reconnect.') &&
       requestCount === beforeDisconnected &&
-      !(await sw.evaluate(async () => (await chrome.storage.local.get('gateway.session'))['gateway.session'])),
-    'invalid gateway session is cleared with a friendly error and never starts a provider request',
+      (await sw.evaluate(async () => (await chrome.storage.local.get('gateway.installation'))['gateway.installation']?.installationId)) === '223e4567-e89b-12d3-a456-426614174000',
+    'invalid installation credential fails closed, keeps its subject, and never starts a provider request',
   )
   await disconnected.close()
+  // Clear only this synthetic poisoned fixture before unrelated chat scenarios.
+  await sw.evaluate(() => chrome.storage.local.remove(['gateway.session', 'gateway.installation']))
 
   const readSaved = (p) => p.evaluate(() => new Promise((resolve, reject) => {
     const open = indexedDB.open('study-buddy-conversations', 1)
@@ -670,7 +680,11 @@ try {
   const ai = await openCapture()
   responseMode = 'title'
   await ai.click('.preset[data-preset="solve"]')
-  const reply = await waitReply(ai, 'The first selected answer')
+  const reply = await waitReply(ai, 'The first selected answer').catch(async () => {
+    console.log('  DIAG first reply:', JSON.stringify(await ai.evaluate(() => ({ statuses: [...document.querySelectorAll('.reply-status')].map(node => node.textContent), operationError: document.getElementById('operation-error')?.textContent, composerError: document.getElementById('composer-error')?.textContent }))))
+    console.log('  DIAG provider/backend:', requestCount, JSON.stringify(backendLogs.slice(-12).map(({ route, status }) => ({ route, status }))))
+    throw new Error('first reply did not arrive')
+  })
   check(reply === 'The first selected answer', `assistant reply streams with the title envelope hidden (${reply ?? 'no reply'})`)
   responseMode = 'normal'
   await ai.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete'))
@@ -902,6 +916,25 @@ try {
     async (s) => chrome.storage.local.set({ settings: s }),
     { uiLanguage: 'en', answerLanguage: 'auto' },
   )
+
+  // Exhaust the current installation wallet and verify the real chat UI shows the UTC reset.
+  const budgetDatabase = new DatabaseSync(backendConfig.databasePath)
+  const budgetMonth = new Date().toISOString().slice(0, 7)
+  budgetDatabase.prepare(`INSERT INTO monthly_budgets (installation_id, month_key, spent_nano, reserved_nano)
+    SELECT installation_id, ?, 4_725_000_001, 0 FROM sessions WHERE installation_id IS NOT NULL LIMIT 1
+    ON CONFLICT(installation_id, month_key) DO UPDATE SET spent_nano = excluded.spent_nano, reserved_nano = 0`).run(budgetMonth)
+  const budgetPage = await openCapture()
+  const beforeBudgetDenied = requestCount
+  await budgetPage.click('.preset[data-preset="solve"]')
+  await budgetPage.waitForFunction(() => {
+    const status = [...document.querySelectorAll('.msg.assistant .reply-status')].at(-1)?.textContent ?? ''
+    return status.includes('monthly limit') && status.includes('resets')
+  })
+  check(requestCount === beforeBudgetDenied,
+    'monthly budget error shows its reset date in chat without an upstream generation')
+  await budgetPage.close()
+  budgetDatabase.prepare('UPDATE monthly_budgets SET spent_nano = 0, reserved_nano = 0 WHERE month_key = ?').run(budgetMonth)
+  budgetDatabase.close()
 
   // The unavailable primary must surface its error after exactly one attempt.
   failModel = PRIMARY

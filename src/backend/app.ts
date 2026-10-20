@@ -36,12 +36,70 @@ export interface BackendApp {
   close(): Promise<void>
 }
 
+async function reconcilePendingBudget(
+  store: OperationalStore,
+  providerBaseUrl: string,
+  apiKey: string,
+  now: () => number,
+  log: (entry: Record<string, unknown>) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const pending = store.pendingBudgetReconciliation(now(), 3)
+  for (const charge of pending) {
+    store.markBudgetReconciliationAttempt(charge.installationId, charge.requestId, now())
+    try {
+      const response = await fetch(`${providerBaseUrl}/generation?id=${encodeURIComponent(charge.generationId)}`, {
+        headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+        signal: AbortSignal.any([signal, AbortSignal.timeout(2_000)]),
+      })
+      if (!response.ok) continue
+      const payload: unknown = await response.json()
+      const root = recordOrUndefined(payload)
+      const data = recordOrUndefined(root?.data)
+      const terminal = (typeof data?.finish_reason === 'string' && data.finish_reason.length > 0) || data?.cancelled === true
+      if (data?.id !== charge.generationId || data.model !== MODEL_CHAIN[0] || !terminal ||
+          typeof data.generation_time !== 'number' || !Number.isFinite(data.generation_time) ||
+          typeof data.total_cost !== 'number' || !Number.isFinite(data.total_cost) || data.total_cost < 0) continue
+      const chargedNano = costToNano(data.total_cost)
+      if (chargedNano === undefined) continue
+      const settlement = store.settleBudget(charge.installationId, charge.requestId, chargedNano, now())
+      if (settlement?.exceededReserve) safeLog(log, { event: 'budget.reserve_exceeded', route: '/api/v1/generations' })
+    } catch {
+      // Unknown provider state keeps the full reservation held.
+    }
+  }
+}
+
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function costToNano(cost: number | undefined): number | undefined {
+  if (cost === undefined || !Number.isFinite(cost) || cost < 0) return undefined
+  const nano = Math.ceil(cost * 1_000_000_000)
+  return Number.isSafeInteger(nano) ? nano : undefined
+}
+
+function isDefiniteProviderRejection(error: unknown, providerAccepted: boolean): boolean {
+  if (!(error instanceof ApiError)) return false
+  return !providerAccepted && error.definitiveRejection
+}
+
 export function createBackend(config: BackendConfig, dependencies: BackendDependencies = {}): BackendApp {
   const now = dependencies.now ?? Date.now
   const log = dependencies.log ?? ((entry: Record<string, unknown>) => console.info(JSON.stringify(entry)))
   const providerBaseUrl = normalizeProviderBaseUrl(dependencies.providerBaseUrl ?? OPENROUTER_API_BASE)
   const store = new OperationalStore(config.databasePath, config.sessionHmacSecret, now())
   const active = new Map<string, { controller: AbortController; done: Promise<void> }>()
+  let reconciling: Promise<void> | undefined
+  const reconcileController = new AbortController()
+  const reconcileBudget = (): Promise<void> => {
+    if (reconciling) return reconciling
+    reconciling = reconcilePendingBudget(store, providerBaseUrl, config.providerApiKey, now, log, reconcileController.signal)
+      .finally(() => { reconciling = undefined })
+    return reconciling
+  }
+  void reconcileBudget().catch(() => {})
   const trustedProxies = new Set(config.trustedProxyIps.map(normalizeIp))
   const allowedOrigins = new Set(config.allowedOrigins)
   const server = createServer((request, response) => {
@@ -122,10 +180,6 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
       const session = store.recoverInstallation(body.installationId, body.installationSecret, now())
       if (!session) {
         sendJson(response, 401, 'installation.invalid', 'The saved installation credential is unavailable.')
-        return
-      }
-      if ('retryAfter' in session) {
-        sendJson(response, 429, 'session.rate_limited', 'Too many sessions are active for this installation. Try again later.', undefined, session.retryAfter)
         return
       }
       sendJson(response, 201, undefined, undefined, { token: session.token, expiresAt: session.session.expiresAt })
@@ -230,6 +284,7 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
     const fingerprint = createHash('sha256')
       .update(JSON.stringify({ modelChain: MODEL_CHAIN, request: gatewayFingerprint(input, prepared) }))
       .digest('hex')
+    await reconcileBudget().catch(() => {})
     const admission = store.admit(session.id, input.requestId, fingerprint, now())
     if (!admission.accepted) {
       const message = admission.code === 'generation.cooldown'
@@ -241,18 +296,26 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
             : admission.code === 'generation.already_started'
               ? 'This generation was already started. Start a new request to try again.'
               : admission.code === 'generation.in_progress'
-                ? 'This session already has a generation in progress.'
-                : 'The session is unavailable. Reconnect to continue.'
-      sendJson(response, admission.status, admission.code, message, undefined, admission.retryAfter)
+                ? 'This installation already has a generation in progress.'
+                : admission.code === 'budget.exhausted'
+                  ? 'The monthly anonymous usage limit has been reached.'
+                  : admission.code === 'budget.accounting_review'
+                    ? 'A provider charge exceeded its reserved limit. Contact support before continuing.'
+                    : admission.code === 'installation.required'
+                      ? 'Reconnect this installation before starting another answer.'
+                    : 'The session is unavailable. Reconnect to continue.'
+      sendJson(response, admission.status, admission.code, message, undefined, admission.retryAfter,
+        admission.resetAt ? { resetAt: admission.resetAt } : undefined)
       return
     }
 
-    await streamGeneration(response, session.id, input, prepared)
+    await streamGeneration(response, session.id, session.installationId!, input, prepared)
   }
 
   async function streamGeneration(
     response: ServerResponse,
     sessionId: string,
+    installationId: string,
     input: GatewayGenerationInput,
     prepared: ReturnType<typeof prepareGatewayGeneration>,
   ): Promise<void> {
@@ -264,6 +327,8 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
     let disconnected = false
     let emittedText = false
     let operationStatus: 'complete' | 'failed' | 'cancelled' | 'interrupted' = 'failed'
+    let operationFinalized = false
+    let providerAccepted = false
     active.set(operationKey, { controller, done })
 
     const timeout = setTimeout(() => {
@@ -308,11 +373,19 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
           emittedText = true
           if (!controller.signal.aborted) writeEvent(response, 'delta', { text })
         },
+        onProviderGenerationId: (generationId) => store.recordProviderGeneration(installationId, input.requestId, generationId, now()),
+        onProviderResponseAccepted: () => { providerAccepted = true },
       })
       const safeResult = completionDto(result)
+      const chargedNano = costToNano(result.usage?.cost)
       operationStatus = result.status === 'interrupted' ? 'interrupted' : 'complete'
+      const settlement = store.settleBudgetAndFinish(sessionId, installationId, input.requestId, operationStatus, chargedNano, now())
+      operationFinalized = true
+      if (settlement?.exceededReserve) safeLog(log, { event: 'budget.reserve_exceeded', route: '/api/v1/generations' })
       writeEvent(response, 'complete', safeResult)
     } catch (error) {
+      if (isDefiniteProviderRejection(error, providerAccepted)) store.releaseBudget(installationId, input.requestId, now())
+      else store.holdBudget(installationId, input.requestId, now())
       if (disconnected || response.destroyed) {
         operationStatus = 'cancelled'
       } else if (timedOut) {
@@ -342,8 +415,9 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
       clearTimeout(timeout)
       response.removeListener('close', onClose)
       active.delete(operationKey)
-      try { store.finish(sessionId, input.requestId, operationStatus, now()) }
-      finally { completeOperation() }
+      try {
+        if (!operationFinalized) store.finish(sessionId, input.requestId, operationStatus, now())
+      } finally { completeOperation() }
       if (!response.writableEnded && !response.destroyed) response.end()
     }
   }
@@ -361,6 +435,8 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
         await closed
       }
       await Promise.allSettled(operations.map((operation) => operation.done))
+      reconcileController.abort()
+      if (reconciling) await reconciling.catch(() => {})
       store.close()
     },
   }
@@ -554,9 +630,10 @@ function sendJson(
   message?: string,
   value?: Record<string, unknown>,
   retryAfter?: number,
+  errorDetails?: Record<string, unknown>,
 ): void {
   if (retryAfter !== undefined) response.setHeader('Retry-After', String(retryAfter))
-  const body = code && message ? { error: { code, message } } : value ?? {}
+  const body = code && message ? { error: { code, message, ...errorDetails } } : value ?? {}
   const encoded = JSON.stringify(body)
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',

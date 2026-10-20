@@ -102,14 +102,50 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
     if (request.method === 'POST' && path === '/api/v1/session') {
       const body = await readBody(request, 1_024)
       if (body.byteLength) throw failure(400, 'request.body_not_allowed', 'This endpoint does not accept a request body.')
-      const issued = store.issueSession(clientIp(request, trustedProxies), now())
+      const issued = store.issueInstallation(clientIp(request, trustedProxies), now())
       if ('retryAfter' in issued) {
-        sendJson(response, 429, 'session.rate_limited', 'Too many sessions were started from this network. Try again later.', undefined, issued.retryAfter)
+        sendJson(response, 429, 'session.rate_limited', 'Too many installations were started from this network. Try again later.', undefined, issued.retryAfter)
         return
       }
       sendJson(response, 201, undefined, undefined, {
         token: issued.token,
         expiresAt: issued.session.expiresAt,
+        installationId: issued.installationId,
+        installationSecret: issued.installationSecret,
+      })
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/v1/session/recover') {
+      const body = parseInstallationCredential(await readJsonBody(request, 1_024))
+      if (!body) throw failure(400, 'installation.credential_invalid', 'The saved installation credential is invalid.')
+      const session = store.recoverInstallation(body.installationId, body.installationSecret, now())
+      if (!session) {
+        sendJson(response, 401, 'installation.invalid', 'The saved installation credential is unavailable.')
+        return
+      }
+      if ('retryAfter' in session) {
+        sendJson(response, 429, 'session.rate_limited', 'Too many sessions are active for this installation. Try again later.', undefined, session.retryAfter)
+        return
+      }
+      sendJson(response, 201, undefined, undefined, { token: session.token, expiresAt: session.session.expiresAt })
+      return
+    }
+
+    if (request.method === 'POST' && path === '/api/v1/session/claim') {
+      const body = await readBody(request, 1_024)
+      if (body.byteLength) throw failure(400, 'request.body_not_allowed', 'This endpoint does not accept a request body.')
+      const token = bearerToken(request)
+      const claimed = token ? store.claimInstallation(token, now()) : undefined
+      if (!claimed) {
+        sendJson(response, 401, 'session.invalid', 'The session is unavailable. Reconnect to continue.')
+        return
+      }
+      sendJson(response, 200, undefined, undefined, {
+        token,
+        expiresAt: claimed.session.expiresAt,
+        installationId: claimed.installationId,
+        installationSecret: claimed.installationSecret,
       })
       return
     }
@@ -137,6 +173,12 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
     }
 
     sendJson(response, 404, 'route.not_found', 'This backend route does not exist.')
+  }
+
+  async function readJsonBody(request: IncomingMessage, limit: number): Promise<unknown> {
+    const bytes = await readBody(request, limit)
+    try { return JSON.parse(bytes.toString('utf8')) }
+    catch { throw failure(400, 'request.invalid_json', 'The request is not valid JSON.') }
   }
 
   async function handleGeneration(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -322,6 +364,14 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
       store.close()
     },
   }
+}
+
+function parseInstallationCredential(value: unknown): { installationId: string; installationSecret: string } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const body = value as Record<string, unknown>
+  if (typeof body.installationId !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.installationId) ||
+      typeof body.installationSecret !== 'string' || !/^[A-Za-z0-9_-]{40,64}$/.test(body.installationSecret)) return undefined
+  return { installationId: body.installationId, installationSecret: body.installationSecret }
 }
 
 function parseGenerationInput(value: unknown): GatewayGenerationInput {

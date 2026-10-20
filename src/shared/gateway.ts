@@ -8,6 +8,7 @@ import { t } from './i18n'
 import type { UiLang } from './i18n'
 
 export const GATEWAY_SESSION_KEY = 'gateway.session'
+export const GATEWAY_INSTALLATION_KEY = 'gateway.installation'
 const RENEW_BEFORE_MS = 2 * 24 * 60 * 60 * 1_000
 
 export interface AskRequest extends GatewayGenerationInput {
@@ -39,7 +40,14 @@ interface StoredSession {
   gatewayOrigin: string
 }
 
+interface StoredInstallation {
+  installationId: string
+  installationSecret: string
+  gatewayOrigin: string
+}
+
 type SessionResponse = Omit<StoredSession, 'gatewayOrigin'>
+type InstallationResponse = Omit<StoredInstallation, 'gatewayOrigin'>
 
 export function createGateway(): Gateway {
   return { ask: askGateway }
@@ -83,24 +91,59 @@ async function askGateway(request: AskRequest): Promise<CompletionResult> {
   return readGenerationStream(response.body, request)
 }
 
+let ensuringSession: Promise<StoredSession> | undefined
+
 async function ensureSession(signal?: AbortSignal): Promise<StoredSession> {
-  let stored: unknown
+  if (ensuringSession) return ensuringSession
+  const run = () => ensureSessionOnce(signal)
+  const coordinated = typeof navigator !== 'undefined' && navigator.locks
+    ? navigator.locks.request('study-buddy-session', async () => await run())
+    : run()
+  ensuringSession = Promise.resolve(coordinated).finally(() => { ensuringSession = undefined })
+  return ensuringSession
+}
+
+async function ensureSessionOnce(signal?: AbortSignal): Promise<StoredSession> {
+  let values: Record<string, unknown>
   try {
-    stored = (await chrome.storage.local.get(GATEWAY_SESSION_KEY))[GATEWAY_SESSION_KEY]
+    values = await chrome.storage.local.get([GATEWAY_SESSION_KEY, GATEWAY_INSTALLATION_KEY])
   } catch {
     throw new GatewayError('gateway.storage', 'unavailable')
   }
-  const session = readStoredSession(stored)
-  if (!session && stored !== undefined) {
-    try { await chrome.storage.local.remove(GATEWAY_SESSION_KEY) }
-    catch { throw new GatewayError('gateway.storage', 'unavailable') }
+  const storedSession = values[GATEWAY_SESSION_KEY]
+  const storedInstallation = values[GATEWAY_INSTALLATION_KEY]
+  const session = readStoredSession(storedSession)
+  const parsedInstallation = storedInstallation === undefined ? undefined : readInstallationBody(storedInstallation)
+  const storedOrigin = asRecord(storedInstallation)?.gatewayOrigin
+  if (storedInstallation !== undefined && (!parsedInstallation || typeof storedOrigin !== 'string')) {
+    throw new GatewayError('installation.invalid', 'session')
   }
-  if (session && session.expiresAt > Date.now() + RENEW_BEFORE_MS) return session
+  const installation = storedOrigin === new URL(GATEWAY_URL).origin && parsedInstallation
+    ? bindInstallationToGateway(parsedInstallation)
+    : undefined
+
+  if (session && session.expiresAt > Date.now() + RENEW_BEFORE_MS) {
+    if (installation) return session
+    const claimed = await claimInstallation(session, signal)
+    await storeInstallation(claimed.installation)
+    return claimed.session
+  }
+
   if (session) {
     const renewed = await renewSession(session, signal)
-    if (renewed) return renewed
+    if (renewed) {
+      if (installation) return renewed
+      const claimed = await claimInstallation(renewed, signal)
+      await storeInstallation(claimed.installation)
+      return claimed.session
+    }
   }
-  return issueSession(signal)
+
+  if (installation) return recoverInstallation(installation, signal)
+  const issued = await issueSession(signal)
+  await storeInstallation(issued.installation)
+  await storeSession(issued.session)
+  return issued.session
 }
 
 async function renewSession(session: StoredSession, signal?: AbortSignal): Promise<StoredSession | undefined> {
@@ -128,7 +171,7 @@ async function renewSession(session: StoredSession, signal?: AbortSignal): Promi
   return bound
 }
 
-async function issueSession(signal?: AbortSignal): Promise<StoredSession> {
+async function issueSession(signal?: AbortSignal): Promise<{ session: StoredSession; installation: StoredInstallation }> {
   let response: Response
   try {
     response = await fetch(`${GATEWAY_URL}/api/v1/session`, { method: 'POST', signal })
@@ -136,6 +179,53 @@ async function issueSession(signal?: AbortSignal): Promise<StoredSession> {
     if (signal?.aborted || isAbort(error)) throw new GatewayError('generation.cancelled', 'cancelled')
     throw new GatewayError('gateway.unavailable', 'unavailable')
   }
+  if (!response.ok) throw await responseError(response, 'gateway.unavailable')
+  const body = await readJson(response)
+  const session = readSessionBody(body)
+  const installation = readInstallationBody(body)
+  if (!session || !installation) throw new GatewayError('gateway.session', 'session')
+  return {
+    session: bindSessionToGateway(session),
+    installation: bindInstallationToGateway(installation),
+  }
+}
+
+async function claimInstallation(session: StoredSession, signal?: AbortSignal): Promise<{ session: StoredSession; installation: StoredInstallation }> {
+  let response: Response
+  try {
+    response = await fetch(`${GATEWAY_URL}/api/v1/session/claim`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session.token}` },
+      signal,
+    })
+  } catch (error) {
+    if (signal?.aborted || isAbort(error)) throw new GatewayError('generation.cancelled', 'cancelled')
+    throw new GatewayError('gateway.unavailable', 'unavailable')
+  }
+  if (!response.ok) throw await responseError(response, 'gateway.unavailable')
+  const body = await readJson(response)
+  const result = readSessionBody(body)
+  const installation = readInstallationBody(body)
+  if (!result || result.token !== session.token || !installation) throw new GatewayError('gateway.session', 'session')
+  const updated = bindSessionToGateway(result)
+  await storeSession(updated)
+  return { session: updated, installation: bindInstallationToGateway(installation) }
+}
+
+async function recoverInstallation(installation: StoredInstallation, signal?: AbortSignal): Promise<StoredSession> {
+  let response: Response
+  try {
+    response = await fetch(`${GATEWAY_URL}/api/v1/session/recover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ installationId: installation.installationId, installationSecret: installation.installationSecret }),
+      signal,
+    })
+  } catch (error) {
+    if (signal?.aborted || isAbort(error)) throw new GatewayError('generation.cancelled', 'cancelled')
+    throw new GatewayError('gateway.unavailable', 'unavailable')
+  }
+  if (response.status === 401) throw new GatewayError('installation.invalid', 'session')
   if (!response.ok) throw await responseError(response, 'gateway.unavailable')
   const session = readSessionBody(await readJson(response))
   if (!session) throw new GatewayError('gateway.session', 'session')
@@ -146,6 +236,11 @@ async function issueSession(signal?: AbortSignal): Promise<StoredSession> {
 
 async function storeSession(session: StoredSession): Promise<void> {
   try { await chrome.storage.local.set({ [GATEWAY_SESSION_KEY]: session }) }
+  catch { throw new GatewayError('gateway.storage', 'unavailable') }
+}
+
+async function storeInstallation(installation: StoredInstallation): Promise<void> {
+  try { await chrome.storage.local.set({ [GATEWAY_INSTALLATION_KEY]: installation }) }
   catch { throw new GatewayError('gateway.storage', 'unavailable') }
 }
 
@@ -195,6 +290,20 @@ function readSessionBody(value: unknown): SessionResponse | undefined {
 function bindSessionToGateway(session: SessionResponse): StoredSession {
   return { ...session, gatewayOrigin: new URL(GATEWAY_URL).origin }
 }
+
+function readInstallationBody(value: unknown): InstallationResponse | undefined {
+  const body = asRecord(value)
+  const installationId = body?.installationId
+  const installationSecret = body?.installationSecret
+  if (typeof installationId !== 'string' || !/^[0-9a-f-]{36}$/i.test(installationId) ||
+      typeof installationSecret !== 'string' || !/^[A-Za-z0-9_-]{40,64}$/.test(installationSecret)) return undefined
+  return { installationId, installationSecret }
+}
+
+function bindInstallationToGateway(installation: InstallationResponse): StoredInstallation {
+  return { ...installation, gatewayOrigin: new URL(GATEWAY_URL).origin }
+}
+
 
 function readStoredSession(value: unknown): StoredSession | undefined {
   const session = readSessionBody(value)

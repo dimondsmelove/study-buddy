@@ -10,6 +10,12 @@ export interface Session {
   id: string
   expiresAt: number
   lastStartedAt: number | null
+  installationId: string | null
+}
+
+export interface InstallationCredential {
+  installationId: string
+  installationSecret: string
 }
 
 export type Admission =
@@ -37,8 +43,10 @@ export class OperationalStore {
       '  token_hash TEXT NOT NULL UNIQUE,',
       '  created_at INTEGER NOT NULL,',
       '  expires_at INTEGER NOT NULL,',
-      '  last_started_at INTEGER',
+      '  last_started_at INTEGER,',
+      '  installation_id TEXT',
       ');',
+      'CREATE TABLE IF NOT EXISTS installations (id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, last_started_at INTEGER);',
       'CREATE TABLE IF NOT EXISTS issuance_buckets (ip_hash TEXT NOT NULL, issued_at INTEGER NOT NULL);',
       'CREATE INDEX IF NOT EXISTS issuance_buckets_issued_at ON issuance_buckets(issued_at);',
       "CREATE TABLE IF NOT EXISTS operations (",
@@ -48,21 +56,27 @@ export class OperationalStore {
       "  status TEXT NOT NULL CHECK(status IN ('active','complete','failed','cancelled','interrupted')),",
       '  started_at INTEGER NOT NULL,',
       '  finished_at INTEGER,',
+      '  installation_id TEXT,',
       '  PRIMARY KEY(session_id, request_id)',
       ');',
       'CREATE INDEX IF NOT EXISTS operations_status_started ON operations(status, started_at);',
       'CREATE INDEX IF NOT EXISTS operations_session_status ON operations(session_id, status);',
     ].join('\n'))
+    this.ensureColumn('sessions', 'installation_id', 'TEXT')
+    this.ensureColumn('operations', 'installation_id', 'TEXT')
+    this.db.exec('CREATE INDEX IF NOT EXISTS operations_installation_status ON operations(installation_id, status)')
     this.transaction(() => {
       this.db.prepare("UPDATE operations SET status = 'interrupted', finished_at = ? WHERE status = 'active'").run(now)
       this.prune(now)
     })
   }
 
-  issueSession(ip: string, now: number): { token: string; session: Session } | { retryAfter: number } {
+  issueInstallation(ip: string, now: number): ({ token: string; session: Session } & InstallationCredential) | { retryAfter: number } {
     const token = randomBytes(32).toString('base64url')
     const tokenHash = hashToken(token)
     const id = randomUUID()
+    const installationId = randomUUID()
+    const installationSecret = randomBytes(32).toString('base64url')
     const currentHour = Math.floor(now / HOUR_MS)
     const hashes = [this.ipHash(ip, currentHour), this.ipHash(ip, currentHour - 1)]
     return this.transaction(() => {
@@ -75,23 +89,66 @@ export class OperationalStore {
         return { retryAfter: Math.max(1, Math.ceil((oldest + HOUR_MS - now) / 1_000)) }
       }
       const expiresAt = now + GATEWAY_LIMITS.sessionTtlMs
-      this.db.prepare('INSERT INTO sessions(id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)')
-        .run(id, tokenHash, now, expiresAt)
+      this.db.prepare('INSERT INTO installations(id, secret_hash) VALUES (?, ?)').run(installationId, hashToken(installationSecret))
+      this.db.prepare('INSERT INTO sessions(id, token_hash, created_at, expires_at, installation_id) VALUES (?, ?, ?, ?, ?)')
+        .run(id, tokenHash, now, expiresAt, installationId)
       this.db.prepare('INSERT INTO issuance_buckets(ip_hash, issued_at) VALUES (?, ?)')
         .run(hashes[0], now)
-      return { token, session: { id, expiresAt, lastStartedAt: null } }
+      return { token, session: { id, expiresAt, lastStartedAt: null, installationId }, installationId, installationSecret }
+    })
+  }
+
+  recoverInstallation(installationId: string, installationSecret: string, now: number): { token: string; session: Session } | { retryAfter: number } | undefined {
+    const token = randomBytes(32).toString('base64url')
+    const id = randomUUID()
+    return this.transaction(() => {
+      this.prune(now)
+      const installation = this.db.prepare('SELECT id FROM installations WHERE id = ? AND secret_hash = ?')
+        .get(installationId, hashToken(installationSecret)) as { id: string } | undefined
+      if (!installation) return undefined
+      const sessions = this.db.prepare('SELECT COUNT(*) AS count FROM sessions WHERE installation_id = ? AND expires_at > ?')
+        .get(installationId, now) as { count: number }
+      if (Number(sessions.count) >= 20) return { retryAfter: 60 }
+      const expiresAt = now + GATEWAY_LIMITS.sessionTtlMs
+      this.db.prepare('INSERT INTO sessions(id, token_hash, created_at, expires_at, installation_id) VALUES (?, ?, ?, ?, ?)')
+        .run(id, hashToken(token), now, expiresAt, installationId)
+      return { token, session: { id, expiresAt, lastStartedAt: this.installationLastStartedAt(installationId), installationId } }
+    })
+  }
+
+  claimInstallation(token: string, now: number): ({ session: Session } & InstallationCredential) | undefined {
+    return this.transaction(() => {
+      const row = this.db.prepare('SELECT id, expires_at, last_started_at, installation_id FROM sessions WHERE token_hash = ?')
+        .get(hashToken(token)) as { id: string; expires_at: number; last_started_at: number | null; installation_id: string | null } | undefined
+      if (!row || Number(row.expires_at) <= now) return undefined
+      const installationId = row.installation_id ?? randomUUID()
+      const installationSecret = randomBytes(32).toString('base64url')
+      if (row.installation_id) {
+        this.db.prepare('UPDATE installations SET secret_hash = ? WHERE id = ?').run(hashToken(installationSecret), installationId)
+      } else {
+        this.db.prepare('INSERT INTO installations(id, secret_hash, last_started_at) VALUES (?, ?, ?)')
+          .run(installationId, hashToken(installationSecret), row.last_started_at)
+        this.db.prepare('UPDATE sessions SET installation_id = ? WHERE id = ?').run(installationId, row.id)
+      }
+      this.db.prepare('UPDATE operations SET installation_id = ? WHERE session_id = ?').run(installationId, row.id)
+      return {
+        session: { id: row.id, expiresAt: Number(row.expires_at), lastStartedAt: row.last_started_at === null ? null : Number(row.last_started_at), installationId },
+        installationId,
+        installationSecret,
+      }
     })
   }
 
   authenticate(token: string, now: number): Session | undefined {
     const row = this.db.prepare(
-      'SELECT id, expires_at, last_started_at FROM sessions WHERE token_hash = ?',
-    ).get(hashToken(token)) as { id: string; expires_at: number; last_started_at: number | null } | undefined
+      'SELECT id, expires_at, last_started_at, installation_id FROM sessions WHERE token_hash = ?',
+    ).get(hashToken(token)) as { id: string; expires_at: number; last_started_at: number | null; installation_id: string | null } | undefined
     if (!row || Number(row.expires_at) <= now) return undefined
     return {
       id: row.id,
       expiresAt: Number(row.expires_at),
       lastStartedAt: row.last_started_at === null ? null : Number(row.last_started_at),
+      installationId: row.installation_id,
     }
   }
 
@@ -99,8 +156,8 @@ export class OperationalStore {
     const tokenHash = hashToken(token)
     return this.transaction(() => {
       const row = this.db.prepare(
-        'SELECT id, expires_at, last_started_at FROM sessions WHERE token_hash = ?',
-      ).get(tokenHash) as { id: string; expires_at: number; last_started_at: number | null } | undefined
+        'SELECT id, expires_at, last_started_at, installation_id FROM sessions WHERE token_hash = ?',
+      ).get(tokenHash) as { id: string; expires_at: number; last_started_at: number | null; installation_id: string | null } | undefined
       if (!row || Number(row.expires_at) <= now) return undefined
       const expiresAt = now + GATEWAY_LIMITS.sessionTtlMs
       this.db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(expiresAt, row.id)
@@ -108,6 +165,7 @@ export class OperationalStore {
         id: row.id,
         expiresAt,
         lastStartedAt: row.last_started_at === null ? null : Number(row.last_started_at),
+        installationId: row.installation_id,
       }
     })
   }
@@ -116,15 +174,15 @@ export class OperationalStore {
     return this.transaction(() => {
       this.prune(now)
       const session = this.db.prepare(
-        'SELECT expires_at, last_started_at FROM sessions WHERE id = ?',
-      ).get(sessionId) as { expires_at: number; last_started_at: number | null } | undefined
+        'SELECT expires_at, last_started_at, installation_id FROM sessions WHERE id = ?',
+      ).get(sessionId) as { expires_at: number; last_started_at: number | null; installation_id: string | null } | undefined
       if (!session || Number(session.expires_at) <= now) {
         return { accepted: false, status: 401, code: 'session.expired' }
       }
 
       const existing = this.db.prepare(
-        'SELECT fingerprint FROM operations WHERE session_id = ? AND request_id = ?',
-      ).get(sessionId, requestId) as { fingerprint: string } | undefined
+        'SELECT fingerprint FROM operations WHERE request_id = ? AND (session_id = ? OR installation_id = ?)',
+      ).get(requestId, sessionId, session.installation_id) as { fingerprint: string } | undefined
       if (existing) {
         return existing.fingerprint === fingerprint
           ? { accepted: false, status: 409, code: 'generation.already_started' }
@@ -132,12 +190,13 @@ export class OperationalStore {
       }
 
       const activeForSession = this.db.prepare(
-        "SELECT 1 FROM operations WHERE session_id = ? AND status = 'active' LIMIT 1",
-      ).get(sessionId)
+        "SELECT 1 FROM operations WHERE status = 'active' AND (session_id = ? OR installation_id = ?) LIMIT 1",
+      ).get(sessionId, session.installation_id)
       if (activeForSession) return { accepted: false, status: 409, code: 'generation.in_progress' }
 
-      if (session.last_started_at !== null) {
-        const remaining = GATEWAY_LIMITS.cooldownMs - (now - Number(session.last_started_at))
+      const lastStartedAt = session.installation_id ? this.installationLastStartedAt(session.installation_id) : session.last_started_at
+      if (lastStartedAt !== null) {
+        const remaining = GATEWAY_LIMITS.cooldownMs - (now - Number(lastStartedAt))
         if (remaining > 0) {
           return { accepted: false, status: 429, code: 'generation.cooldown', retryAfter: Math.max(1, Math.ceil(remaining / 1_000)) }
         }
@@ -150,9 +209,10 @@ export class OperationalStore {
       }
 
       this.db.prepare('UPDATE sessions SET last_started_at = ? WHERE id = ?').run(now, sessionId)
+      if (session.installation_id) this.db.prepare('UPDATE installations SET last_started_at = ? WHERE id = ?').run(now, session.installation_id)
       this.db.prepare(
-        "INSERT INTO operations(session_id, request_id, fingerprint, status, started_at) VALUES (?, ?, ?, 'active', ?)",
-      ).run(sessionId, requestId, fingerprint, now)
+        "INSERT INTO operations(session_id, request_id, fingerprint, status, started_at, installation_id) VALUES (?, ?, ?, 'active', ?, ?)",
+      ).run(sessionId, requestId, fingerprint, now, session.installation_id)
       return { accepted: true }
     })
   }
@@ -181,6 +241,16 @@ export class OperationalStore {
 
   private ipHash(ip: string, hour: number): string {
     return createHmac('sha256', this.hmacSecret).update(hour + ':' + ip).digest('hex')
+  }
+
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const columns = this.db.prepare('PRAGMA table_info(' + table + ')').all() as Array<{ name: string }>
+    if (!columns.some((item) => item.name === column)) this.db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
+  }
+
+  private installationLastStartedAt(id: string): number | null {
+    const row = this.db.prepare('SELECT last_started_at FROM installations WHERE id = ?').get(id) as { last_started_at: number | null } | undefined
+    return row?.last_started_at === null || row?.last_started_at === undefined ? null : Number(row.last_started_at)
   }
 
   private transaction<T>(body: () => T): T {

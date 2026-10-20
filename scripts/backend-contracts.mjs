@@ -321,7 +321,7 @@ await test('SQLite session expiry, renewal, issuance cap, exact cooldown and ide
   const path = join(directory, 'state.sqlite')
   let store = new OperationalStore(path, secret, nowBase)
   assert.equal((await stat(path)).mode & 0o777, 0o600)
-  const issued = store.issueSession('198.51.100.7', nowBase)
+  const issued = store.issueInstallation('198.51.100.7', nowBase)
   assert.equal('token' in issued, true)
   if (!('token' in issued)) return
   assert.equal(store.authenticate(issued.token, issued.session.expiresAt - 1)?.id, issued.session.id)
@@ -340,12 +340,12 @@ await test('SQLite session expiry, renewal, issuance cap, exact cooldown and ide
   store.finish(issued.session.id, 'request_00000002', 'complete', nowBase + 10_001)
 
   let overflow
-  for (let index = 0; index < 20; index++) overflow = store.issueSession('198.51.100.8', nowBase + index)
+  for (let index = 0; index < 20; index++) overflow = store.issueInstallation('198.51.100.8', nowBase + index)
   assert.equal('token' in overflow, true)
-  overflow = store.issueSession('198.51.100.8', nowBase + 20)
+  overflow = store.issueInstallation('198.51.100.8', nowBase + 20)
   assert.equal('retryAfter' in overflow, true)
 
-  const active = store.issueSession('198.51.100.9', nowBase)
+  const active = store.issueInstallation('198.51.100.9', nowBase)
   assert.ok('token' in active)
   if (!('token' in active)) return
   assert.equal(store.admit(active.session.id, 'restart_00000001', 'restart-hash', nowBase).accepted, true)
@@ -360,6 +360,51 @@ await test('SQLite session expiry, renewal, issuance cap, exact cooldown and ide
   await rm(directory, { recursive: true, force: true })
 })
 
+await test('durable installation recovery, legacy claim, and cross-session admission state', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'study-buddy-installation-'))
+  const path = join(directory, 'state.sqlite')
+  let store = new OperationalStore(path, secret, nowBase)
+  const issued = store.issueInstallation('198.51.100.20', nowBase)
+  assert.ok('token' in issued)
+  if (!('token' in issued)) return
+  assert.equal(issued.installationSecret.length, 43)
+  const database = new DatabaseSync(path)
+  const storedSecret = database.prepare('SELECT secret_hash FROM installations WHERE id = ?')
+    .get(issued.installationId).secret_hash
+  assert.notEqual(storedSecret, issued.installationSecret)
+
+  const recovered = store.recoverInstallation(issued.installationId, issued.installationSecret, nowBase + 1)
+  assert.ok(recovered)
+  assert.equal(recovered.session.installationId, issued.installationId)
+  assert.equal(store.recoverInstallation(issued.installationId, 'wrong-secret', nowBase + 2), undefined)
+  assert.equal(store.admit(issued.session.id, 'identity_active_01', 'first', nowBase + 3).accepted, true)
+  assert.equal(store.admit(recovered.session.id, 'identity_active_02', 'second', nowBase + 4).code, 'generation.in_progress')
+  store.finish(issued.session.id, 'identity_active_01', 'complete', nowBase + 5)
+  assert.equal(store.admit(recovered.session.id, 'identity_cooldown_01', 'second', nowBase + 6).code, 'generation.cooldown')
+  assert.equal(store.admit(recovered.session.id, 'identity_active_01', 'different', nowBase + 10_003).code, 'generation.request_id_conflict')
+
+  const legacy = store.issueInstallation('198.51.100.21', nowBase)
+  assert.ok('token' in legacy)
+  if (!('token' in legacy)) return
+  database.prepare('UPDATE sessions SET installation_id = NULL WHERE id = ?').run(legacy.session.id)
+  database.prepare('DELETE FROM installations WHERE id = ?').run(legacy.installationId)
+  const claimed = store.claimInstallation(legacy.token, nowBase + 1)
+  assert.ok(claimed)
+  assert.notEqual(claimed.installationId, legacy.installationId)
+  const retriedClaim = store.claimInstallation(legacy.token, nowBase + 2)
+  assert.equal(retriedClaim?.installationId, claimed.installationId)
+  assert.notEqual(retriedClaim?.installationSecret, claimed.installationSecret)
+
+  store.close()
+  store = new OperationalStore(path, secret, nowBase + 3)
+  const afterRestart = store.recoverInstallation(issued.installationId, issued.installationSecret, nowBase + 4)
+  assert.equal(afterRestart?.session.installationId, issued.installationId)
+  assert.equal(store.recoverInstallation(legacy.installationId, legacy.installationSecret, nowBase + 4), undefined)
+  store.close()
+  database.close()
+  await rm(directory, { recursive: true, force: true })
+})
+
 await test('HTTP session, CORS, canonical provider request, final usage chunk, and no content persistence', async () => {
   const fixture = await createFixture()
   try {
@@ -367,6 +412,28 @@ await test('HTTP session, CORS, canonical provider request, final usage chunk, a
     assert.equal(issued.response.status, 201)
     assert.equal(issued.response.headers.get('access-control-allow-origin'), 'chrome-extension://test-extension')
     assert.equal(typeof issued.token, 'string')
+    assert.equal(typeof issued.body.installationId, 'string')
+    assert.equal(typeof issued.body.installationSecret, 'string')
+    const invalidRecovery = await fetch(fixture.baseUrl + '/api/v1/session/recover', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ installationId: issued.body.installationId, installationSecret: 'x'.repeat(43) }),
+    })
+    assert.equal(invalidRecovery.status, 401)
+    assert.equal((await invalidRecovery.json()).error.code, 'installation.invalid')
+    const recovered = await fetch(fixture.baseUrl + '/api/v1/session/recover', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ installationId: issued.body.installationId, installationSecret: issued.body.installationSecret }),
+    })
+    assert.equal(recovered.status, 201)
+    const recoveredBody = await recovered.json()
+    assert.equal(typeof recoveredBody.token, 'string')
+    const claim = await fetch(fixture.baseUrl + '/api/v1/session/claim', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + issued.token },
+    })
+    assert.equal(claim.status, 200)
+    const claimedBody = await claim.json()
+    assert.equal(claimedBody.installationId, issued.body.installationId)
+    assert.notEqual(claimedBody.installationSecret, issued.body.installationSecret)
     fixture.now += 1_000
     const renewed = await fetch(fixture.baseUrl + '/api/v1/session/renew', {
       method: 'POST',

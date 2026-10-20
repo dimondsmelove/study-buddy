@@ -365,11 +365,15 @@ await contract('no fallback for partial output, network, abort, parse or HTTP 20
 await contract('Gateway binds stored sessions to the configured origin and keeps provider settings off the wire', async () => {
   const gatewayMessages = [{ role: 'user', content: 'current question' }]
   stored['gateway.session'] = { token: 'old-origin-token-12345678901234567890', expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000, gatewayOrigin: 'https://another-gateway.test' }
+  delete stored['gateway.installation']
   const requests = []
   runtime.fetch = async (url, init) => {
     const body = init?.body ? JSON.parse(init.body) : undefined
     requests.push({ url, ...init, body })
-    if (url.endsWith('/api/v1/session')) return jsonResponse({ token: 'gateway-token-12345678901234567890', expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 }, 201)
+    if (url.endsWith('/api/v1/session')) return jsonResponse({
+      token: 'gateway-token-12345678901234567890', expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+      installationId: '123e4567-e89b-12d3-a456-426614174000', installationSecret: 'a'.repeat(43),
+    }, 201)
     if (url.endsWith('/api/v1/generations')) return streamResponse(
       'event: context\ndata: {"estimatedInputTokens":17,"inputBudget":200000,"estimateHeadroom":20000}\n\n' +
       'event: delta\ndata: {"text":"bounded"}\n\n' +
@@ -396,7 +400,11 @@ await contract('Gateway binds stored sessions to the configured origin and keeps
     gatewayOrigin: 'https://gateway.test',
   })
 
+  assert.equal(stored['gateway.installation'].installationId, '123e4567-e89b-12d3-a456-426614174000')
+  assert.equal(stored['gateway.installation'].gatewayOrigin, 'https://gateway.test')
+
   const beforeLegacy = requests.length
+  delete stored['gateway.installation']
   stored['gateway.session'] = { token: 'legacy-session-token-12345678901234567890', expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 }
   await gateway.createGateway().ask({
     requestId: 'request-legacy-session', task: 'ask', answerLanguage: 'en', uiLanguage: 'en', titleNeeded: false,
@@ -405,5 +413,52 @@ await contract('Gateway binds stored sessions to the configured origin and keeps
   assert.equal(requests.length, beforeLegacy + 2, 'legacy unbound session is discarded and replaced before generation')
   assert.equal(stored['gateway.session'].gatewayOrigin, 'https://gateway.test')
 })
+await contract('expired bearer recovers the same origin-bound installation and invalid credentials never bootstrap', async () => {
+  const installation = {
+    installationId: '223e4567-e89b-12d3-a456-426614174000',
+    installationSecret: 'b'.repeat(43),
+    gatewayOrigin: 'https://gateway.test',
+  }
+  stored['gateway.installation'] = installation
+  stored['gateway.session'] = {
+    token: 'expired-session-token-12345678901234567890',
+    expiresAt: Date.now() - 1,
+    gatewayOrigin: 'https://gateway.test',
+  }
+  const requests = []
+  runtime.fetch = async (url, init) => {
+    requests.push({ url, init, body: init?.body ? JSON.parse(init.body) : undefined })
+    if (url.endsWith('/api/v1/session/recover')) {
+      assert.deepEqual(plain(JSON.parse(init.body)), {
+        installationId: installation.installationId, installationSecret: installation.installationSecret,
+      })
+      return jsonResponse({ token: 'recovered-session-token-12345678901234567890', expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 }, 201)
+    }
+    if (url.endsWith('/api/v1/generations')) return streamResponse(
+      'event: complete\ndata: {"status":"complete","model":"server-model","usage":{"promptTokens":1,"completionTokens":1}}\n\n',
+    )
+    throw new Error('Unexpected recovery fixture request: ' + url)
+  }
+  await gateway.createGateway().ask({
+    requestId: 'request-recovered', task: 'ask', answerLanguage: 'en', uiLanguage: 'en', titleNeeded: false,
+    taskInput: 'current question', messages: [{ role: 'user', content: 'current question' }],
+  })
+  assert.equal(requests.length, 2)
+  assert(requests[0].url.endsWith('/api/v1/session/recover'))
+  assert.equal(requests[1].init.headers.Authorization, 'Bearer recovered-session-token-12345678901234567890')
+  assert.equal(stored['gateway.installation'].installationId, installation.installationId)
+
+  runtime.fetch = async (url) => {
+    if (url.endsWith('/api/v1/session/recover')) return jsonResponse({ error: { code: 'installation.invalid' } }, 401)
+    throw new Error('invalid credentials must not trigger bootstrap or generation')
+  }
+  stored['gateway.session'].expiresAt = Date.now() - 1
+  await assert.rejects(gateway.createGateway().ask({
+    requestId: 'request-invalid-installation', task: 'ask', answerLanguage: 'en', uiLanguage: 'en', titleNeeded: false,
+    taskInput: 'current question', messages: [{ role: 'user', content: 'current question' }],
+  }), (error) => error.code === 'installation.invalid')
+  assert.equal(stored['gateway.installation'].installationId, installation.installationId)
+})
+
 runtime.fetch = () => { throw new Error('Unexpected network request in contract test') }
 console.log(`API CONTRACTS OK — ${apiCases} groups, synthetic fetch only`)

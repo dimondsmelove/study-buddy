@@ -191,3 +191,10 @@ battle-tested capture core (selection overlay, `captureVisibleTab` guard, MV3
 service-worker coordination, per-site permission flow) is retained nearly
 verbatim; its fully-local OCR engine was removed in favour of vision LLMs.
 See `LICENSE` and OCR Buddy's repository for the upstream work.
+
+
+## First-install welcome page
+
+The extension opens https://studybuddyai.one/welcome/ once after a fresh install. The static page source is in welcome/; serve those files at /welcome/ on that HTTPS origin. The domain is not configured yet.
+
+For a local review build, set STUDY_BUDDY_WELCOME_URL to an HTTPS URL ending in /welcome/ (HTTP is accepted for localhost, 127.0.0.1 or ::1) before building. The extension allows external messaging only from that origin, then checks the exact configured path in its handler. The page can also be opened with ?manual=1 to show the pin guide without extension messaging.

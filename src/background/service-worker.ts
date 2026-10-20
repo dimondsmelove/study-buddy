@@ -13,10 +13,15 @@ import { captureDialog, closeDialog, installConversationCoordinator, launcherSta
 
 installConversationCoordinator()
 
+declare const __SB_WELCOME_URL__: string
+
 const CHAT_URL = 'src/chat/chat.html'
 const HISTORY_MENU_ID = 'study-buddy-show-history'
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(({ reason }) => {
+  if (reason === 'install') {
+    void chrome.tabs.create({ url: `${__SB_WELCOME_URL__}?id=${encodeURIComponent(chrome.runtime.id)}` })
+  }
   void bootstrapTabs()
   chrome.contextMenus.removeAll(() => {
     if (chrome.runtime.lastError) return
@@ -35,6 +40,21 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== HISTORY_MENU_ID || tab?.id === undefined) return
   const tabId = tab.id
   entrypoint(() => showHistoryOnTab(tabId), true)
+})
+
+chrome.runtime.onMessageExternal.addListener((message, sender, respond) => {
+  let expected: URL
+  try { expected = new URL(__SB_WELCOME_URL__) } catch { return false }
+  let actual: URL
+  try { actual = new URL(sender.url ?? '') } catch { return false }
+  if (actual.origin !== expected.origin || actual.pathname !== expected.pathname || message?.type !== 'GET_PIN_STATE') return false
+  const getUserSettings = chrome.action.getUserSettings
+  if (typeof getUserSettings !== 'function') { respond({ pinned: null }); return false }
+  void getUserSettings.call(chrome.action).then(
+    settings => respond({ pinned: settings.isOnToolbar }),
+    () => respond({ pinned: null }),
+  )
+  return true
 })
 
 let captureBusy = false

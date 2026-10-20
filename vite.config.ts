@@ -2,8 +2,10 @@ import { defineConfig } from 'vite'
 import { crx } from '@crxjs/vite-plugin'
 import manifest from './src/manifest.config'
 import { DEFAULT_GATEWAY_URL, normalizeGatewayUrl } from './src/shared/gateway-url'
+import { DEFAULT_WELCOME_URL, normalizeWelcomeUrl } from './src/shared/welcome-url'
 
 const gatewayUrl = normalizeGatewayUrl(process.env.STUDY_BUDDY_GATEWAY_URL ?? DEFAULT_GATEWAY_URL)
+const welcomeUrl = normalizeWelcomeUrl(process.env.STUDY_BUDDY_WELCOME_URL ?? DEFAULT_WELCOME_URL)
 
 // CRXJS wires up MV3: builds the service worker, the chat page, the content
 // overlay, and auto-manages web_accessible_resources / HMR.
@@ -12,6 +14,7 @@ export default defineConfig({
   // The gateway origin is public routing configuration; provider keys stay server-side.
   define: {
     __SB_GATEWAY_URL__: JSON.stringify(gatewayUrl),
+    __SB_WELCOME_URL__: JSON.stringify(welcomeUrl),
   },
   build: {
     target: 'esnext',

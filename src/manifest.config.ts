@@ -1,7 +1,9 @@
 import { defineManifest } from '@crxjs/vite-plugin'
 import { DEFAULT_GATEWAY_URL, gatewayHostPermission } from './shared/gateway-url'
+import { DEFAULT_WELCOME_URL, welcomeOriginMatch } from './shared/welcome-url'
 
 const gatewayHost = gatewayHostPermission(process.env.STUDY_BUDDY_GATEWAY_URL ?? DEFAULT_GATEWAY_URL)
+const welcomeMatch = welcomeOriginMatch(process.env.STUDY_BUDDY_WELCOME_URL ?? DEFAULT_WELCOME_URL)
 
 // Study Buddy — Manifest V3.
 // Design inherited from OCR Buddy (MIT), stripped of the local-OCR machinery:
@@ -20,6 +22,8 @@ export default defineManifest({
     default_title: 'Study Buddy — select a region (Ctrl+Shift+Y)',
     default_icon: { '16': 'icons/icon16.png', '32': 'icons/icon32.png' },
   },
+
+  externally_connectable: { matches: [welcomeMatch] },
 
   commands: {
     'start-capture': {

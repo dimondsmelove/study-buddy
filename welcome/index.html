@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Study Buddy is installed</title>
+  <link rel="icon" href="./icon32.png">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <main class="page">
+    <header class="brand">
+      <img src="./icon32.png" alt="" width="32" height="32">
+      <span>Study Buddy</span>
+    </header>
+
+    <h1>Study Buddy is installed</h1>
+    <p class="intro">Try it on a real exercise. Select a region, then ask for a hint.</p>
+
+    <section class="pin" id="pin" aria-labelledby="pin-title" hidden>
+      <div class="pin-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M20 4 28 12l-4 1-5 5-1 5-2 2-4-7-7 9-2-2 9-7-7-4 2-2 5-1 5-5z"/></svg>
+      </div>
+      <div>
+        <h2 id="pin-title">Pin Study Buddy for quick access</h2>
+        <ol>
+          <li>Open the <strong>Extensions</strong> menu in your browser toolbar.</li>
+          <li>Find Study Buddy and select the pin icon.</li>
+        </ol>
+        <button class="text-button" id="skip-pin" type="button">I’ll try it first</button>
+      </div>
+    </section>
+
+    <section class="exercise" id="exercise" aria-labelledby="exercise-title">
+      <p class="eyebrow" id="exercise-title">Try a hint</p>
+      <p class="equation">2x + 6 = 10</p>
+      <p class="instruction">Click the Study Buddy icon or press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Y</kbd>, then drag over the equation and choose <strong>Hint</strong>.</p>
+    </section>
+
+    <p class="privacy">Study Buddy sends only the content you select when you ask for help.</p>
+  </main>
+</body>
+</html>

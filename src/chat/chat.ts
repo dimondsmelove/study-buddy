@@ -317,10 +317,10 @@ function renderAnswer(node: HTMLElement, text: string, streaming = false): void 
   //    marked strips the backslash as a Markdown escape BEFORE KaTeX runs,
   //    which destroys those delimiters — normalize to $ / $$ first.
   let src = text
-    .replace(/\\\[/g, '\n$$\n')
-    .replace(/\\\]/g, '\n$$\n')
-    .replace(/\\\(/g, '$')
-    .replace(/\\\)/g, '$')
+    .replace(/\\\[/g, () => '\n$$\n')
+    .replace(/\\\]/g, () => '\n$$\n')
+    .replace(/\\\(/g, () => '$')
+    .replace(/\\\)/g, () => '$')
 
   if (streaming) src = streamingMarkdown(src)
 
@@ -555,7 +555,8 @@ function applyContextProjection(projection: ContextProjection): void {
   for (const entry of projection.entries) {
     const wrap = [...thread.children].find((child) => (child as HTMLElement).dataset.turn === entry.turn.id) as HTMLElement | undefined
     if (!wrap) continue
-    wrap.classList.toggle('context-excluded', !entry.included)
+    const presentationExcluded = !entry.included && !(entry.turn.role === 'assistant' && entry.turn.status === 'streaming')
+    wrap.classList.toggle('context-excluded', presentationExcluded)
     if (!entry.included) {
       wrap.dataset.exclusion = entry.reason ?? 'olderTask'
     } else {

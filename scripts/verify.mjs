@@ -98,6 +98,9 @@ const server = createServer((req, res) => {
           '$$.\n\n`const total = ',
           '5` and snake_case.\n\n```js\nconst price = "$5";',
           '\n```\n\nSafe <img src=x onerror="window.__streamXss=1">',
+          ' inline \\(a+b\\), display \\[\n',
+          'x=\\frac{1}{2}\n',
+          '\\] and existing $$y=x+1$$.',
         ]
         const send = () => {
           const content = chunks.shift()
@@ -1665,6 +1668,22 @@ try {
   await formatted.fill('#ask-input', 'Render the structured answer while it streams')
   await formatted.click('#ask-btn')
   await formatted.waitForFunction(() => document.querySelector('.msg.assistant h3')?.textContent === 'Working' && document.querySelector('.msg.assistant strong')?.textContent === 'First')
+  await formatted.waitForFunction(async () => {
+    const request = indexedDB.open('study-buddy-conversations', 1)
+    const db = await new Promise(resolve => { request.onsuccess = () => resolve(request.result) })
+    const tx = db.transaction('conversations', 'readonly')
+    const all = await new Promise(resolve => { const get = tx.objectStore('conversations').getAll(); get.onsuccess = () => resolve(get.result) })
+    db.close()
+    return all.some(c => c.turns.some(turn => turn.role === 'assistant' && turn.status === 'streaming'))
+  })
+  await formatted.dispatchEvent('.preset[data-preset="explain"]', 'pointerenter')
+  await formatted.waitForFunction(() => document.querySelector('.msg.assistant:last-of-type')?.dataset.exclusion === 'incomplete')
+  const liveBackground = await formatted.locator('.msg.assistant').last().evaluate(row => ({
+    excludedClass: row.classList.contains('context-excluded'),
+    background: getComputedStyle(row.querySelector('.msg-body')).backgroundColor,
+  }))
+  check(!liveBackground.excludedClass && liveBackground.background === 'rgba(0, 0, 0, 0)',
+    'streaming assistant stays visually transparent after an incomplete context projection (' + JSON.stringify(liveBackground) + ')')
   check(!(await formatted.locator('.msg.assistant .msg-body').textContent()).includes('**'),
     'a live heading and unfinished bold text render before the answer completes, without Markdown markers')
   await formatted.waitForSelector('.math-pending')
@@ -1681,9 +1700,18 @@ try {
   await formatted.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Complete'))
   const formattedDb = await readSaved(formatted)
   const formattedTurn = formattedDb.conversations.find(c => c.id === formattedDb.state.lastConversationId).turns.at(-1)
+  const formulaRender = await formatted.evaluate(() => ({
+    inline: [...document.querySelectorAll('.msg.assistant .katex')].some(node => !node.closest('.katex-display')),
+    displays: document.querySelectorAll('.msg.assistant .katex-display .katex').length,
+    visibleRawDelimiters: [String.raw`\[`, String.raw`\]`, String.raw`\(`, String.raw`\)`].some(delimiter => document.querySelector('.msg.assistant .msg-body')?.textContent?.includes(delimiter)),
+    background: getComputedStyle([...document.querySelectorAll('.msg.assistant')].at(-1)?.querySelector('.msg-body')).backgroundColor,
+  }))
   check(formattedTurn.text.includes('**First step**') && formattedTurn.text.includes('$$\\frac{1}{2}$$') &&
+    formattedTurn.text.includes(String.raw`\[` + '\nx=' + String.raw`\frac{1}{2}` + '\n' + String.raw`\]`) && formattedTurn.text.includes(String.raw`\(a+b\)`) &&
+    formulaRender.inline && formulaRender.displays >= 2 && !formulaRender.visibleRawDelimiters &&
+    formulaRender.background === 'rgba(0, 0, 0, 0)' &&
     await formatted.evaluate(() => window.__streamXss === undefined && !document.querySelector('.msg.assistant [onerror]')),
-    'final transcript keeps its original Markdown and LaTeX; streamed HTML is sanitized throughout')
+    'inline and display delimiter formulas render while the stored transcript remains raw (' + JSON.stringify(formulaRender) + ')')
   responseMode = 'normal'
   await formatted.close()
 

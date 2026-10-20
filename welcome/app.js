@@ -44,7 +44,7 @@ function startPolling() {
 }
 
 const platform = navigator.userAgentData?.platform || navigator.platform
-if (/Mac|iPhone|iPad/.test(platform)) document.querySelector('#capture-modifier').textContent = 'Cmd'
+if (/mac|iphone|ipad/i.test(platform)) document.querySelector('#capture-modifier').textContent = 'Cmd'
 pinSection.hidden = false
 startPolling()
 document.addEventListener('visibilitychange', startPolling)

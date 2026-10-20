@@ -818,7 +818,6 @@ function setBusy(busy: boolean, cooldownMs = 0): void {
   const cooldownSeconds = Math.ceil(cooldownMs / 1000)
   const coolingDown = cooldownSeconds > 0
   for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy || coolingDown
-  ;(el('more-btn') as HTMLButtonElement).disabled = busy || coolingDown
   for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation]')) b.disabled = busy || coolingDown
   ;(el('new-chat-btn') as HTMLButtonElement).disabled = busy
   ;(el('ask-input') as HTMLInputElement).disabled = busy
@@ -1013,29 +1012,35 @@ async function regenerate(): Promise<void> {
   } finally { starting = false; updateStatus() }
 }
 
-const moreButton = el('more-btn') as HTMLButtonElement
-const moreActions = el('more-actions') as HTMLElement
-moreActions.addEventListener('beforetoggle', (event) => {
-  const opening = (event as ToggleEvent).newState === 'open'
-  moreButton.setAttribute('aria-expanded', opening ? 'true' : 'false')
-  if (!opening) return
-  const rect = moreButton.getBoundingClientRect()
-  const width = Math.min(208, innerWidth - 16)
-  const left = Math.max(8, Math.min(rect.right - width, innerWidth - width - 8))
-  const estimatedHeight = 204
-  const top = rect.bottom + estimatedHeight + 8 <= innerHeight
-    ? rect.bottom + 6
-    : Math.max(8, rect.top - estimatedHeight - 6)
-  moreActions.style.left = String(left) + 'px'
-  moreActions.style.top = String(top) + 'px'
-})
-moreActions.addEventListener('toggle', (event) => {
-  moreButton.setAttribute('aria-expanded', (event as ToggleEvent).newState === 'open' ? 'true' : 'false')
-})
+const taskTooltip = el('task-tooltip')
+let tooltipButton: HTMLButtonElement | undefined
+function hideTaskTooltip(): void {
+  if (taskTooltip.matches(':popover-open')) taskTooltip.hidePopover()
+  tooltipButton?.removeAttribute('aria-describedby')
+  tooltipButton = undefined
+}
 
-window.addEventListener('blur', () => {
-  if (moreActions.matches(':popover-open')) moreActions.hidePopover()
-})
+for (const button of document.querySelectorAll<HTMLButtonElement>('[data-task-help]')) {
+  const showTooltip = () => {
+    hideTaskTooltip()
+    tooltipButton = button
+    taskTooltip.textContent = t(uiLang, button.dataset.taskHelp!)
+    button.setAttribute('aria-describedby', 'task-tooltip')
+    taskTooltip.showPopover()
+    const anchor = button.getBoundingClientRect()
+    const tip = taskTooltip.getBoundingClientRect()
+    taskTooltip.style.left = `${Math.max(12, Math.min(anchor.left + (anchor.width - tip.width) / 2, innerWidth - tip.width - 12))}px`
+    taskTooltip.style.top = `${Math.max(8, Math.min(anchor.bottom + 8, innerHeight - tip.height - 8))}px`
+  }
+  button.addEventListener('pointerenter', showTooltip)
+  button.addEventListener('focus', showTooltip)
+  button.addEventListener('pointerleave', () => { if (document.activeElement !== button) hideTaskTooltip() })
+  button.addEventListener('blur', hideTaskTooltip)
+  button.addEventListener('click', hideTaskTooltip)
+  button.addEventListener('keydown', event => { if (event.key === 'Escape') hideTaskTooltip() })
+}
+window.addEventListener('blur', hideTaskTooltip)
+window.addEventListener('resize', hideTaskTooltip)
 
 for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   const task = btn.dataset.preset as TaskId | undefined
@@ -1046,7 +1051,6 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   btn.addEventListener('click', () => {
     const task = btn.dataset.preset as TaskId | undefined
     if (!task) return
-    if (moreActions.matches(':popover-open')) moreActions.hidePopover()
     // The bubble shows the button label; the full template goes to the model.
     void send('', task, t(uiLang, `preset.${task}`)).catch(reportError)
   })

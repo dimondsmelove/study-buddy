@@ -1176,55 +1176,47 @@ try {
   await layout.waitForFunction(() => !document.querySelector('#lightbox')?.open)
   check(await layout.locator('.turn-image').last().evaluate(figure => figure === document.activeElement),
     'Escape closes image preview and restores focus to the exact image opener')
-  const beforeMoreOpen = requestCount
-  await layout.getByRole('button', { name: 'More', exact: true }).click()
-  await layout.waitForFunction(() => document.querySelector('#more-actions')?.matches(':popover-open'))
-  await layout.screenshot({ path: join(evidence, 'more.png') })
-  const expandedMore = await layout.evaluate(() => {
-    const popover = document.querySelector('#more-actions')
-    const rect = popover.getBoundingClientRect()
-    return {
-      expanded: document.querySelector('#more-btn')?.getAttribute('aria-expanded'),
-      actions: [...popover.querySelectorAll('button')].map(button => button.textContent),
-      bounds: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
-      viewport: { width: innerWidth, height: innerHeight },
-    }
-  })
-  check(expandedMore.expanded === 'true' && expandedMore.actions.length === 3 &&
-    expandedMore.bounds.left >= 0 && expandedMore.bounds.top >= 0 &&
-    expandedMore.bounds.right <= 480 && expandedMore.bounds.bottom <= 564 &&
-    requestCount === beforeMoreOpen,
-  'More opens as a bounded disclosure without sending a request (' + JSON.stringify(expandedMore) + ')')
+  const requestsBeforeTools = requestCount
+  const toolGeometry = await layout.locator('#presets .preset').evaluateAll(buttons => buttons.map(button => {
+    const rect = button.getBoundingClientRect()
+    return { label: button.textContent, icon: !!button.querySelector('svg'), x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+  }))
+  check(toolGeometry.length === 6 && toolGeometry.every(button => button.icon && button.label && button.width >= 44 && button.height >= 44) &&
+    new Set(toolGeometry.map(button => button.y)).size === 1 && await layout.locator('#more-btn').count() === 0,
+    'all six labeled icon actions are visible in one compact row at 480px (' + JSON.stringify(toolGeometry) + ')')
+  await layout.waitForFunction(() => !document.querySelector('[data-preset="explain"]').disabled)
+  await layout.locator('[data-preset="explain"]').focus()
+  await layout.waitForSelector('#task-tooltip:popover-open')
+  const tooltipGeometry = await layout.locator('#task-tooltip').boundingBox()
+  check((await layout.locator('#task-tooltip').textContent()).includes('concepts') &&
+    await layout.locator('[data-preset="explain"]').getAttribute('aria-describedby') === 'task-tooltip' &&
+    tooltipGeometry.x >= 0 && tooltipGeometry.x + tooltipGeometry.width <= 480 && requestCount === requestsBeforeTools,
+    'keyboard focus reveals a bounded descriptive tooltip without making a request')
   await layout.keyboard.press('Tab')
-  check(await layout.locator('#more-actions').evaluate(popover => popover.contains(document.activeElement)),
-    'Tab moves keyboard focus into the expanded More actions')
+  check(await layout.locator('[data-preset="translate"]').evaluate(button => button === document.activeElement) &&
+    (await layout.locator('#task-tooltip').textContent()).includes('answer language'),
+    'Tab visits the next visible action and updates its accessible description')
   await layout.keyboard.press('Escape')
-  await layout.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
-  await layout.waitForFunction(() => document.querySelector('#more-btn')?.getAttribute('aria-expanded') === 'false')
-  check(await layout.locator('#more-btn').getAttribute('aria-expanded') === 'false', 'Escape closes More and resets its expanded state')
-  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  await layout.waitForSelector('#task-tooltip:popover-open', { state: 'hidden' })
+  await layout.locator('[data-preset="hint"]').hover()
+  await layout.waitForSelector('#task-tooltip:popover-open')
+  await layout.screenshot({ path: join(evidence, 'tools.png') })
   await layout.click('#thread')
-  await layout.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
-  check(requestCount === beforeMoreOpen, 'clicking outside More closes it without starting an action')
+  await layout.waitForSelector('#task-tooltip:popover-open', { state: 'hidden' })
+  check(requestCount === requestsBeforeTools, 'hover tooltips dismiss when leaving the action and never send a request')
   await layout.setViewportSize({ width: 320, height: 324 })
-  await layout.getByRole('button', { name: 'More', exact: true }).click()
   const narrowGeometry = await layout.evaluate(() => {
-    const popover = document.querySelector('#more-actions').getBoundingClientRect()
     const selection = document.querySelector('#new-selection-btn')
     const composer = document.querySelector('#composer').getBoundingClientRect()
-    const input = document.querySelector('#ask-input').getBoundingClientRect()
-    const send = document.querySelector('#ask-btn').getBoundingClientRect()
     const rect = selector => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height } }
-    return { width: document.documentElement.scrollWidth, popover: { left: popover.left, top: popover.top, right: popover.right, bottom: popover.bottom }, selection: { ...rect('#new-selection-btn'), label: selection.getAttribute('aria-label'), title: selection.title }, hasContextUi: !!document.querySelector('#context-summary, #context-details-btn, #context-dialog'), layout: { header: rect('#capture-top'), presets: rect('#presets'), thread: rect('#thread'), composer: { top: composer.top, bottom: composer.bottom, inputBottom: input.bottom, sendBottom: send.bottom } }, viewport: { width: innerWidth, height: innerHeight } }
+    const actions = [...document.querySelectorAll('#presets .preset')].map(button => { const r = button.getBoundingClientRect(); return { y: r.y, right: r.right, bottom: r.bottom, width: r.width, height: r.height } })
+    return { width: document.documentElement.scrollWidth, actions, selection: { ...rect('#new-selection-btn'), label: selection.getAttribute('aria-label'), title: selection.title }, hasContextUi: !!document.querySelector('#context-summary, #context-details-btn, #context-dialog'), layout: { header: rect('#capture-top'), presets: rect('#presets'), thread: rect('#thread'), composer: { top: composer.top, bottom: composer.bottom, inputBottom: rect('#ask-input').bottom, sendBottom: rect('#ask-btn').bottom } } }
   })
-  check(narrowGeometry.width <= 320 && narrowGeometry.popover.left >= 0 && narrowGeometry.popover.top >= 0 &&
-    narrowGeometry.popover.right <= 320 && narrowGeometry.popover.bottom <= 324 &&
-    !narrowGeometry.hasContextUi && narrowGeometry.selection.height === 44 && narrowGeometry.selection.bottom <= narrowGeometry.layout.header.bottom && !!narrowGeometry.selection.label && !!narrowGeometry.selection.title &&
-    narrowGeometry.layout.composer.bottom <= 324 && narrowGeometry.layout.composer.inputBottom <= 324 && narrowGeometry.layout.composer.sendBottom <= 324 &&
-    await layout.locator('#ask-input').isVisible() && await layout.locator('#ask-btn').isVisible(),
-  '320×324 toolbar keeps New selection accessible and the menu/composer reachable (' + JSON.stringify(narrowGeometry) + ')')
-  await layout.keyboard.press('Escape')
-  await layout.getByRole('button', { name: 'More', exact: true }).click()
+  check(narrowGeometry.width <= 320 && new Set(narrowGeometry.actions.map(button => button.y)).size === 2 &&
+    narrowGeometry.actions.every(button => button.right <= 320 && button.bottom <= narrowGeometry.layout.composer.top && button.width >= 44 && button.height >= 44) &&
+    narrowGeometry.selection.height === 44 && !!narrowGeometry.selection.label && narrowGeometry.layout.thread.height >= 60 &&
+    narrowGeometry.layout.composer.bottom <= 324 && narrowGeometry.layout.composer.inputBottom <= 324 && narrowGeometry.layout.composer.sendBottom <= 324,
+    '320×324 shows all six actions in two rows and keeps the thread and composer accessible (' + JSON.stringify(narrowGeometry) + ')')
   const requestsBeforeExplain = requestCount
   await layout.getByRole('button', { name: 'Explain', exact: true }).click()
   await waitSaved(layout, 'Complete')
@@ -1238,7 +1230,7 @@ try {
   check(requestCount === requestsBeforeExplain + 1 && explainTurn?.kind === 'explain' &&
     explainTurn.text === '' && !!explainTurn.attachmentId && explainHasImage &&
     explainHasTextInstruction,
-    'More Explain sends the approved task instruction with its image and persists kind=explain')
+    'Visible Explain sends the approved task instruction with its image and persists kind=explain')
   const seedExtraImages = () => layout.evaluate(() => new Promise((resolve, reject) => {
     const conversationId = new URL(location.href).searchParams.get('conversation')
     const open = indexedDB.open('study-buddy-conversations', 1)
@@ -1749,12 +1741,12 @@ try {
     ? { x: Math.max(4, Math.floor(embeddedBounds.x - 8)), y: Math.max(8, Math.floor(embeddedBounds.y + 12)) }
     : { x: Math.min(1270, Math.ceil(embeddedBounds.x + embeddedBounds.width + 8)), y: Math.max(8, Math.floor(embeddedBounds.y + 12)) }
   const requestCountBeforeHostDismiss = requestCount
-  await embedded.getByRole('button', { name: 'More', exact: true }).click()
-  await embedded.waitForFunction(() => document.querySelector('#more-actions')?.matches(':popover-open'))
+  await embedded.locator('[data-preset="explain"]').hover()
+  await embedded.waitForFunction(() => document.querySelector('#task-tooltip')?.matches(':popover-open'))
   await page.mouse.click(outsidePoint.x, outsidePoint.y)
-  await embedded.waitForFunction(() => !document.querySelector('#more-actions')?.matches(':popover-open'))
+  await embedded.waitForFunction(() => !document.querySelector('#task-tooltip')?.matches(':popover-open'))
   check(requestCount === requestCountBeforeHostDismiss,
-    'a click on the host page outside the iframe dismisses More without starting an action')
+    'a click on the host page outside the iframe dismisses the task tooltip without starting an action')
   await resetCooldown(embedded)
   responseMode = 'slow'
   const nativeBefore = requestCount

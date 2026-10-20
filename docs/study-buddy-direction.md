@@ -10,7 +10,7 @@
 
 ## Компоновка
 
-Компактная служебная шапка с New chat; изображения с раскрытием в ленте сообщений, без постоянного верхнего превью; видимые «Решить», «Подсказка», «Проверить», остальные четыре задачи в «Ещё»; диалог без лишних вложенных рамок; закреплённый доступный composer с компактным оценочным token budget / Details и иконкой New selection. Check сразу отправляет проверку текущего изображения; обычный свободный ввод остаётся доступен. Модель/провайдер/endpoint/API key/Advanced полностью уходят из DOM обычных настроек. Runtime dev-подключение остаётся внешней настройкой запуска, языковой Save его сохраняет.
+Компактная служебная шапка с New chat; изображения с раскрытием в ленте сообщений, без постоянного верхнего превью; шесть видимых действий с иконкой, короткой подписью и подсказкой: «Решить», «Подсказка», «Проверить», «Объяснить», «Перевести», «Конспект» (уточнение пользователя 2026-10-20 заменяет More); диалог без лишних вложенных рамок; закреплённый доступный composer с компактным оценочным token budget / Details и иконкой New selection. Check сразу отправляет проверку текущего изображения; обычный свободный ввод остаётся доступен. Модель/провайдер/endpoint/API key/Advanced полностью уходят из DOM обычных настроек. Runtime dev-подключение остаётся внешней настройкой запуска, языковой Save его сохраняет.
 
 Не увеличивать default host 480×600 ради сокрытия проблем плотности. Ориентир thread >=300px при этом размере; подтвердить реальные метрики и объяснить компромисс, если не достигнут. При узкой/низкой панели вторичные элементы компактно перестраиваются, обязательный ввод остаётся доступным. Drag/resize/minimize/close и протокол их lifecycle не менять ради оформления.
 
@@ -30,7 +30,7 @@
 
 ## Приёмка
 
-Сохранить все принятые lifecycle/stream/storage/prompt инварианты; не создавать параллельный state manager или transport. Проверить UI в fresh agent-owned Chromium на default viewport1280×800, small viewport и min panel ширине320, RU/EN, без горизонтального overflow/невидимых обязательных действий. More, Check, Settings, History, long answer/LaTeX, busy/cooldown/error, minimize/restore/close — реальные rendered states. Screenshots только временные, посмотреть и удалить; сохранить harness/JSON metrics. Отдельно проверить отсутствие ключа в DOM и сохранение existing connection при language Save. Никаких реальных credentials в QA, никаких платных calls. Проверки с fake provider не подменяют реальную модель в ручном playtest.
+Сохранить все принятые lifecycle/stream/storage/prompt инварианты; не создавать параллельный state manager или transport. Проверить UI в fresh agent-owned Chromium на default viewport1280×800, small viewport и min panel ширине320, RU/EN, без горизонтального overflow/невидимых обязательных действий. Все шесть действий и их hover/focus-подсказки, Check, Settings, History, long answer/LaTeX, busy/cooldown/error, minimize/restore/close — реальные rendered states. Screenshots только временные, посмотреть и удалить; сохранить harness/JSON metrics. Отдельно проверить отсутствие ключа в DOM и сохранение existing connection при language Save. Никаких реальных credentials в QA, никаких платных calls. Проверки с fake provider не подменяют реальную модель в ручном playtest.
 
 
 ## История — уточнение 2026-10-10
@@ -82,3 +82,10 @@ DECISION: пользователь подтвердил автоматическ
 ## Форматирование во время ответа — 2026-10-20
 
 DECISION: пользователь попросил убрать видимые служебные Markdown/LaTeX символы во время генерации. FACT: живой preview использует тот же sanitized Markdown/KaTeX renderer с каденсом 100мс; незакрытые math spans буферизуются, незавершённые emphasis/code закрываются только в preview. Исходный transcript и Copy не переписываются. Зеркальные панели форматируют сохранённый streaming partial тем же способом. Native fake-provider acceptance проверила heading/bold до завершения, незакрытую и затем закрытую формулу, dollar/underscore внутри code/fence, финальный raw transcript и DOMPurify/XSS; общий cross-tab lifecycle повторно прошёл. Typecheck/build прошли; платных запросов не было.
+
+
+## Шесть действий и облегчённая панель — 2026-10-20
+
+DECISION: пользователь отверг крупные текстовые кнопки и деление 3 + More; попросил понятные иконки/подсказки и улучшение компоновки. Инженерная реализация внутри принятой светлой рамки: все шесть действий в общей спокойной панели, иконка плюс короткая видимая подпись; локализованный native-popover tooltip на hover/focus, Escape/blur закрывает. При 480px — один ряд, при 320px — 3×2, touch targets >=44px. Solid accent оставлен у отправки, ответ без лишней рамки, composer — единое поле, наружная шапка светлая с 44px minimize/close. Семантика задач/промпты/модель не меняются.
+
+FACT: целевой native Chromium fake-provider прогон прошёл вместе со stream и shared lifecycle. Проверены EN/RU подписи без overflow, tooltip с клавиатуры/мыши и без model calls, narrow 320×324 (thread104px, composer bottom320px). Реальные screenshots обычной и узкой панели и полного floating host просмотрены и удалены. Typecheck, build и contracts/API/storage/prompts/context прошли; полный обновлённый verify выполняется отдельно. Пользовательский Vivaldi/установленная сборка не обновлялись.

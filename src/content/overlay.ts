@@ -188,7 +188,7 @@ function showOverlay() {
 
 // --- chat window host ---------------------------------------------------------
 
-const BAR_H = 36
+const BAR_H = 44
 const PANEL_MIN_W = 320
 const PANEL_MIN_H = 360
 const PANEL_SIZE_KEY = 'panel.size'
@@ -381,8 +381,9 @@ function showChat(state: ChatState): void {
     'align-items:center',
     'gap:8px',
     'padding:0 10px',
-    'background:#111827',
-    'color:#fff',
+    'background:#fbfcfe',
+    'color:#1f2937',
+    'border-bottom:1px solid #d9e2ed',
     'cursor:move',
     'user-select:none',
   ].join(';')
@@ -401,10 +402,13 @@ function showChat(state: ChatState): void {
   close.style.cssText = [
     'border:0',
     'background:transparent',
-    'color:#d1d5db',
+    'color:#526174',
+    'width:44px',
+    'height:44px',
+    'flex:0 0 44px',
     'font:14px system-ui,sans-serif',
     'cursor:pointer',
-    'padding:4px 6px',
+    'padding:0',
     'border-radius:6px',
   ].join(';')
   let frameReady = false

@@ -13,7 +13,10 @@ tabs keeps an existing answer running; Stop works from any view of that chat.
 Right-click the toolbar icon → **Show history** to return to a saved chat without
 selecting another region. Opening History creates no chat and makes no model request.
 Inside a chat, **New chat** opens an empty conversation with text input;
-**New selection** adds another image message to the current conversation. Each
+**New selection** adds another image message to the current conversation. All six
+study actions are visible as labeled icons, with explanations on hover/focus.
+Markdown and complete formulas render while the reply streams; unfinished math
+waits for its closing delimiter. Each
 capture is saved immediately, without starting an answer. Images remain in the
 thread and open at full size; there is no permanent upper preview.
 

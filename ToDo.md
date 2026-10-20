@@ -11,7 +11,7 @@
 
 **Проверка:** typecheck, build, contracts/API/storage/prompts/context прошли. Изолированный Chromium с localhost fake provider прошёл целевой native-сценарий: два разных origin, автоматические launchers, общий ID, один stream при переключении/сворачивании, remote Stop, reload, New chat/History и remote Close; page errors отсутствуют. Полный исторический verify ещё адаптируется под shared lifecycle; его успешное завершение пока не заявлено. Vivaldi, установленная сборка и backend не изменялись.
 
-**Stream preview реализован:** Markdown/KaTeX во время ответа, буфер незакрытой формулы и preview-only закрытие emphasis/code. Проверены промежуточные rendered состояния, сохранность raw transcript и sanitize. **Следующий срез:** убрать крупные текстовые плитки и разместить все шесть действий с понятными иконками/подсказками; улучшить общую компоновку.
+**Stream preview реализован:** Markdown/KaTeX во время ответа, буфер незакрытой формулы и preview-only закрытие emphasis/code. Проверены промежуточные rendered состояния, сохранность raw transcript и sanitize. **UI-срез реализован:** все шесть действий видимы с иконкой/подписью/tooltip; светлый host, облегчённый ответ и единый composer. Целевой native прогон и EN/RU screenshot review прошли; полный обновлённый verify ещё выполняется.
 
 ## Переход на GPT-6 Luna и новые промпты — 2026-10-19
 

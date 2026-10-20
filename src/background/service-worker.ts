@@ -18,7 +18,9 @@ const HISTORY_MENU_ID = 'study-buddy-show-history'
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   if (reason === 'install') {
-    void chrome.tabs.create({ url: `${__SB_WELCOME_URL__}?id=${encodeURIComponent(chrome.runtime.id)}` }).catch(() => {})
+    void chrome.tabs.create({ url: `${__SB_WELCOME_URL__}?id=${encodeURIComponent(chrome.runtime.id)}` }).catch((error) => {
+      console.warn('Study Buddy welcome page could not be opened:', error)
+    })
   }
   void bootstrapTabs()
   chrome.contextMenus.removeAll(() => {

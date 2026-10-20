@@ -205,6 +205,7 @@ let chatLang: 'en' | 'ru' = 'en'
 let selectionRestoreState: 'open' | 'minimized' | undefined
 let selectionRestoreNotice: { hidden: boolean; display: string } | undefined
 let hostMessages: ((event: MessageEvent) => void) | undefined
+let hostPointerDown: ((event: PointerEvent) => void) | undefined
 
 function trackConversation(nextConversationId: string | undefined, cancelClose: boolean): void {
   if (activeConversationId && nextConversationId && activeConversationId !== nextConversationId) {
@@ -348,6 +349,7 @@ function showChat(state: ChatState): void {
   activeConversationId = nextConversationId
   chatKind = state.kind
   if (hostMessages) window.removeEventListener('message', hostMessages)
+  if (hostPointerDown) document.removeEventListener('pointerdown', hostPointerDown, true)
   chatRoot?.remove()
   w[CHAT_FLAG] = false
 
@@ -543,6 +545,13 @@ function showChat(state: ChatState): void {
     }
   }
   window.addEventListener('message', hostMessages)
+  // Pointer events on the host page do not propagate into the chat iframe.
+  hostPointerDown = event => {
+    if (event.composedPath().includes(root)) return
+    const url = new URL(CHAT_URL)
+    frame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'dismiss-tooltip' }, `${url.protocol}//${url.hostname}`)
+  }
+  document.addEventListener('pointerdown', hostPointerDown, true)
   w[CHAT_FLAG] = true
   positionPanel(state.kind === 'capture' ? state.rect : undefined)
 }
@@ -609,6 +618,8 @@ function postStateToChat(state: ChatState): void {
 function removeChat(): void {
   if (hostMessages) window.removeEventListener('message', hostMessages)
   hostMessages = undefined
+  if (hostPointerDown) document.removeEventListener('pointerdown', hostPointerDown, true)
+  hostPointerDown = undefined
   chatRoot?.remove()
   chatRoot = undefined
   chatPanel = undefined

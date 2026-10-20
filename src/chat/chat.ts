@@ -1039,6 +1039,12 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('[data-task-he
   button.addEventListener('click', hideTaskTooltip)
   button.addEventListener('keydown', event => { if (event.key === 'Escape') hideTaskTooltip() })
 }
+taskTooltip.addEventListener('toggle', () => {
+  if (!taskTooltip.matches(':popover-open')) {
+    tooltipButton?.removeAttribute('aria-describedby')
+    tooltipButton = undefined
+  }
+})
 window.addEventListener('blur', hideTaskTooltip)
 window.addEventListener('resize', hideTaskTooltip)
 
@@ -1240,6 +1246,7 @@ window.addEventListener('message', (e: MessageEvent) => {
   const data = e.data as { source?: string; state?: ChatState; action?: string; closeId?: string; conversationId?: string } | null
   if (e.source !== window.parent || window.parent === window || data?.source !== 'study-buddy-host') return
   if (data.state) apply(data.state)
+  if (data.action === 'dismiss-tooltip') hideTaskTooltip()
   if (data.action === 'conversation-changed' && typeof data.conversationId === 'string') {
     void openConversation(data.conversationId, false).catch(reportError)
   }

@@ -1732,6 +1732,7 @@ try {
   }
   const findHostButton = (text) => findHostButtonOn(page, text)
   const clickHostButton = (text) => clickHostButtonOn(page, text)
+  if (await page.locator('[data-study-buddy="chat"][data-state="open"]').count()) await clickHostButton('−')
   await clickHostButton('Restore Study Buddy')
   let embedded = await chatFrameOn(page)
   await embedded.waitForSelector('#view-capture:not([hidden])')
@@ -1917,9 +1918,11 @@ try {
   'Close dismisses an initial error host without creating or deleting a conversation')
   await dismissPage.close()
 
-  const showChatOnTab = async (tabId, state) => sw.evaluate(async ({ tabId, state }) => new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, { type: 'SHOW_CHAT', state }, () => resolve())
-  }), { tabId, state })
+  const showChatOnTab = async (tabId, state) => sw.evaluate(async ({ tabId, state }) => {
+    // Production restore selects in the coordinator before showing a read-only view.
+    if (state.kind === 'conversation') await chrome.storage.session.set({ 'dialog.active': state.conversationId })
+    await new Promise(resolve => chrome.tabs.sendMessage(tabId, { type: 'SHOW_CHAT', state }, () => resolve()))
+  }, { tabId, state })
   const earlyClosePage = await ctx.newPage()
   await earlyClosePage.addInitScript(() => {
     if (location.protocol !== 'chrome-extension:' || !location.pathname.endsWith('/chat.html')) return

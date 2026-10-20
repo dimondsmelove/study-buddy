@@ -192,7 +192,7 @@ section {
 #thread .hint { margin: 0; color: var(--muted); font-size: 14px; }
 .msg { position: relative; display: flex; flex-direction: column; align-items: flex-start; margin-bottom: 12px; }
 .msg:has(.msg-actions) { margin-bottom: 24px; }
-.msg:has(.msg-actions) .msg-body { position: relative; padding-bottom: 16px; }
+.msg:has(.msg-actions) .msg-body { position: relative; padding-bottom: 20px; }
 .msg:last-child { margin-bottom: 0; }
 .msg.user { align-items: flex-end; }
 .msg-body {
@@ -259,8 +259,8 @@ section {
   box-shadow: var(--shadow-popover);
   opacity: 0;
   pointer-events: none;
-  transform: translateY(3px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  transform: none;
+  transition: opacity 120ms ease;
 }
 .msg:hover .msg-actions, .msg:focus-within .msg-actions { opacity: 1; pointer-events: auto; transform: none; }
 .msg-actions button {

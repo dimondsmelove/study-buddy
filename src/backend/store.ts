@@ -6,6 +6,9 @@ import { GATEWAY_LIMITS } from '../shared/gateway-protocol'
 
 const HOUR_MS = 60 * 60 * 1_000
 const MONTHLY_BUDGET_NANO = 5_000_000_000
+// At the 2026-10-20 OpenRouter max-price snapshot: 1.05M prompt tokens including
+// cache-write at $0.25/M plus 16,384 output tokens at $0.75/M is $0.274788.
+// Round up to $0.275; the byte token estimator is not a monetary bound.
 const GENERATION_RESERVE_NANO = 275_000_000
 
 export interface Session {

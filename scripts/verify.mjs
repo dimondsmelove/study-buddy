@@ -23,6 +23,8 @@ import { join, resolve } from 'node:path'
 
 const root = resolve(fileURLToPath(import.meta.url), '..')
 const repo = resolve(root, '..')
+const reviewEvidence = resolve(repo, 'review', 'loop')
+const acceptanceEvidence = { invalidInstallationCredential: null, installationRecovery: null, budgetLimit: null }
 const dist = resolve(repo, 'review', 'verify-dist')
 const i18nModule = { exports: {} }
 const i18nSource = ts.transpileModule(readFileSync(resolve(root, '..', 'src/shared/i18n.ts'), 'utf8'), {
@@ -613,32 +615,112 @@ try {
     }
     request.onerror = () => reject(request.error)
   }))
-  // An invalid bearer plus invalid durable credential fails closed without replacing identity.
-  await sw.evaluate((origin) => chrome.storage.local.set({
-    'gateway.session': {
-      token: 'invalid-session-token-12345678901234567890',
-      expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
-      gatewayOrigin: origin,
-    },
+  // Seed a real anonymous identity through the UI so recovery can prove continuity.
+  const identitySeedPage = await openCapture()
+  await identitySeedPage.click('.preset[data-preset="solve"]')
+  await identitySeedPage.waitForFunction(() => {
+    const body = [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)
+    return body?.textContent?.trim() === 'Hello world'
+  })
+  const savedInstallation = await sw.evaluate(async () => (await chrome.storage.local.get('gateway.installation'))['gateway.installation'])
+  check(!!savedInstallation?.installationId && typeof savedInstallation?.installationSecret === 'string',
+    'first real chat request stores a durable anonymous installation credential')
+  await identitySeedPage.close()
+
+  // A malformed durable credential must fail closed and preserve its stored subject.
+  const poisonedInstallationId = '223e4567-e89b-12d3-a456-426614174000'
+  await sw.evaluate(() => chrome.storage.local.remove('gateway.session'))
+  await sw.evaluate(({ origin, installationId }) => chrome.storage.local.set({
     'gateway.installation': {
-      installationId: '223e4567-e89b-12d3-a456-426614174000',
+      installationId,
       installationSecret: 'x'.repeat(43),
       gatewayOrigin: origin,
     },
-  }), gatewayUrl)
-  const disconnected = await openCapture()
-  const beforeDisconnected = requestCount
-  await disconnected.click('.preset[data-preset="solve"]')
-  await disconnected.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .reply-status')].some(node => node.textContent?.includes('The answer session expired.')))
-  check(
-    (await disconnected.locator('.msg.assistant .reply-status').last().textContent())?.includes('The answer session expired. Start a new request to reconnect.') &&
-      requestCount === beforeDisconnected &&
-      (await sw.evaluate(async () => (await chrome.storage.local.get('gateway.installation'))['gateway.installation']?.installationId)) === '223e4567-e89b-12d3-a456-426614174000',
-    'invalid installation credential fails closed, keeps its subject, and never starts a provider request',
-  )
-  await disconnected.close()
-  // Clear only this synthetic poisoned fixture before unrelated chat scenarios.
-  await sw.evaluate(() => chrome.storage.local.remove(['gateway.session', 'gateway.installation']))
+  }), { origin: gatewayUrl, installationId: poisonedInstallationId })
+  const invalidCredentialPage = await openCapture()
+  const beforeInvalidCredential = requestCount
+  const invalidCredentialLogStart = backendLogs.length
+  await invalidCredentialPage.click('.preset[data-preset="solve"]')
+  await invalidCredentialPage.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .reply-status')].some(node => node.textContent?.includes('The answer session expired.')))
+  const invalidCredentialResult = await sw.evaluate(async ({ origin, expectedId }) => {
+    const values = await chrome.storage.local.get(['gateway.session', 'gateway.installation'])
+    return {
+      sessionAbsent: !values['gateway.session'],
+      installationPreserved: values['gateway.installation']?.installationId === expectedId &&
+        values['gateway.installation']?.gatewayOrigin === origin,
+    }
+  }, { origin: gatewayUrl, expectedId: poisonedInstallationId })
+  const invalidCredentialLogs = backendLogs.slice(invalidCredentialLogStart)
+  const recoveryRejected = invalidCredentialLogs.some(entry => entry.status === 401 && entry.route === 'other')
+  const didNotBootstrap = !invalidCredentialLogs.some(entry => entry.route === '/api/v1/session' && entry.status === 201)
+  acceptanceEvidence.invalidInstallationCredential =
+    invalidCredentialResult.sessionAbsent && invalidCredentialResult.installationPreserved &&
+    recoveryRejected && didNotBootstrap && requestCount === beforeInvalidCredential
+  check(acceptanceEvidence.invalidInstallationCredential,
+    'invalid durable credential receives recovery 401, is not replaced or bootstrapped, preserves its subject and starts no provider request')
+  await invalidCredentialPage.close()
+
+  // A stale but locally unexpired bearer gets one explicit 401; the next user action recovers.
+  await sw.evaluate(async (installation) => chrome.storage.local.set({
+    'gateway.installation': installation,
+    'gateway.session': {
+      token: 'revoked-session-token-12345678901234567890',
+      expiresAt: Date.now() + 60 * 24 * 60 * 60 * 1000,
+      gatewayOrigin: installation.gatewayOrigin,
+    },
+  }), { ...savedInstallation, gatewayOrigin: gatewayUrl })
+  const identityDatabase = new DatabaseSync(backendConfig.databasePath)
+  identityDatabase.prepare('DELETE FROM sessions WHERE installation_id = ?').run(savedInstallation.installationId)
+  identityDatabase.close()
+  const recoveryPage = await openCapture()
+  const beforeRejectedGeneration = requestCount
+  const routeLogStart = backendLogs.length
+  await recoveryPage.click('.preset[data-preset="solve"]')
+  await recoveryPage.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .reply-status')].some(node => node.textContent?.includes('The answer session expired.')))
+  const rejectedState = await sw.evaluate(async () => {
+    const values = await chrome.storage.local.get(['gateway.session', 'gateway.installation'])
+    return {
+      sessionAbsent: !values['gateway.session'],
+      installationId: values['gateway.installation']?.installationId,
+    }
+  }, { expectedId: savedInstallation.installationId })
+  const rejectedRoute = backendLogs.slice(routeLogStart).reverse().find(entry => entry.route === '/api/v1/generations')
+  const firstAttemptWas401 = rejectedRoute?.status === 401
+  const noAutomaticReplay = requestCount === beforeRejectedGeneration
+  await resetCooldown(recoveryPage)
+  await recoveryPage.click('.preset[data-preset="solve"]')
+  await recoveryPage.waitForFunction(() => {
+    const body = [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)
+    return body?.textContent?.trim() === 'Hello world'
+  })
+  const recoveredState = await sw.evaluate(async () => {
+    const values = await chrome.storage.local.get(['gateway.session', 'gateway.installation'])
+    return {
+      sessionRestored: typeof values['gateway.session']?.token === 'string',
+      installationId: values['gateway.installation']?.installationId,
+    }
+  })
+  const recoveredRecord = new DatabaseSync(backendConfig.databasePath)
+  const recoveredSubject = recoveredRecord.prepare('SELECT installation_id FROM sessions ORDER BY created_at DESC LIMIT 1').get()?.installation_id
+  recoveredRecord.close()
+  acceptanceEvidence.installationRecovery = {
+    firstGeneration401: firstAttemptWas401,
+    noAutomaticReplay,
+    bearerCleared: rejectedState.sessionAbsent,
+    subjectPreservedBeforeRecovery: rejectedState.installationId === savedInstallation.installationId,
+    recoveredSameInstallation: recoveredState.sessionRestored &&
+      recoveredState.installationId === savedInstallation.installationId &&
+      recoveredSubject === savedInstallation.installationId,
+    upstreamDeltaAfterExplicitRetry: requestCount - beforeRejectedGeneration,
+  }
+  check(acceptanceEvidence.installationRecovery.firstGeneration401 &&
+    acceptanceEvidence.installationRecovery.noAutomaticReplay &&
+    acceptanceEvidence.installationRecovery.bearerCleared &&
+    acceptanceEvidence.installationRecovery.subjectPreservedBeforeRecovery &&
+    acceptanceEvidence.installationRecovery.recoveredSameInstallation &&
+    acceptanceEvidence.installationRecovery.upstreamDeltaAfterExplicitRetry === 1,
+  '401 clears the expired bearer; the explicit next request recovers the same installation and makes exactly one provider call')
+  await recoveryPage.close()
 
   const readSaved = (p) => p.evaluate(() => new Promise((resolve, reject) => {
     const open = indexedDB.open('study-buddy-conversations', 1)
@@ -920,9 +1002,17 @@ try {
   // Exhaust the current installation wallet and verify the real chat UI shows the UTC reset.
   const budgetDatabase = new DatabaseSync(backendConfig.databasePath)
   const budgetMonth = new Date().toISOString().slice(0, 7)
-  budgetDatabase.prepare(`INSERT INTO monthly_budgets (installation_id, month_key, spent_nano, reserved_nano)
-    SELECT installation_id, ?, 4_725_000_001, 0 FROM sessions WHERE installation_id IS NOT NULL LIMIT 1
-    ON CONFLICT(installation_id, month_key) DO UPDATE SET spent_nano = excluded.spent_nano, reserved_nano = 0`).run(budgetMonth)
+  const budgetInstallationId = budgetDatabase.prepare(
+    'SELECT installation_id FROM sessions WHERE installation_id IS NOT NULL ORDER BY created_at DESC LIMIT 1',
+  ).get()?.installation_id
+  if (!budgetInstallationId) throw new Error('The UI fixture has no installation wallet')
+  const priorBudgetWallet = budgetDatabase.prepare(
+    'SELECT spent_nano, reserved_nano FROM monthly_budgets WHERE installation_id = ? AND month_key = ?',
+  ).get(budgetInstallationId, budgetMonth)
+  budgetDatabase.prepare(
+    'INSERT INTO monthly_budgets (installation_id, month_key, spent_nano, reserved_nano) VALUES (?, ?, 4_725_000_001, 0) ' +
+    'ON CONFLICT(installation_id, month_key) DO UPDATE SET spent_nano = excluded.spent_nano, reserved_nano = 0',
+  ).run(budgetInstallationId, budgetMonth)
   const budgetPage = await openCapture()
   const beforeBudgetDenied = requestCount
   await budgetPage.click('.preset[data-preset="solve"]')
@@ -930,10 +1020,25 @@ try {
     const status = [...document.querySelectorAll('.msg.assistant .reply-status')].at(-1)?.textContent ?? ''
     return status.includes('monthly limit') && status.includes('resets')
   })
-  check(requestCount === beforeBudgetDenied,
+  mkdirSync(reviewEvidence, { recursive: true })
+  const budgetStatus = await budgetPage.locator('.msg.assistant .reply-status').last().textContent()
+  await budgetPage.screenshot({ path: join(reviewEvidence, 'budget-limit.png'), animations: 'disabled' })
+  acceptanceEvidence.budgetLimit = {
+    resetDateVisible: !!budgetStatus?.includes('resets'),
+    error: budgetStatus,
+    upstreamDelta: requestCount - beforeBudgetDenied,
+    screenshot: 'review/loop/budget-limit.png',
+  }
+  check(acceptanceEvidence.budgetLimit.resetDateVisible && acceptanceEvidence.budgetLimit.upstreamDelta === 0,
     'monthly budget error shows its reset date in chat without an upstream generation')
   await budgetPage.close()
-  budgetDatabase.prepare('UPDATE monthly_budgets SET spent_nano = 0, reserved_nano = 0 WHERE month_key = ?').run(budgetMonth)
+  if (priorBudgetWallet) {
+    budgetDatabase.prepare('UPDATE monthly_budgets SET spent_nano = ?, reserved_nano = ? WHERE installation_id = ? AND month_key = ?')
+      .run(priorBudgetWallet.spent_nano, priorBudgetWallet.reserved_nano, budgetInstallationId, budgetMonth)
+  } else {
+    budgetDatabase.prepare('DELETE FROM monthly_budgets WHERE installation_id = ? AND month_key = ?')
+      .run(budgetInstallationId, budgetMonth)
+  }
   budgetDatabase.close()
 
   // The unavailable primary must surface its error after exactly one attempt.
@@ -2222,9 +2327,11 @@ try {
     check(true, 'native action on a restricted page uses the limited restricted-state rescue popup')
   } finally { await restarted.close() }
 
-  writeFileSync(join(evidence, 'runtime.json'), JSON.stringify({ requestCount, pageErrors, fixture: 'localhost mock only', physicalShortcut: 'not dispatched by headless Chromium' }, null, 2))
-
   check(pageErrors.length === 0, `no page errors${pageErrors.length ? `: ${pageErrors.join('; ')}` : ''}`)
+  writeFileSync(join(evidence, 'runtime.json'), JSON.stringify({
+    requestCount, failures, pageErrors, namedAssertions: acceptanceEvidence,
+    fixture: 'localhost mock only', physicalShortcut: 'not dispatched by headless Chromium',
+  }, null, 2))
 } finally {
   await ctx.close()
   if (backend) await backend.close()

@@ -23,6 +23,23 @@ function ownPage(sender?: chrome.runtime.MessageSender): boolean {
 }
 
 const ACTIVE_DIALOG_KEY = 'dialog.active'
+const MINIMIZED_KEY = 'dialog.minimized'
+
+async function updateLauncherState(minimized?: boolean): Promise<boolean> {
+  const saved = await chrome.storage.session.get(MINIMIZED_KEY)
+  const current = saved[MINIMIZED_KEY] === true
+  if (minimized === undefined || minimized === current) return current
+  await chrome.storage.session.set({ [MINIMIZED_KEY]: minimized })
+  const tabs = await chrome.tabs.query({})
+  await Promise.allSettled(tabs.filter(tab => tab.id !== undefined).map(tab =>
+    chrome.tabs.sendMessage(tab.id!, { type: 'LAUNCHER_STATE', minimized }),
+  ))
+  return minimized
+}
+
+export function launcherState(minimized?: boolean): Promise<boolean> {
+  return serialized(() => updateLauncherState(minimized))
+}
 
 async function selectedDialog(): Promise<Conversation | undefined> {
   const saved = await chrome.storage.session.get(ACTIVE_DIALOG_KEY)
@@ -86,6 +103,7 @@ export function closeDialog(conversationId: string, tabId: number): Promise<void
     const saved = await chrome.storage.session.get(ACTIVE_DIALOG_KEY)
     if (saved[ACTIVE_DIALOG_KEY] === conversationId) {
       await chrome.storage.session.remove(ACTIVE_DIALOG_KEY)
+      await updateLauncherState(false)
       await publishDialog(undefined, tabId)
     }
     changed()
@@ -111,6 +129,7 @@ async function action(message: ConversationAction, tabId?: number): Promise<Conv
     const selected = await selectedDialog()
     if (!selected || selected.id === conversation.id) {
       await chrome.storage.session.remove(ACTIVE_DIALOG_KEY)
+      await updateLauncherState(false)
       await publishDialog(undefined, tabId)
     }
     return undefined

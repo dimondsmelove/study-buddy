@@ -9,7 +9,7 @@ import type { CaptureRequest, ChatState, Message, Rect, StoredCapture } from '..
 import { CAPTURE_PREFIX, MAX_KEPT_CAPTURES } from '../shared/messages'
 import { restrictedReason } from '../shared/restricted'
 import { captureTab } from './capture'
-import { captureDialog, closeDialog, installConversationCoordinator, restoreDialog } from './conversations'
+import { captureDialog, closeDialog, installConversationCoordinator, launcherState, restoreDialog } from './conversations'
 
 installConversationCoordinator()
 
@@ -88,7 +88,11 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, respond) => {
     sender.id === chrome.runtime.id && sender.url && !sender.url.startsWith('chrome-extension://')
       ? sender.tab
       : undefined
-  if (msg.type === 'START_SELECTION') {
+  if (msg.type === 'LAUNCHER_STATE') {
+    if (sender.id !== chrome.runtime.id) return false
+    void launcherState(msg.minimized).then(minimized => respond({ minimized }), () => respond({ minimized: false }))
+    return true
+  } else if (msg.type === 'START_SELECTION') {
     entrypoint(() => startActiveTabSelection(), true)
   } else if (msg.type === 'DIALOG_CLOSED') {
     if (!contentTab?.id || typeof msg.conversationId !== 'string') { respond({ ok: false }); return false }

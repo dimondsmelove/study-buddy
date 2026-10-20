@@ -110,7 +110,7 @@ real-provider check does not establish accuracy on arbitrary learning material.
 - `storage` — keep language/panel settings and anonymous access state locally, and transient crops in session;
   saved transcripts and images use extension-origin IndexedDB.
 - `host_permissions <all_urls>` — make the floating launcher available across
-  web pages and capture the intended active page on explicit user selection.
+  web pages only while the chat is minimized, and capture the intended active page on explicit user selection.
   No model request is started by adding the launcher.
 - `clipboardWrite` — copy an answer after an explicit Copy action.
 - gateway host access — connect to the configured backend; no provider key is sent to the extension.

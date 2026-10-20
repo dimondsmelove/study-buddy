@@ -75,8 +75,8 @@ Already completed provider processing can still be billed. The backend does
 not automatically restart an ambiguous or partially streamed operation.
 
 No other page content is intentionally collected. The extension does not
-scan page text in the background. A lightweight launcher is added automatically
-on HTTP/HTTPS pages. The selection overlay and chat iframe appear on explicit
+scan page text in the background. A lightweight restore launcher appears on HTTP/HTTPS pages only while
+the chat is minimized; idle pages have no launcher. The selection overlay and chat iframe appear on explicit
 user actions; capture and model requests do not run automatically.
 
 ## Backend operational records

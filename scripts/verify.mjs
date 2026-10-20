@@ -235,8 +235,8 @@ try {
   const page = await ctx.newPage()
   await page.goto(url)
   await page.bringToFront()
-  await page.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
-  check(await page.locator('[data-study-buddy="launcher"]').count() === 1 && page.frames().length === 1, 'fresh page automatically has one lightweight launcher without a chat iframe')
+  await page.waitForTimeout(150)
+  check(await page.locator('[data-study-buddy="launcher"]').count() === 0 && page.frames().length === 1, 'fresh page has no launcher or chat before the user opens and minimizes the panel')
 
   const chatOrigin = (await sw.evaluate(() => chrome.runtime.getURL(''))).replace(/\/$/, '')
   await triggerAction(page)
@@ -1847,8 +1847,8 @@ try {
   const savedClose = afterClose.conversations.find(c => c.id === nativeId).turns.at(-1)
   const closedBinding = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   check(savedClose.status === 'cancelled' && savedClose.text.startsWith('Hello') && !afterClose.state.generation &&
-    await page.locator('[data-study-buddy="launcher"]').count() === 1 && closedBinding === undefined,
-  'Close commits the partial reply, removes the panel, keeps the launcher and clears the shared chat')
+    await page.locator('[data-study-buddy="launcher"]').count() === 0 && closedBinding === undefined,
+  'Close commits the partial reply, removes the panel and launcher and clears the shared chat')
 
   await triggerAction(page)
   await page.waitForSelector('[data-study-buddy="overlay"]')
@@ -2358,18 +2358,18 @@ try {
   'Close during settings load prevents a queued Solve from starting and clears the shared active chat')
   await quickPage.close()
 
-  // Cross-origin web pages get a launcher without toolbar invocation or a
-  // runtime permission prompt. Every view uses the same selected conversation.
+  // Only minimizing exposes the shared launcher on other web pages.
   await duplicate.evaluate(conversationId => chrome.runtime.sendMessage({ type: 'CONVERSATION', action: 'select', conversationId }), nextConversationId)
   await page.bringToFront()
-  await clickHostButton('Restore Study Buddy')
+  await showChatOnTab(pageTabId, { kind: 'conversation', conversationId: nextConversationId })
   let sharedFrame = await chatFrameOn(page)
+  await clickHostButton('−')
   const otherPage = await ctx.newPage()
   const otherUrl = `${origin.replace('127.0.0.1', 'localhost')}/other`
   await otherPage.goto(otherUrl)
   await otherPage.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
   check(otherPage.frames().length === 1 && await otherPage.locator('[data-study-buddy="launcher"]').count() === 1,
-    'a different origin gets exactly one launcher automatically, without creating an iframe or a chat')
+    'after minimizing, a different origin gets one launcher without creating an iframe or a chat')
   await clickHostButtonOn(otherPage, 'Restore Study Buddy')
   let otherFrame = await chatFrameOn(otherPage)
   await otherFrame.waitForSelector('#view-capture:not([hidden])')
@@ -2379,6 +2379,7 @@ try {
   await resetCooldown(sharedFrame)
   const beforeSharedStart = requestCount
   await page.bringToFront()
+  await showChatOnTab(pageTabId, { kind: 'conversation', conversationId: nextConversationId })
   await sharedFrame.click('[data-preset="hint"]')
   await otherFrame.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)?.textContent?.includes('Hello'))
   await otherFrame.waitForFunction(() => document.getElementById('ask-btn')?.getAttribute('aria-label') === 'Stop')
@@ -2414,7 +2415,7 @@ try {
   await otherFrame.click('[data-preset="hint"]')
   await sharedFrame.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Answering'), undefined, { polling: 100 })
   await page.bringToFront()
-  await clickHostButton('Restore Study Buddy')
+  await showChatOnTab(pageTabId, { kind: 'conversation', conversationId: nextConversationId })
   await clickHostButton('✕')
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
   await otherPage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
@@ -2422,13 +2423,13 @@ try {
   const activeAfterClose = await sw.evaluate(async () => (await chrome.storage.session.get('dialog.active'))['dialog.active'])
   check(!activeAfterClose && !afterSharedClose.state.generation &&
     afterSharedClose.conversations.find(c => c.id === nextConversationId).turns.at(-1).status === 'cancelled' &&
-    await page.locator('[data-study-buddy="launcher"]').count() === 1 && await otherPage.locator('[data-study-buddy="launcher"]').count() === 1,
-    'Close from a mirrored tab cancels the writer, dismisses all panels and keeps launchers available')
-  await clickHostButton('Restore Study Buddy')
+    await page.locator('[data-study-buddy="launcher"]').count() === 0 && await otherPage.locator('[data-study-buddy="launcher"]').count() === 0,
+    'Close from a mirrored tab cancels the writer and removes all panels and launchers')
+  await triggerAction(page)
   await page.waitForSelector('[data-study-buddy="overlay"]')
   await page.keyboard.press('Escape')
-  check(await hostButtonBoxOn(page, 'Restore Study Buddy') !== undefined,
-    'after Close the launcher starts a fresh selection; Escape restores the idle launcher')
+  check(await page.locator('[data-study-buddy="launcher"]').count() === 0,
+    'after Close, cancelling a fresh selection does not create an idle launcher')
   responseMode = 'normal'
   await otherPage.close()
   await duplicate.close()

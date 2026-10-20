@@ -30,6 +30,8 @@ export interface StartSelection {
   type: 'START_SELECTION'
 }
 export interface RestoreChat { type: 'RESTORE_CHAT' }
+/** Query/update the session's minimized launcher, or broadcast its state. */
+export interface LauncherState { type: 'LAUNCHER_STATE'; minimized?: boolean }
 /** SW → content hosts: switch the shared chat, or dismiss it after Close. */
 export interface DialogChanged { type: 'DIALOG_CHANGED'; conversationId?: string }
 
@@ -104,6 +106,7 @@ export const GENERATION_PORT = 'study-buddy-generation'
 export type Message =
   | StartSelection
   | RestoreChat
+  | LauncherState
   | DialogChanged
   | ShowOverlay
   | PrepareSelection

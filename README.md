@@ -58,7 +58,9 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - The service worker only coordinates (MV3 workers are ephemeral and have no DOM).
 - Capture uses `chrome.tabs.captureVisibleTab` — clean composited pixels, taint-free
   even over cross-origin `<video>` (e.g. code shown in a paused video).
-- A declared content script adds a lightweight launcher to HTTP/HTTPS pages.
+- A declared content script supports a minimized-chat launcher on HTTP/HTTPS pages.
+  The launcher appears only after Minimize; idle pages have no icon. Restoring
+  the panel or closing the chat hides the launchers across tabs.
   Persistent site access is declared at installation; there is no separate
   in-app all-sites permission prompt. Capture and model requests still require
   explicit user actions. Already-open web tabs are bootstrapped on install/update.
@@ -82,8 +84,7 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - The active conversation is shared across tabs for the current browser session.
   New chat and History selection update existing panels. Minimize keeps the
   iframe/stream alive; switching tabs does not move or duplicate its request.
-  Close saves and cancels the shared chat, dismisses all its panels and keeps
-  the launchers available. A new capture after Close starts a fresh chat.
+  Close saves and cancels the shared chat and removes all its panels and launchers. A new capture after Close starts a fresh chat.
   Navigation/reload/closure of the writer's page retains the latest committed
   partial as interrupted, without automatic paid resume. One local generation
   is admitted across windows.

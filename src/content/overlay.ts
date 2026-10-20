@@ -1,4 +1,4 @@
-// Study Buddy launcher on web pages; the panel and capture open on user action.
+// Study Buddy panel and capture open on user action; only a minimized panel has a launcher.
 // Two jobs, both dormant until the service worker calls:
 //   1. SHOW_OVERLAY — full-page dimmer + drag rectangle; on mouseup the selected
 //      rect (CSS px + devicePixelRatio) goes to the SW, which captures & crops.
@@ -37,6 +37,10 @@ if (ownsHost) {
       captureFailed(msg.message)
     } else if (msg.type === 'HIDE_CHAT') {
       removeChat()
+    } else if (msg.type === 'LAUNCHER_STATE' && typeof msg.minimized === 'boolean') {
+      launcherRevision++
+      launcherMinimized = msg.minimized
+      refreshLauncher()
     } else if (msg.type === 'DIALOG_CHANGED') {
       if (!msg.conversationId) removeChat()
       else if (chatFrame && activeConversationId !== msg.conversationId) {
@@ -48,7 +52,14 @@ if (ownsHost) {
     }
     return false
   })
-  queueMicrotask(() => { showLauncher() })
+  queueMicrotask(() => {
+    const revision = launcherRevision
+    void chrome.runtime.sendMessage({ type: 'LAUNCHER_STATE' }).then(state => {
+      if (revision !== launcherRevision) return
+      launcherMinimized = state?.minimized === true
+      refreshLauncher()
+    }).catch(() => {})
+  })
 }
 
 // --- selection overlay --------------------------------------------------------
@@ -197,6 +208,9 @@ let chatRoot: HTMLElement | undefined
 let chatPanel: HTMLDivElement | undefined
 let chatFrame: HTMLIFrameElement | undefined
 let launcher: HTMLButtonElement | undefined
+let launcherRoot: HTMLElement | undefined
+let launcherMinimized = false
+let launcherRevision = 0
 let errorNotice: HTMLDivElement | undefined
 let activeConversationId: string | undefined
 let chatKind: ChatState['kind'] | undefined
@@ -258,7 +272,20 @@ function chatUrlParams(state: ChatState): Record<string, string> {
   }
 }
 
-/** A lightweight entry point exists even before a chat is opened. */
+function refreshLauncher(): void {
+  const visible = launcherMinimized && !cancelOverlay && !selectionRestoreState && (!chatPanel || chatPanel.style.display === 'none')
+  if (visible) showLauncher().hidden = false
+  else if (launcher) launcher.hidden = true
+}
+
+function setLauncherState(minimized: boolean): void {
+  launcherRevision++
+  launcherMinimized = minimized
+  refreshLauncher()
+  void chrome.runtime.sendMessage({ type: 'LAUNCHER_STATE', minimized }).catch(() => {})
+}
+
+/** Restore affordance, visible only after the panel was minimized. */
 function showLauncher(): HTMLButtonElement {
   if (launcher?.isConnected) return launcher
   const root = document.createElement('div')
@@ -310,19 +337,21 @@ function showLauncher(): HTMLButtonElement {
   shadow.appendChild(button)
   document.documentElement.appendChild(root)
   launcher = button
+  launcherRoot = root
   return button
 }
 
 function minimizeChat(): void {
   if (chatPanel) chatPanel.style.display = 'none'
-  if (launcher) launcher.hidden = false
   chatRoot?.setAttribute('data-state', 'minimized')
+  setLauncherState(true)
 }
 
 /** Embed or update the chat window. The window persists across captures (the
  *  conversation keeps its context); a new state is relayed in via postMessage
  *  instead of reloading the iframe. */
 function showChat(state: ChatState): void {
+  setLauncherState(false)
   const nextConversationId = state.kind === 'capture' || state.kind === 'conversation' ? state.conversationId : undefined
   if (chatFrame) {
     const sameConversation = state.kind === 'conversation' && nextConversationId === activeConversationId && (chatKind === 'conversation' || chatKind === 'capture')
@@ -574,15 +603,15 @@ function prepareForSelection(): void {
 
 function restoreAfterSelection(): void {
   if (!selectionRestoreState || !chatPanel || !chatRoot || !launcher) {
-    if (launcher) launcher.hidden = false
+    refreshLauncher()
     return
   }
   const state = selectionRestoreState
   selectionRestoreState = undefined
   chatPanel.style.visibility = 'visible'
   chatPanel.style.display = state === 'open' ? 'flex' : 'none'
-  launcher.hidden = state === 'open'
   chatRoot.setAttribute('data-state', state)
+  refreshLauncher()
   if (errorNotice && selectionRestoreNotice) {
     errorNotice.hidden = selectionRestoreNotice.hidden
     errorNotice.style.display = selectionRestoreNotice.display
@@ -632,10 +661,10 @@ function removeChat(): void {
   selectionRestoreNotice = undefined
   const w = window as unknown as Record<string, unknown>
   w[CHAT_FLAG] = false
-  const button = showLauncher()
-  button.hidden = false
-  button.setAttribute('aria-label', 'Restore Study Buddy')
-  button.title = 'Study Buddy'
+  launcherRoot?.remove()
+  launcherRoot = undefined
+  launcher = undefined
+  setLauncherState(false)
 }
 
 /** Anchor near the selection: prefer the right of it, else to its left, else

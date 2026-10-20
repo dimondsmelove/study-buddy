@@ -13,9 +13,7 @@ Inside a chat, **New chat** opens an empty conversation with text input;
 capture is saved immediately, without starting an answer. Images remain in the
 thread and open at full size; there is no permanent upper preview.
 
-**Status: local implementation candidate.** Capture, streaming, Markdown/LaTeX, local History, image messages and visible context exclusions use the Study Buddy backend; only the backend holds the OpenRouter credential and owns the model and limits. Approved task and title instructions are assembled server-side. Ask remains free-form, transcript text remains immutable, and this branch is not deployed.
-No provider key or local tokenizer is needed in the browser. Public hosting and
-store publication are separate release steps.
+**Status: private laptop integration test.** Capture, streaming, Markdown/LaTeX, local History, image messages and visible context exclusions use the Study Buddy backend; only the backend holds the OpenRouter credential and owns the model and limits. Approved task and title instructions are assembled server-side. Ask remains free-form and transcript text remains immutable. The private backend runs on homelab-laptop; public hosting and store publication remain deferred. See the [private backend handoff](docs/backend-deployment.md#private-laptop-integration-test-2026-10-20) for the endpoint, service commands, update steps and acceptance evidence. No provider key or local tokenizer is needed in the browser.
 
 The backend uses Node 22.22.2 and built-in SQLite for operational state, without
 cloud chat history. Requests go through the backend using OpenAI GPT-6 Luna via OpenRouter; provider errors are surfaced without switching models.
@@ -89,12 +87,14 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - Provider-reported usage is saved on the local assistant turn when available.
   A lost final usage chunk means unknown usage. The server does not keep detailed
   per-chat usage or conversation text/images/responses.
-- The backend admits one start per session per ten seconds, one in flight per
-  session, and four globally; session issuance is limited per network. It owns
-  a shared 16,384-token response cap and timeout. Provider availability errors
-  surface without switching models. Duplicate request IDs do not restart a generation
-  within the 24-hour idempotency window.
-  Anonymous sessions and rate limits do not impose a monetary spending ceiling.
+- The backend admits one start per installation per ten seconds, one in flight
+  per installation, and four globally; issuance of new installations is limited
+  per network. It owns a shared 16,384-token response cap and timeout. Provider
+  availability errors surface without switching models. Duplicate request IDs
+  do not restart a generation within the 24-hour idempotency window.
+  Each installation has a $5 monthly budget and this backend has a $100 monthly
+  aggregate cap; each new generation reserves $0.275. These limits cover this
+  service only and do not cap other OpenRouter account usage.
 - Incognito is disabled. There is no cloud sync, telemetry or student profiling.
 
 ## Develop and run

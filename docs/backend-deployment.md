@@ -104,7 +104,9 @@ These checks establish packaging, session-state persistence, and the scoped host
 The merged backend is running as the user service study-buddy-backend.service on
 homelab-laptop. It is bound only to 127.0.0.1:8787 and allowlists the current
 unpacked Vivaldi extension origin chrome-extension://hlclddpmiehffbnjknfnjcaapeoihkbf.
-The installed extension remains at ~/Загрузки/Study-Buddy-Local; its runtime
+The source checkout is /home/diamondsepticon/Projects/OCR-AI/study-buddy. The
+installed extension copy is /home/diamondsepticon/Загрузки/Study-Buddy-Local;
+main/dist is only the build output and is not the installed bundle. The installed
 bundle points to http://127.0.0.1:8787. This is a private laptop integration
 test, not the public deployment or packed store build.
 
@@ -143,6 +145,12 @@ systemctl --user start study-buddy-backend.service
 curl -fsS http://127.0.0.1:8787/health
 ~~~
 
+After copying the build, reload only Study Buddy from Vivaldi’s extension page
+(or run chrome.runtime.reload() in its service-worker context), then check the
+extension-origin /health request before making a controlled model request. Keep
+the same installed extension and profile so local conversations, attachments
+and settings remain available.
+
 The current feature enforces a $5 monthly budget per anonymous installation and
 a $100 monthly aggregate across this backend's database. Each generation
 reserves $0.275. These limits cover requests routed through this service, not
@@ -150,6 +158,15 @@ other use of the OpenRouter account. The next UI session should branch from the
 merged main baseline at 25df309; the private gateway is available for its
 integration. Public domain/tunnel/DNS work, container deployment, and store
 publication remain deferred.
+
+The primary-agent live acceptance on 2026-10-20 reloaded the existing extension
+in place with the same ID and confirmed localhost host permission plus an
+extension-origin /health response of HTTP 200. The baseline retained 13 conversations, 12 attachments, and
+English UI/answer-language settings. One UI conversation returned 42 from 17 + 25
+and saved as complete. OpenRouter reported openai/gpt-6-luna usage of 211 prompt
+and 103 completion tokens at $0.0000726. A separate language probe returned a
+numeric-only answer, so language compliance was inconclusive; no compliance claim
+is made from that probe. These checks record private integration evidence only.
 
 The architecture is one Node process and one SQLite file on persistent local
 disk. Startup recovery assumes no other instance owns an active generation.

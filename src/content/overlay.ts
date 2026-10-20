@@ -1,4 +1,4 @@
-// Content script for Study Buddy, injected on demand (activeTab / granted host).
+// Study Buddy launcher on web pages; the panel and capture open on user action.
 // Two jobs, both dormant until the service worker calls:
 //   1. SHOW_OVERLAY — full-page dimmer + drag rectangle; on mouseup the selected
 //      rect (CSS px + devicePixelRatio) goes to the SW, which captures & crops.
@@ -19,23 +19,37 @@ const CHAT_URL = chrome.runtime.getURL('src/chat/chat.html')
 // Where the selection ended, to anchor the chat window when no rect is known.
 let lastPointer = { x: 0, y: 0 }
 
-chrome.runtime.onMessage.addListener((msg: Message) => {
-  if (msg.type === 'SHOW_OVERLAY') {
-    showOverlay()
-  } else if (msg.type === 'PREPARE_SELECTION') {
-    prepareForSelection()
-    showOverlay()
-  } else if (msg.type === 'HIDE_OVERLAY') {
-    cancelOverlay?.()
-  } else if (msg.type === 'SHOW_CHAT') {
-    showChat(msg.state)
-  } else if (msg.type === 'CAPTURE_FAILED') {
-    captureFailed(msg.message)
-  } else if (msg.type === 'HIDE_CHAT') {
-    removeChat()
-  }
-  return false
-})
+const contentWindow = window as unknown as Record<string, unknown>
+const ownsHost = !contentWindow.__studyBuddyContent
+if (ownsHost) {
+  contentWindow.__studyBuddyContent = true
+  chrome.runtime.onMessage.addListener((msg: Message) => {
+    if (msg.type === 'SHOW_OVERLAY') {
+      showOverlay()
+    } else if (msg.type === 'PREPARE_SELECTION') {
+      prepareForSelection()
+      showOverlay()
+    } else if (msg.type === 'HIDE_OVERLAY') {
+      cancelOverlay?.()
+    } else if (msg.type === 'SHOW_CHAT') {
+      showChat(msg.state)
+    } else if (msg.type === 'CAPTURE_FAILED') {
+      captureFailed(msg.message)
+    } else if (msg.type === 'HIDE_CHAT') {
+      removeChat()
+    } else if (msg.type === 'DIALOG_CHANGED') {
+      if (!msg.conversationId) removeChat()
+      else if (chatFrame && activeConversationId !== msg.conversationId) {
+        trackConversation(msg.conversationId, true)
+        chatKind = 'conversation'
+        const url = new URL(CHAT_URL)
+        chatFrame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'conversation-changed', conversationId: msg.conversationId }, `${url.protocol}//${url.hostname}`)
+      }
+    }
+    return false
+  })
+  queueMicrotask(() => { showLauncher() })
+}
 
 // --- selection overlay --------------------------------------------------------
 
@@ -185,6 +199,7 @@ let chatFrame: HTMLIFrameElement | undefined
 let launcher: HTMLButtonElement | undefined
 let errorNotice: HTMLDivElement | undefined
 let activeConversationId: string | undefined
+let chatKind: ChatState['kind'] | undefined
 let closeRequest: { id: string; conversationId: string } | undefined
 let chatLang: 'en' | 'ru' = 'en'
 let selectionRestoreState: 'open' | 'minimized' | undefined
@@ -242,12 +257,75 @@ function chatUrlParams(state: ChatState): Record<string, string> {
   }
 }
 
+/** A lightweight entry point exists even before a chat is opened. */
+function showLauncher(): HTMLButtonElement {
+  if (launcher?.isConnected) return launcher
+  const root = document.createElement('div')
+  root.setAttribute('data-study-buddy', 'launcher')
+  root.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647'
+  const shadow = root.attachShadow({ mode: 'closed' })
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.setAttribute('aria-label', 'Restore Study Buddy')
+  button.title = 'Restore Study Buddy'
+  button.style.cssText = 'position:fixed;right:24px;bottom:24px;width:40px;height:40px;box-sizing:border-box;border:1px solid #4f9cff;border-radius:50%;background:#111827;color:white;padding:0;line-height:0;cursor:pointer;box-shadow:0 4px 18px #0004'
+  const icon = document.createElement('img')
+  icon.src = chrome.runtime.getURL('icons/icon32.png')
+  icon.alt = ''
+  icon.width = 24
+  icon.height = 24
+  icon.style.cssText = 'position:absolute;left:7px;top:7px;display:block'
+  icon.draggable = false
+  icon.setAttribute('aria-hidden', 'true')
+  button.appendChild(icon)
+  button.onclick = () => {
+    void chrome.runtime.sendMessage({ type: 'RESTORE_CHAT' }).catch(() => {})
+  }
+  // Drag a button; a short pointer movement remains a normal keyboard/click activation.
+  button.onpointerdown = (event) => {
+    if (event.button !== 0) return
+    const rect = button.getBoundingClientRect()
+    const x = event.clientX, y = event.clientY
+    let moved = false
+    button.setPointerCapture(event.pointerId)
+    const move = (next: PointerEvent) => {
+      if (Math.hypot(next.clientX - x, next.clientY - y) < 5 && !moved) return
+      moved = true
+      button.style.right = 'auto'
+      button.style.bottom = 'auto'
+      button.style.left = `${Math.max(8, Math.min(rect.left + next.clientX - x, innerWidth - rect.width - 8))}px`
+      button.style.top = `${Math.max(8, Math.min(rect.top + next.clientY - y, innerHeight - rect.height - 8))}px`
+    }
+    const up = () => {
+      button.removeEventListener('pointermove', move)
+      button.removeEventListener('pointerup', up)
+      button.removeEventListener('pointercancel', up)
+      if (moved) button.addEventListener('click', (click) => { click.preventDefault(); click.stopImmediatePropagation() }, { once: true, capture: true })
+    }
+    button.addEventListener('pointermove', move)
+    button.addEventListener('pointerup', up)
+    button.addEventListener('pointercancel', up)
+  }
+  shadow.appendChild(button)
+  document.documentElement.appendChild(root)
+  launcher = button
+  return button
+}
+
+function minimizeChat(): void {
+  if (chatPanel) chatPanel.style.display = 'none'
+  if (launcher) launcher.hidden = false
+  chatRoot?.setAttribute('data-state', 'minimized')
+}
+
 /** Embed or update the chat window. The window persists across captures (the
  *  conversation keeps its context); a new state is relayed in via postMessage
  *  instead of reloading the iframe. */
 function showChat(state: ChatState): void {
   const nextConversationId = state.kind === 'capture' || state.kind === 'conversation' ? state.conversationId : undefined
   if (chatFrame) {
+    const sameConversation = state.kind === 'conversation' && nextConversationId === activeConversationId && (chatKind === 'conversation' || chatKind === 'capture')
+    chatKind = state.kind
     trackConversation(nextConversationId, true)
     selectionRestoreState = undefined
     selectionRestoreNotice = undefined
@@ -259,7 +337,8 @@ function showChat(state: ChatState): void {
       errorNotice.hidden = true
       errorNotice.style.display = 'none'
     }
-    postStateToChat(state)
+    if (!sameConversation) postStateToChat(state)
+    else chatFrame.focus()
     if (state.kind === 'capture') positionPanel(state.rect)
     return
   }
@@ -267,8 +346,9 @@ function showChat(state: ChatState): void {
   const w = window as unknown as Record<string, unknown>
   if (w[CHAT_FLAG] && !chatRoot) return // another injection owns the existing host
   activeConversationId = nextConversationId
+  chatKind = state.kind
   if (hostMessages) window.removeEventListener('message', hostMessages)
-  chatRoot?.remove() // closed launcher is replaced, never duplicated
+  chatRoot?.remove()
   w[CHAT_FLAG] = false
 
   const root = document.createElement('div')
@@ -357,9 +437,7 @@ function showChat(state: ChatState): void {
   minimize.style.cssText = close.style.cssText
   minimize.onpointerdown = (event) => event.stopPropagation()
   minimize.onclick = () => {
-    panel.style.display = 'none'
-    if (launcher) launcher.hidden = false
-    root.setAttribute('data-state', 'minimized')
+    minimizeChat()
     launcher?.focus()
   }
   bar.appendChild(minimize)
@@ -383,56 +461,8 @@ function showChat(state: ChatState): void {
   panel.appendChild(frame)
   panel.appendChild(grip)
   shadow.appendChild(panel)
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.setAttribute('aria-label', 'Restore Study Buddy')
-  button.title = 'Restore Study Buddy'
-  button.style.cssText = 'position:fixed;right:24px;bottom:24px;width:40px;height:40px;box-sizing:border-box;border:1px solid #4f9cff;border-radius:50%;background:#111827;color:white;padding:0;line-height:0;cursor:pointer;box-shadow:0 4px 18px #0004'
-  const icon = document.createElement('img')
-  icon.src = chrome.runtime.getURL('icons/icon32.png')
-  icon.alt = ''
-  icon.width = 24
-  icon.height = 24
-  icon.style.cssText = 'position:absolute;left:7px;top:7px;display:block'
-  icon.draggable = false
-  icon.setAttribute('aria-hidden', 'true')
-  button.appendChild(icon)
+  const button = showLauncher()
   button.hidden = true
-  button.onclick = () => {
-    if (chatFrame) {
-      panel.style.display = 'flex'
-      panel.style.visibility = 'visible'
-      button.hidden = true
-      root.setAttribute('data-state', 'open')
-      frame.focus()
-    } else void chrome.runtime.sendMessage({ type: 'RESTORE_CHAT' }).catch(() => {})
-  }
-  // Drag a button; a short pointer movement remains a normal keyboard/click activation.
-  button.onpointerdown = (event) => {
-    if (event.button !== 0) return
-    const rect = button.getBoundingClientRect()
-    const x = event.clientX, y = event.clientY
-    let moved = false
-    button.setPointerCapture(event.pointerId)
-    const move = (next: PointerEvent) => {
-      if (Math.hypot(next.clientX - x, next.clientY - y) < 5 && !moved) return
-      moved = true
-      button.style.right = 'auto'
-      button.style.bottom = 'auto'
-      button.style.left = `${Math.max(8, Math.min(rect.left + next.clientX - x, innerWidth - rect.width - 8))}px`
-      button.style.top = `${Math.max(8, Math.min(rect.top + next.clientY - y, innerHeight - rect.height - 8))}px`
-    }
-    const up = () => {
-      button.removeEventListener('pointermove', move)
-      button.removeEventListener('pointerup', up)
-      button.removeEventListener('pointercancel', up)
-      if (moved) button.addEventListener('click', (click) => { click.preventDefault(); click.stopImmediatePropagation() }, { once: true, capture: true })
-    }
-    button.addEventListener('pointermove', move)
-    button.addEventListener('pointerup', up)
-    button.addEventListener('pointercancel', up)
-  }
-  shadow.appendChild(button)
 
   const notice = document.createElement('div')
   notice.setAttribute('role', 'alert')
@@ -530,7 +560,10 @@ function prepareForSelection(): void {
 }
 
 function restoreAfterSelection(): void {
-  if (!selectionRestoreState || !chatPanel || !chatRoot || !launcher) return
+  if (!selectionRestoreState || !chatPanel || !chatRoot || !launcher) {
+    if (launcher) launcher.hidden = false
+    return
+  }
   const state = selectionRestoreState
   selectionRestoreState = undefined
   chatPanel.style.visibility = 'visible'
@@ -576,14 +609,18 @@ function removeChat(): void {
   chatRoot = undefined
   chatPanel = undefined
   chatFrame = undefined
-  launcher = undefined
   errorNotice = undefined
   activeConversationId = undefined
+  chatKind = undefined
   closeRequest = undefined
   selectionRestoreState = undefined
   selectionRestoreNotice = undefined
   const w = window as unknown as Record<string, unknown>
   w[CHAT_FLAG] = false
+  const button = showLauncher()
+  button.hidden = false
+  button.setAttribute('aria-label', 'Restore Study Buddy')
+  button.title = 'Study Buddy'
 }
 
 /** Anchor near the selection: prefer the right of it, else to its left, else

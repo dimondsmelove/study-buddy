@@ -144,7 +144,7 @@ function apply(state: ChatState): void {
       void showCapture(state.imageId, state.conversationId).catch(reportError)
       break
     case 'conversation':
-      void openConversation(state.conversationId).catch(reportError)
+      void openConversation(state.conversationId, false).catch(reportError)
       break
     case 'history':
       void showHistory().catch(reportError)
@@ -372,18 +372,29 @@ function releaseImages(): void {
   imageUrls.clear()
 }
 
-async function openConversation(id: string): Promise<void> {
+async function openConversation(id: string, select = true): Promise<void> {
   if (closing) return
   const epoch = ++opening
   pendingConversationId = id
   let value: Conversation
   try {
-    value = await conversationAction<Conversation>({ action: 'select', conversationId: id })
+    // A mirrored view must not select its snapshot back over a newer shared chat.
+    const selected = select
+      ? await conversationAction<Conversation>({ action: 'select', conversationId: id })
+      : await getConversation(id)
+    if (!selected) throw new Error('dialog.missing')
+    value = selected
   } catch (err) {
     if (epoch === opening && pendingConversationId === id) pendingConversationId = undefined
     throw err
   }
   if (epoch !== opening) return
+  if (conversation && conversation.id !== id) {
+    releaseImages()
+    ;(el('ask-input') as HTMLInputElement).value = ''
+    previewKind = undefined
+    setComposerError()
+  }
   conversation = value
   pendingConversationId = undefined
   current = { kind: 'conversation', conversationId: id }
@@ -763,11 +774,12 @@ function setBusy(busy: boolean, cooldownMs = 0): void {
   ;(el('new-chat-btn') as HTMLButtonElement).disabled = busy
   ;(el('ask-input') as HTMLInputElement).disabled = busy
   const askButton = el('ask-btn') as HTMLButtonElement
-  askButton.disabled = (busy || coolingDown) && !inflight
-  const label = t(uiLang, inflight ? 'ask.stop' : coolingDown ? 'dialog.cooldown' : 'ask.button', coolingDown && !inflight ? { seconds: cooldownSeconds } : undefined)
+  const canStop = !!inflight || !!conversation && profileState.generation?.conversationId === conversation.id
+  askButton.disabled = (busy || coolingDown) && !canStop
+  const label = t(uiLang, canStop ? 'ask.stop' : coolingDown ? 'dialog.cooldown' : 'ask.button', coolingDown && !canStop ? { seconds: cooldownSeconds } : undefined)
   askButton.title = label
   askButton.setAttribute('aria-label', label)
-  askButton.innerHTML = inflight
+  askButton.innerHTML = canStop
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>'
     : coolingDown
       ? `<span class="cooldown-countdown">${t(uiLang, 'dialog.cooldownShort', { seconds: cooldownSeconds })}</span>`
@@ -787,7 +799,7 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
   const assistant: Turn = { id: crypto.randomUUID(), role: 'assistant', text: '', kind: source.kind, status: 'streaming', replyTo: source.id, createdAt: Date.now(), locale: uiLang, promptVersion: PROMPTS_VERSION }
   const controller = new AbortController()
   let lost = false
-  const connection = new GenerationConnection(() => { lost = true; controller.abort() })
+  const connection = new GenerationConnection(() => { lost = true; controller.abort() }, () => controller.abort())
   let reply: Msg | undefined
   let acc = ''
   let generatedTitle: string | undefined
@@ -993,6 +1005,10 @@ el('ask-form').addEventListener('submit', (event) => {
     inflight.abort()
     return
   }
+  if (conversation && profileState.generation?.conversationId === conversation.id) {
+    void conversationAction({ action: 'stop', conversationId: conversation.id }).catch(reportError)
+    return
+  }
   const input = el('ask-input') as HTMLInputElement
   const question = input.value
   if (question.trim()) void send(question, 'ask', question, undefined, () => {
@@ -1057,7 +1073,7 @@ async function showHistory(): Promise<void> {
     date.className = 'history-date'
     date.textContent = formatHistoryDate(conversationActivityAt(row))
     open.append(title, date)
-    open.disabled = !!inflight || starting
+    open.disabled = !!inflight || starting || !!profileState.generation
     open.onclick = () => { releaseImages(); void openConversation(row.id).catch(reportError) }
     const remove = document.createElement('button')
     remove.className = 'history-delete'
@@ -1163,9 +1179,12 @@ setInterval(updateStatus, 1000)
 // The parent is the host web page, so the host validates the sender and this
 // frame's extension origin instead of relying on a matching target origin.
 window.addEventListener('message', (e: MessageEvent) => {
-  const data = e.data as { source?: string; state?: ChatState; action?: string; closeId?: string } | null
+  const data = e.data as { source?: string; state?: ChatState; action?: string; closeId?: string; conversationId?: string } | null
   if (e.source !== window.parent || window.parent === window || data?.source !== 'study-buddy-host') return
   if (data.state) apply(data.state)
+  if (data.action === 'conversation-changed' && typeof data.conversationId === 'string') {
+    void openConversation(data.conversationId, false).catch(reportError)
+  }
   if (data.action === 'close' && typeof data.closeId === 'string') {
     const closeId = data.closeId
     const closingConversationId = pendingConversationId ?? conversation?.id

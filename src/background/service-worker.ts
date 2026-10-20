@@ -17,11 +17,19 @@ const CHAT_URL = 'src/chat/chat.html'
 const HISTORY_MENU_ID = 'study-buddy-show-history'
 
 chrome.runtime.onInstalled.addListener(() => {
+  void bootstrapTabs()
   chrome.contextMenus.removeAll(() => {
     if (chrome.runtime.lastError) return
     chrome.contextMenus.create({ id: HISTORY_MENU_ID, title: 'Show history', contexts: ['action'] })
   })
 })
+
+async function bootstrapTabs(): Promise<void> {
+  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] })
+  await Promise.allSettled(tabs.filter(tab => tab.id !== undefined && !restrictedReason(tab.url)).map(tab => injectOverlay(tab.id!)))
+}
+
+chrome.runtime.onStartup.addListener(() => { void bootstrapTabs() })
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId !== HISTORY_MENU_ID || tab?.id === undefined) return
@@ -111,7 +119,8 @@ chrome.runtime.onMessage.addListener((msg: Message, sender, respond) => {
 })
 
 async function restoreOnTab(tabId: number): Promise<void> {
-  const conversation = await restoreDialog(tabId)
+  const conversation = await restoreDialog()
+  if (!conversation) { await startSelection(tabId); return }
   const state: ChatState = { kind: 'conversation', conversationId: conversation.id }
   try { await chrome.tabs.sendMessage(tabId, { type: 'SHOW_CHAT', state }); return } catch { /* inject below */ }
   const tab = await chrome.tabs.get(tabId)
@@ -217,7 +226,7 @@ async function handleCapture(req: CaptureRequest, tabId?: number, documentId?: s
     const cropDataUrl = await cropRegion(fullDataUrl, req)
 
     const imageId = await storeCapture(cropDataUrl, req.rect)
-    const conversation = await captureDialog(imageId, tab.id)
+    const conversation = await captureDialog(imageId)
     await showChatWindow(tab.id, { kind: 'capture', imageId, rect: req.rect, conversationId: conversation.id })
   } catch (err) {
     await showCaptureFailure(tabId, err instanceof Error ? err.message : String(err))

@@ -5,7 +5,7 @@ import { CAPTURE_PREFIX, GENERATION_PORT, type ConversationAction, type StoredCa
 const ready = recoverGeneration().then(() => enforceConversationLimit())
 void ready.catch(() => {}) // command handlers report failure; do not start a request without recovery
 let queue: Promise<unknown> = ready
-let active: { port: chrome.runtime.Port; generation: Generation; text: string; tabId?: number } | undefined
+let active: { port: chrome.runtime.Port; generation: Generation; text: string } | undefined
 
 /** Every transcript mutation shares this writer, including port disconnects. */
 function serialized<T>(run: () => Promise<T>): Promise<T> {
@@ -22,28 +22,31 @@ function ownPage(sender?: chrome.runtime.MessageSender): boolean {
   return sender?.id === chrome.runtime.id && !!sender.url?.startsWith(chrome.runtime.getURL(''))
 }
 
-async function selectedForTab(tabId?: number): Promise<Conversation | undefined> {
-  const key = `dialog.tab.${tabId}`
-  const saved = tabId === undefined ? {} : await chrome.storage.session.get(key)
-  if (typeof saved[key] === 'string') {
-    const selected = await getConversation(saved[key])
-    if (selected) return selected
-  }
-  return undefined
+const ACTIVE_DIALOG_KEY = 'dialog.active'
+
+async function selectedDialog(): Promise<Conversation | undefined> {
+  const saved = await chrome.storage.session.get(ACTIVE_DIALOG_KEY)
+  const id = saved[ACTIVE_DIALOG_KEY]
+  return typeof id === 'string' ? getConversation(id) : undefined
 }
 
-async function remember(id: string, tabId?: number): Promise<void> {
+async function publishDialog(conversationId?: string, excludeTabId?: number): Promise<void> {
+  const tabs = await chrome.tabs.query({})
+  await Promise.allSettled(tabs.filter(tab => tab.id !== undefined && tab.id !== excludeTabId).map(tab =>
+    chrome.tabs.sendMessage(tab.id!, { type: 'DIALOG_CHANGED', conversationId }),
+  ))
+}
+
+async function remember(id: string): Promise<void> {
   await selectConversation(id)
-  if (tabId !== undefined) await chrome.storage.session.set({ [`dialog.tab.${tabId}`]: id })
+  const saved = await chrome.storage.session.get(ACTIVE_DIALOG_KEY)
+  if (saved[ACTIVE_DIALOG_KEY] === id) return
+  await chrome.storage.session.set({ [ACTIVE_DIALOG_KEY]: id })
+  await publishDialog(id)
 }
 
-export function restoreDialog(tabId?: number): Promise<Conversation> {
-  return serialized(async () => {
-    const conversation = await selectedForTab(tabId) ?? await createConversation('Study Buddy')
-    await enforceConversationLimit(conversation.id)
-    await remember(conversation.id, tabId)
-    return conversation
-  })
+export function restoreDialog(): Promise<Conversation | undefined> {
+  return serialized(selectedDialog)
 }
 
 async function saveCapture(conversationId: string, imageId: string): Promise<Conversation> {
@@ -58,36 +61,40 @@ async function saveCapture(conversationId: string, imageId: string): Promise<Con
   return attachCapture(conversationId, { id: imageId, data: blob, createdAt: capture.ts })
 }
 
-export function captureDialog(imageId: string, tabId: number): Promise<Conversation> {
+export function captureDialog(imageId: string): Promise<Conversation> {
   return serialized(async () => {
-    const conversation = await selectedForTab(tabId) ?? await createConversation('Study Buddy')
+    const conversation = await selectedDialog() ?? await createConversation('Study Buddy')
     const updated = await saveCapture(conversation.id, imageId)
     await enforceConversationLimit(conversation.id)
-    await remember(conversation.id, tabId)
+    await remember(conversation.id)
     changed()
     return updated
   })
 }
 
-/** Close only the association and writer owned by this content tab. */
+/** Close the shared chat, including a writer running in another tab. */
 export function closeDialog(conversationId: string, tabId: number): Promise<void> {
   return serialized(async () => {
     const running = active
-    if (running?.tabId === tabId && running.generation.conversationId === conversationId) {
+    if (running?.generation.conversationId === conversationId) {
       active = undefined
       await updateReply(running.generation, running.text, 'cancelled')
       await enforceConversationLimit()
       running.port.disconnect()
       changed()
     }
-    const key = `dialog.tab.${tabId}`
-    const saved = await chrome.storage.session.get(key)
-    if (saved[key] === conversationId) await chrome.storage.session.remove(key)
+    const saved = await chrome.storage.session.get(ACTIVE_DIALOG_KEY)
+    if (saved[ACTIVE_DIALOG_KEY] === conversationId) {
+      await chrome.storage.session.remove(ACTIVE_DIALOG_KEY)
+      await publishDialog(undefined, tabId)
+    }
+    changed()
   })
 }
 
 async function action(message: ConversationAction, tabId?: number): Promise<Conversation | undefined> {
   if (message.action === 'create') {
+    if (active) throw new Error('dialog.busy')
     const created = await createConversation(message.title.slice(0, 80))
     await enforceConversationLimit(created.id)
     return created
@@ -101,12 +108,19 @@ async function action(message: ConversationAction, tabId?: number): Promise<Conv
   if (message.action === 'delete') {
     if (active?.generation.conversationId === conversation.id) throw new Error('dialog.busy')
     await deleteConversation(conversation.id)
-    const session = await chrome.storage.session.get(null)
-    const staleBindings = Object.entries(session).filter(([key, value]) => key.startsWith('dialog.tab.') && value === conversation.id).map(([key]) => key)
-    if (staleBindings.length) await chrome.storage.session.remove(staleBindings)
+    const selected = await selectedDialog()
+    if (!selected || selected.id === conversation.id) {
+      await chrome.storage.session.remove(ACTIVE_DIALOG_KEY)
+      await publishDialog(undefined, tabId)
+    }
     return undefined
   }
-  await remember(conversation.id, tabId)
+  if (message.action === 'stop') {
+    if (active?.generation.conversationId === conversation.id) active.port.postMessage({ action: 'stop' })
+    return conversation
+  }
+  if (active && active.generation.conversationId !== conversation.id) throw new Error('dialog.busy')
+  await remember(conversation.id)
   return message.action === 'attach' ? saveCapture(conversation.id, message.imageId) : conversation
 }
 
@@ -159,8 +173,8 @@ export function installConversationCoordinator(): void {
           // Prune before establishing the generation lease so failure cannot strand it.
           await enforceConversationLimit(conversation.id)
           const generation = await startGeneration(conversation.id, user, assistant)
-          active = { port, generation, text: '', tabId: port.sender?.tab?.id }
-          await remember(conversation.id, port.sender?.tab?.id)
+          active = { port, generation, text: '' }
+          await remember(conversation.id)
           changed()
           return { generation, conversation: await getConversation(conversation.id) }
         }

@@ -99,18 +99,19 @@ real-provider check does not establish accuracy on arbitrary learning material.
 - [ ] Store category, language, and privacy-policy URL
 - [ ] Privacy policy published (see `store/privacy.md`); paste it into the CWS privacy tab
 - [ ] Justify each permission in the CWS form (`activeTab`, `scripting`, `storage`, `contextMenus`, `clipboardWrite`,
-  gateway host access and optional site access)
+  gateway host access and all-sites launcher access)
 
 ## Permission justifications (for the CWS form)
 
 - `activeTab` — capture the visible tab after the user asks for a selection, or
   show local History on the tab after an explicit toolbar context-menu action.
 - `contextMenus` — Show history in the toolbar icon’s right-click menu only.
-- `scripting` — inject the selection overlay or History host on demand (no declared content script).
+- `scripting` — initialize already-open web tabs and support explicit selection fallback; the launcher is also a declared content script.
 - `storage` — keep language/panel settings and anonymous access state locally, and transient crops in session;
   saved transcripts and images use extension-origin IndexedDB.
-- optional `host_permissions <all_urls>` — requested per site only when a capture
-  needs a tab the user didn't invoke on; the screenshot stays gated per origin.
+- `host_permissions <all_urls>` — make the floating launcher available across
+  web pages and capture the intended active page on explicit user selection.
+  No model request is started by adding the launcher.
 - `clipboardWrite` — copy an answer after an explicit Copy action.
 - gateway host access — connect to the configured backend; no provider key is sent to the extension.
 - `commands` — the `Ctrl+Shift+Y`/`Cmd+Shift+Y` shortcut to start a selection.

@@ -209,7 +209,8 @@ try {
   const page = await ctx.newPage()
   await page.goto(url)
   await page.bringToFront()
-  check(await page.locator('[data-study-buddy]').count() === 0, 'fresh page has no Study Buddy host or selection overlay')
+  await page.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
+  check(await page.locator('[data-study-buddy="launcher"]').count() === 1 && page.frames().length === 1, 'fresh page automatically has one lightweight launcher without a chat iframe')
 
   const chatOrigin = (await sw.evaluate(() => chrome.runtime.getURL(''))).replace(/\/$/, '')
   await triggerAction(page)
@@ -1643,6 +1644,10 @@ try {
   await hint.close()
   await checked.close()
 
+  // Independent fixture scenarios may delete the globally selected chat.
+  // Re-enter the native lifecycle with a fresh saved image conversation.
+  const nativeFixture = await openCapture()
+  await nativeFixture.close()
   await page.bringToFront()
   const hostCdp = await ctx.newCDPSession(page)
   const hostCdps = new Map([[page, hostCdp]])
@@ -1684,6 +1689,7 @@ try {
   }
   const findHostButton = (text) => findHostButtonOn(page, text)
   const clickHostButton = (text) => clickHostButtonOn(page, text)
+  await clickHostButton('Restore Study Buddy')
   let embedded = await chatFrameOn(page)
   await embedded.waitForSelector('#view-capture:not([hidden])')
   const embeddedElement = await embedded.frameElement()
@@ -1708,7 +1714,7 @@ try {
   const priorAttachmentId = nativeState.conversations.find((conversation) => conversation.id === nativeId).activeAttachmentId
   const duplicate = await ctx.newPage()
   await duplicate.goto(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${nativeId}`)
-  await duplicate.waitForFunction(() => document.getElementById('ask-btn')?.disabled)
+  await duplicate.waitForFunction(() => document.getElementById('ask-btn')?.getAttribute('aria-label') === 'Stop')
   check(await duplicate.locator('[data-preset="hint"]').isDisabled(), 'duplicate window observes the active writer and cannot start another answer')
   await page.bringToFront()
   await clickHostButton('−')
@@ -1767,10 +1773,10 @@ try {
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
   const afterClose = await readSaved(duplicate)
   const savedClose = afterClose.conversations.find(c => c.id === nativeId).turns.at(-1)
-  const closedBinding = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${pageTabId}`)
+  const closedBinding = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   check(savedClose.status === 'cancelled' && savedClose.text.startsWith('Hello') && !afterClose.state.generation &&
-    await page.locator('[data-study-buddy]').count() === 0 && closedBinding === undefined,
-  'Close commits the partial reply, removes panel and launcher, and releases this tab binding')
+    await page.locator('[data-study-buddy="launcher"]').count() === 1 && closedBinding === undefined,
+  'Close commits the partial reply, removes the panel, keeps the launcher and clears the shared chat')
 
   await triggerAction(page)
   await page.waitForSelector('[data-study-buddy="overlay"]')
@@ -1782,7 +1788,7 @@ try {
   embedded = await chatFrameOn(page)
   await embedded.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
   const afterFreshCapture = await readSaved(embedded)
-  const nextConversationId = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${pageTabId}`)
+  const nextConversationId = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   const oldConversation = afterFreshCapture.conversations.find(c => c.id === nativeId)
   const nextConversation = afterFreshCapture.conversations.find(c => c.id === nextConversationId)
   const oldImageStillSaved = await embedded.evaluate(async (id) => {
@@ -1809,7 +1815,7 @@ try {
   await oldHistoryRow.click()
   await embedded.waitForSelector('#view-capture:not([hidden])')
   const tabBinding = async () => pageTabId === undefined ? undefined :
-    sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${pageTabId}`)
+    sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   const selectedClosedId = await tabBinding()
   check(selectedClosedId === nativeId, `History opens the closed saved conversation (${oldConversation.id})`)
   await embedded.click('#history-btn')
@@ -1818,7 +1824,7 @@ try {
   await nextHistoryRow.waitFor()
   await nextHistoryRow.click()
   await embedded.waitForSelector('#view-capture:not([hidden])')
-  check(await tabBinding() === nextConversationId, 'History also reopens the newly selected conversation by its tab binding')
+  check(await tabBinding() === nextConversationId, 'History also reopens the newly selected conversation as the shared active chat')
   const nextAttachmentId = nextConversation?.activeAttachmentId
   const freshPeer = await ctx.newPage()
   await freshPeer.goto(`${chatOrigin}/src/chat/chat.html?kind=conversation&conversation=${nextConversationId}`)
@@ -1854,15 +1860,16 @@ try {
   const dismissTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, dismissUrl)
   if (dismissTabId === undefined) throw new Error('Could not find the initial error fixture tab.')
   const beforeDismissError = await readSaved(duplicate)
+  const activeBeforeDismiss = await sw.evaluate(async () => (await chrome.storage.session.get('dialog.active'))['dialog.active'])
   await sw.evaluate(async (tabId) => new Promise((resolve) => chrome.tabs.sendMessage(tabId,
     { type: 'SHOW_CHAT', state: { kind: 'error', message: 'Dismiss fixture' } }, () => resolve())), dismissTabId)
   await dismissPage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
   await clickHostButtonOn(dismissPage, '✕')
   await dismissPage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
   const dismissBinding = dismissTabId === undefined ? undefined :
-    await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${dismissTabId}`)
+    await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   const afterDismissError = await readSaved(duplicate)
-  check(dismissBinding === undefined &&
+  check(dismissBinding === activeBeforeDismiss &&
     beforeDismissError.conversations.map(c => c.id).join(',') === afterDismissError.conversations.map(c => c.id).join(','),
   'Close dismisses an initial error host without creating or deleting a conversation')
   await dismissPage.close()
@@ -1888,7 +1895,7 @@ try {
   await earlyClosePage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
   const earlyCloseTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, earlyCloseUrl)
   if (earlyCloseTabId === undefined) throw new Error('Could not find the early-close fixture tab.')
-  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.active`]: conversationId }),
     { tabId: earlyCloseTabId, conversationId: nativeId })
   await showChatOnTab(earlyCloseTabId, { kind: 'conversation', conversationId: nativeId })
   await earlyClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
@@ -1897,7 +1904,7 @@ try {
   await clickHostButtonOn(earlyClosePage, '✕')
   await earlyClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
   await earlyClosePage.waitForTimeout(900)
-  const earlyCloseBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${earlyCloseTabId}`)
+  const earlyCloseBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   check(earlyCloseBinding === undefined, 'Close during delayed chat boot prevents initialization from restoring the released tab binding')
   await triggerAction(earlyClosePage)
   await earlyClosePage.waitForSelector('[data-study-buddy="overlay"]')
@@ -1908,7 +1915,7 @@ try {
   await earlyClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
   const earlyCaptureFrame = await chatFrameOn(earlyClosePage)
   await earlyCaptureFrame.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
-  const earlyCaptureId = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${earlyCloseTabId}`)
+  const earlyCaptureId = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   check(typeof earlyCaptureId === 'string' && earlyCaptureId !== nativeId,
     'the next toolbar capture after Close during boot creates a fresh conversation')
   await clickHostButtonOn(earlyClosePage, '✕')
@@ -1924,7 +1931,7 @@ try {
   await boundDismissPage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
   const boundDismissTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, boundDismissUrl)
   if (boundDismissTabId === undefined) throw new Error('Could not find the existing-dialog fixture tab.')
-  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.active`]: conversationId }),
     { tabId: boundDismissTabId, conversationId: nativeId })
   await showChatOnTab(boundDismissTabId, { kind: 'conversation', conversationId: nativeId })
   await boundDismissPage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
@@ -1963,13 +1970,13 @@ try {
       await new Promise(resolve => setTimeout(resolve, 50))
     }
     return undefined
-  }, { key: `dialog.tab.${boundDismissTabId}`, expected: nextConversationId })
+  }, { key: `dialog.active`, expected: nextConversationId })
   if (selectedHistoryBinding !== nextConversationId) throw new Error('History did not select the other saved conversation for its tab.')
   await showChatOnTab(boundDismissTabId, { kind: 'error', message: 'Dismiss bound fixture' })
   await boundDismissFrame.waitForSelector('#view-error:not([hidden])')
   await clickHostButtonOn(boundDismissPage, '✕')
   await boundDismissPage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
-  const boundDismissBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${boundDismissTabId}`)
+  const boundDismissBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   const afterBoundDismiss = await readSaved(duplicate)
   check(boundDismissBinding === undefined && afterBoundDismiss.conversations.some(conversation => conversation.id === nextConversationId),
     'History selection updates the host ID; SHOW_CHAT error then Close removes the host and clears that dialog binding')
@@ -1984,7 +1991,7 @@ try {
   await newChatClosePage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
   const newChatCloseTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, newChatCloseUrl)
   if (newChatCloseTabId === undefined) throw new Error('Could not find the New chat fixture tab.')
-  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.active`]: conversationId }),
     { tabId: newChatCloseTabId, conversationId: nativeId })
   await showChatOnTab(newChatCloseTabId, { kind: 'conversation', conversationId: nativeId })
   await newChatClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
@@ -2010,11 +2017,11 @@ try {
   await newChatCloseFrame.click('#new-chat-btn')
   await newChatCloseFrame.waitForFunction(() => !!sessionStorage.getItem('__studyBuddySelectMutated'))
   const newChatBinding = await newChatCloseFrame.evaluate(() => sessionStorage.getItem('__studyBuddySelectMutated'))
-  const selectedBeforeClose = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${newChatCloseTabId}`)
+  const selectedBeforeClose = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   if (!newChatBinding || selectedBeforeClose !== newChatBinding) throw new Error('New chat selection did not reach its tab binding before the delayed reply.')
   await clickHostButtonOn(newChatClosePage, '✕')
   await newChatClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
-  const newChatBindingAfterClose = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${newChatCloseTabId}`)
+  const newChatBindingAfterClose = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   const afterNewChatClose = await readSaved(duplicate)
   check(newChatBinding !== nativeId && newChatBindingAfterClose === undefined &&
     afterNewChatClose.conversations.some(conversation => conversation.id === newChatBinding),
@@ -2030,7 +2037,7 @@ try {
   await createClosePage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
   const createCloseTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, createCloseUrl)
   if (createCloseTabId === undefined) throw new Error('Could not find the delayed-create fixture tab.')
-  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.active`]: conversationId }),
     { tabId: createCloseTabId, conversationId: nativeId })
   await showChatOnTab(createCloseTabId, { kind: 'conversation', conversationId: nativeId })
   await createClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
@@ -2056,12 +2063,12 @@ try {
   await createCloseFrame.click('#new-chat-btn')
   await createCloseFrame.waitForFunction(() => !!sessionStorage.getItem('__studyBuddyCreateMutated'))
   const createdBeforeClose = await createCloseFrame.evaluate(() => sessionStorage.getItem('__studyBuddyCreateMutated'))
-  const bindingDuringCreateReply = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${createCloseTabId}`)
+  const bindingDuringCreateReply = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   if (bindingDuringCreateReply !== nativeId) throw new Error('Create changed the tab binding before the delayed client reply.')
   await clickHostButtonOn(createClosePage, '✕')
   await createClosePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
   await createClosePage.waitForTimeout(800)
-  const afterCreateCloseBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${createCloseTabId}`)
+  const afterCreateCloseBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   const afterDelayedCreate = await readSaved(duplicate)
   check(afterCreateCloseBinding === undefined && afterDelayedCreate.conversations.some(conversation =>
     conversation.id === createdBeforeClose && !beforeDelayedCreate.conversations.some(saved => saved.id === conversation.id)),
@@ -2077,7 +2084,7 @@ try {
   await closeRacePage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
   const closeRaceTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({})).find(tab => tab.url === targetUrl)?.id, closeRaceUrl)
   if (closeRaceTabId === undefined) throw new Error('Could not find the late-close fixture tab.')
-  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.tab.${tabId}`]: conversationId }),
+  await sw.evaluate(async ({ tabId, conversationId }) => chrome.storage.session.set({ [`dialog.active`]: conversationId }),
     { tabId: closeRaceTabId, conversationId: nativeId })
   await showChatOnTab(closeRaceTabId, { kind: 'conversation', conversationId: nativeId })
   await closeRacePage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
@@ -2150,14 +2157,14 @@ try {
   })
   await showChatOnTab(closeRaceTabId, { kind: 'conversation', conversationId: newerConversationId })
   await closeRaceFrame.waitForFunction(() => document.getElementById('conversation-title')?.textContent === 'Late close target')
-  const newerBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${closeRaceTabId}`)
+  const newerBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   if (newerBinding !== newerConversationId) throw new Error('The newer SHOW_CHAT did not select its conversation before Close.')
   await closeRacePage.waitForFunction(() => sessionStorage.getItem('__studyBuddyCloseResponsePending') === 'yes')
   await closeRacePage.evaluate(conversationId => window.postMessage({ __studyBuddyReleaseCloseResponse: true, conversationId }, '*'), nativeId)
   await closeRacePage.waitForFunction(id => sessionStorage.getItem('__studyBuddyReleasedCloseConversation') === id, nativeId)
   check(await closeRacePage.locator('[data-study-buddy="chat"]').count() === 1 &&
     await sw.evaluate(async ({ key, id }) => (await chrome.storage.session.get(key))[key] === id,
-      { key: `dialog.tab.${closeRaceTabId}`, id: newerConversationId }),
+      { key: `dialog.active`, id: newerConversationId }),
     'a late unlink response for A preserves the newer SHOW_CHAT B and its binding')
   await clickHostButtonOn(closeRacePage, '✕')
   await closeRacePage.waitForFunction(id => JSON.parse(sessionStorage.getItem('__studyBuddyPendingCloseConversations') || '[]').includes(id), newerConversationId)
@@ -2174,7 +2181,7 @@ try {
     `a stale closed(A) cannot borrow the newer X(B) request or start another unlink (before=${callsBeforeStaleReplay}, after=${closeRaceCalls}, hosts=${closeRaceHostCount}, stale=${staleClosedId}, closes=${closeRaceHostIds}, unlinks=${closeRaceCallIds})`)
   await closeRacePage.evaluate(conversationId => window.postMessage({ __studyBuddyReleaseCloseResponse: true, conversationId }, '*'), newerConversationId)
   await closeRacePage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
-  const closeRaceBindingAfter = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${closeRaceTabId}`)
+  const closeRaceBindingAfter = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   check(closeRaceBindingAfter === undefined, 'the newer conversation remains closable after the stale response is discarded')
   await closeRacePage.close()
 
@@ -2217,10 +2224,11 @@ try {
   } finally { await sw.evaluate(() => { Date.now = globalThis.fixtureOriginalNow; delete globalThis.fixtureNow; delete globalThis.fixtureOriginalNow }) }
   check(JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8')).incognito === 'not_allowed', 'incognito is explicitly disabled')
   const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
-  check(manifest.host_permissions?.length === 1 && manifest.host_permissions[0] === `${gatewayUrl}/*` && !manifest.permissions.includes('<all_urls>'), 'build grants only the configured gateway host, with no persistent all-sites grant')
+  check(manifest.host_permissions.includes('<all_urls>') && manifest.host_permissions.includes(`${gatewayUrl}/*`) && manifest.content_scripts.some(script => script.matches.includes('https://*/*') && script.matches.includes('http://*/*')), 'build declares automatic web-page injection and persistent host access without a runtime permission prompt')
   check(manifest.permissions.includes('clipboardWrite'), 'manifest grants extension-scoped clipboard write for the user-triggered Copy action')
   await racePeer.close()
 
+  await duplicate.evaluate(conversationId => chrome.runtime.sendMessage({ type: 'CONVERSATION', action: 'select', conversationId }), nextConversationId)
   await page.bringToFront()
   await duplicate.evaluate(() => chrome.runtime.sendMessage({ type: 'START_SELECTION' }))
   await page.waitForSelector('[data-study-buddy="overlay"]')
@@ -2233,8 +2241,8 @@ try {
   await recaptured.waitForFunction(() => document.querySelectorAll('.turn-image').item(document.querySelectorAll('.turn-image').length - 1)?.naturalWidth > 0)
   const recaptureDb = await readSaved(recaptured)
   const recaptureDialog = recaptureDb.conversations.find(c => c.id === nextConversationId)
-  const pageBinding = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${pageTabId}`)
-  check(pageBinding === nextConversationId && recaptureDialog.activeAttachmentId !== nextAttachmentId && recaptureDialog.turns.some(turn => turn.kind === 'capture' && turn.attachmentId === nextAttachmentId) && recaptureDialog.turns.some(turn => turn.kind === 'capture' && turn.attachmentId === recaptureDialog.activeAttachmentId), 'new capture continues the tab-selected dialog while keeping old turn attachment links')
+  const pageBinding = pageTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
+  check(pageBinding === nextConversationId && recaptureDialog.activeAttachmentId !== nextAttachmentId && recaptureDialog.turns.some(turn => turn.kind === 'capture' && turn.attachmentId === nextAttachmentId) && recaptureDialog.turns.some(turn => turn.kind === 'capture' && turn.attachmentId === recaptureDialog.activeAttachmentId), 'new capture continues the shared active dialog while keeping old turn attachment links')
   await resetCooldown(recaptured)
   const oldCount = await recaptured.locator('.msg.assistant').count()
   await recaptured.fill('#ask-input', 'Use the newly selected task')
@@ -2270,68 +2278,83 @@ try {
   await quickPage.waitForTimeout(1100)
   const rapidCloseState = await readSaved(freshPeer)
   const quickTabId = await sw.evaluate(async (targetUrl) => (await chrome.tabs.query({ url: targetUrl }))[0]?.id, quickUrl)
-  const quickBinding = quickTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${quickTabId}`)
+  const quickBinding = quickTabId === undefined ? undefined : await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.active`)
   check(requestCount === beforeRapidClose && !rapidCloseState.state.generation &&
     !rapidCloseState.conversations.some(c => c.turns.some(turn => turn.text === 'This start must be cancelled by Close')) && quickBinding === undefined,
-  'Close during settings load prevents a queued Solve from starting and releases only that tab')
+  'Close during settings load prevents a queued Solve from starting and clears the shared active chat')
   await quickPage.close()
 
-  // Two tabs can deliberately view the same conversation. Closing the older
-  // host must release only its binding and leave the other tab's writer alive.
+  // Cross-origin web pages get a launcher without toolbar invocation or a
+  // runtime permission prompt. Every view uses the same selected conversation.
+  await duplicate.evaluate(conversationId => chrome.runtime.sendMessage({ type: 'CONVERSATION', action: 'select', conversationId }), nextConversationId)
+  await page.bringToFront()
+  await clickHostButton('Restore Study Buddy')
+  let sharedFrame = await chatFrameOn(page)
   const otherPage = await ctx.newPage()
-  const otherUrl = `${origin}/other`
+  const otherUrl = `${origin.replace('127.0.0.1', 'localhost')}/other`
   await otherPage.goto(otherUrl)
-  await triggerAction(otherPage)
-  await otherPage.waitForSelector('[data-study-buddy="overlay"]')
-  await otherPage.keyboard.press('Escape')
-  await otherPage.waitForSelector('[data-study-buddy="overlay"]', { state: 'detached' })
-  const otherTabId = await sw.evaluate(async ({ targetUrl, conversationId }) => {
-    const tab = (await chrome.tabs.query({ url: targetUrl }))[0]
-    await new Promise((resolve) => chrome.tabs.sendMessage(tab.id, {
-      type: 'SHOW_CHAT', state: { kind: 'conversation', conversationId },
-    }, () => resolve()))
-    return tab.id
-  }, { targetUrl: otherUrl, conversationId: nextConversationId })
-  await otherPage.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
-  const otherFrame = await chatFrameOn(otherPage)
+  await otherPage.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
+  check(otherPage.frames().length === 1 && await otherPage.locator('[data-study-buddy="launcher"]').count() === 1,
+    'a different origin gets exactly one launcher automatically, without creating an iframe or a chat')
+  await clickHostButtonOn(otherPage, 'Restore Study Buddy')
+  let otherFrame = await chatFrameOn(otherPage)
   await otherFrame.waitForSelector('#view-capture:not([hidden])')
-  const otherBinding = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${otherTabId}`)
-  check(otherBinding === nextConversationId, 'second tab can select the same saved conversation independently')
+  check(new URL(otherFrame.url()).searchParams.get('conversation') === nextConversationId,
+    'clicking the launcher on a different origin restores the same shared chat')
   responseMode = 'slow'
+  await resetCooldown(sharedFrame)
+  const beforeSharedStart = requestCount
+  await page.bringToFront()
+  await sharedFrame.click('[data-preset="hint"]')
+  await otherFrame.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)?.textContent?.includes('Hello'))
+  await otherFrame.waitForFunction(() => document.getElementById('ask-btn')?.getAttribute('aria-label') === 'Stop')
+  const mirroredBefore = (await otherFrame.locator('.msg.assistant .msg-body').last().textContent()).length
+  await clickHostButton('−')
+  await otherPage.bringToFront()
+  await otherFrame.waitForFunction(length => [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)?.textContent?.length > length, mirroredBefore)
+  check(page.frames().includes(sharedFrame) && requestCount === beforeSharedStart + 1,
+    'switching tabs and minimizing preserves one writer while the other tab renders its streaming reply')
+  await otherFrame.click('#ask-btn')
+  await otherFrame.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Stopped'))
+  const sharedStopped = await readSaved(otherFrame)
+  check(!sharedStopped.state.generation && sharedStopped.conversations.find(c => c.id === nextConversationId).turns.at(-1).status === 'cancelled',
+    'Stop in a mirrored tab aborts the original writer and saves its final partial reply')
+  await otherPage.reload()
+  await otherPage.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
+  await clickHostButtonOn(otherPage, 'Restore Study Buddy')
+  otherFrame = await chatFrameOn(otherPage)
+  await otherFrame.waitForSelector('#view-capture:not([hidden])')
+  check(new URL(otherFrame.url()).searchParams.get('conversation') === nextConversationId && requestCount === beforeSharedStart + 1,
+    'reload recreates the launcher and reopens the shared transcript without a model request')
+  await otherFrame.click('#new-chat-btn')
+  await otherFrame.waitForFunction(() => document.querySelectorAll('.msg').length === 0)
+  const sharedNewId = await sw.evaluate(async () => (await chrome.storage.session.get('dialog.active'))['dialog.active'])
+  await sharedFrame.waitForFunction(() => document.querySelectorAll('.msg').length === 0, undefined, { polling: 100 })
+  check(sharedNewId !== nextConversationId,
+    'New chat changes the shared selection and all existing panels observe the empty conversation')
+  await otherFrame.click('#history-btn')
+  await otherFrame.locator(`.history-open[data-conversation="${nextConversationId}"]`).click()
+  await otherFrame.waitForSelector('#view-capture:not([hidden])')
+  await sharedFrame.waitForFunction(() => document.querySelectorAll('.turn-image').length > 0, undefined, { polling: 100 })
   await resetCooldown(otherFrame)
   await otherFrame.click('[data-preset="hint"]')
-  let otherState
-  for (let attempt = 0; attempt < 40; attempt++) {
-    otherState = await readSaved(otherFrame)
-    if (otherState.state.generation?.conversationId === nextConversationId) break
-    await otherPage.waitForTimeout(50)
-  }
-  const activeOtherTurn = otherState?.state.generation?.turnId
-  if (!activeOtherTurn) throw new Error(`Second-tab stream did not start: ${JSON.stringify(otherState?.state)}`)
-  const activeOtherSelector = `[data-turn="${activeOtherTurn}"] .msg-body`
-  await otherFrame.waitForFunction((selector) => document.querySelector(selector)?.textContent?.includes('Hello'), activeOtherSelector)
-  const otherPartial = await otherFrame.locator(activeOtherSelector).textContent()
+  await sharedFrame.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Answering'), undefined, { polling: 100 })
   await page.bringToFront()
+  await clickHostButton('Restore Study Buddy')
   await clickHostButton('✕')
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
-  const bindingsAfterFirstClose = await sw.evaluate(async (keys) => chrome.storage.session.get(keys), [
-    `dialog.tab.${pageTabId}`, `dialog.tab.${otherTabId}`,
-  ])
-  await otherPage.waitForTimeout(400)
-  const continuedPartial = await otherFrame.locator(activeOtherSelector).textContent()
-  const afterFirstClose = await readSaved(otherFrame)
-  check(bindingsAfterFirstClose[`dialog.tab.${pageTabId}`] === undefined &&
-    bindingsAfterFirstClose[`dialog.tab.${otherTabId}`] === nextConversationId &&
-    afterFirstClose.state.generation?.conversationId === nextConversationId && continuedPartial.length > otherPartial.length,
-  `closing one tab releases its association without cancelling the other tab's writer (main=${pageTabId}, owner=${otherTabId}, partial=${otherPartial.length}->${continuedPartial.length})`)
-  await clickHostButtonOn(otherPage, '✕')
   await otherPage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
-  await freshPeer.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Stopped'))
-  const stoppedOther = await readSaved(freshPeer)
-  const otherBindingAfterClose = await sw.evaluate(async (key) => (await chrome.storage.session.get(key))[key], `dialog.tab.${otherTabId}`)
-  check(stoppedOther.conversations.find(c => c.id === nextConversationId).turns.at(-1).status === 'cancelled' &&
-    !stoppedOther.state.generation && otherBindingAfterClose === undefined,
-  'the owning tab can still cancel and close its live partial reply')
+  const afterSharedClose = await readSaved(freshPeer)
+  const activeAfterClose = await sw.evaluate(async () => (await chrome.storage.session.get('dialog.active'))['dialog.active'])
+  check(!activeAfterClose && !afterSharedClose.state.generation &&
+    afterSharedClose.conversations.find(c => c.id === nextConversationId).turns.at(-1).status === 'cancelled' &&
+    await page.locator('[data-study-buddy="launcher"]').count() === 1 && await otherPage.locator('[data-study-buddy="launcher"]').count() === 1,
+    'Close from a mirrored tab cancels the writer, dismisses all panels and keeps launchers available')
+  await clickHostButton('Restore Study Buddy')
+  await page.waitForSelector('[data-study-buddy="overlay"]')
+  await page.keyboard.press('Escape')
+  check(await hostButtonBoxOn(page, 'Restore Study Buddy') !== undefined,
+    'after Close the launcher starts a fresh selection; Escape restores the idle launcher')
   responseMode = 'normal'
   await otherPage.close()
   await duplicate.close()

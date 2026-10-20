@@ -75,8 +75,9 @@ Already completed provider processing can still be billed. The backend does
 not automatically restart an ambiguous or partially streamed operation.
 
 No other page content is intentionally collected. The extension does not
-scan pages in the background; its selection overlay and chat host are
-injected on explicit capture or History actions.
+scan page text in the background. A lightweight launcher is added automatically
+on HTTP/HTTPS pages. The selection overlay and chat iframe appear on explicit
+user actions; capture and model requests do not run automatically.
 
 ## Backend operational records
 
@@ -126,12 +127,14 @@ hosting and error-reporting logs consistently with these disclosures.
 - **activeTab** — capture the visible tab on an explicit selection action, or
   show saved History after an explicit toolbar action.
 - **contextMenus** — Show history in the toolbar icon's context menu.
-- **scripting** — inject the selection overlay/chat host on demand.
+- **scripting** — initialize already-open web pages and support explicit selection when automatic injection is unavailable.
 - **storage** — local settings/access state and transient session captures;
   saved conversations/images use IndexedDB.
 - **clipboardWrite** — copy an answer after an explicit Copy action.
-- **optional site access** — requested per site when needed for capture; the
-  screenshot remains gated to the intended origin.
+- **site access (`<all_urls>`)** — make the launcher available across web pages
+  and capture the intended active page after an explicit selection action.
+  The launcher is declared for HTTP/HTTPS pages; file access remains subject to
+  the browser's separate setting.
 - **keyboard command** — start selection with Ctrl+Shift+Y (Command+Shift+Y
   on macOS).
 

@@ -13,8 +13,9 @@ export class GenerationConnection {
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (err: Error) => void }>()
   private heartbeat: ReturnType<typeof setInterval>
 
-  constructor(onLost: () => void) {
+  constructor(onLost: () => void, onStop: () => void) {
     this.port.onMessage.addListener((message) => {
+      if (message.action === 'stop') { onStop(); return }
       const pending = this.pending.get(message.seq)
       if (!pending) return
       this.pending.delete(message.seq)

@@ -6,8 +6,7 @@ const gatewayHost = gatewayHostPermission(process.env.STUDY_BUDDY_GATEWAY_URL ??
 // Study Buddy — Manifest V3.
 // Design inherited from OCR Buddy (MIT), stripped of the local-OCR machinery:
 //  - Service worker is COORDINATOR ONLY. No DOM, no model, no inference.
-//  - `activeTab` (not <all_urls>) — the overlay is injected only on user action,
-//    so there is no "read and change all your data" install warning.
+//  - The launcher runs on web pages; capture still starts only on user action.
 //  - No side panel: the chat window is an extension-page iframe embedded in the
 //    page near the selection (see src/content/overlay.ts).
 export default defineManifest({
@@ -35,23 +34,16 @@ export default defineManifest({
     type: 'module',
   },
 
-  // No declared content script: a `matches: <all_urls>` declaration triggers the
-  // "read and change all your data on all websites" install warning. The overlay
-  // is injected on demand by the service worker (chrome.scripting + activeTab /
-  // granted host), built as a fixed-name classic script entry in vite.config.ts.
-  host_permissions: [gatewayHost],
+  content_scripts: [{ matches: ['http://*/*', 'https://*/*'], js: ['src/content/overlay.ts'] }],
+  host_permissions: ['<all_urls>', gatewayHost],
 
   permissions: [
-    'activeTab', // captureVisibleTab on the tab where invoked
-    'scripting', // inject the selection overlay on demand
+    'activeTab', // Toolbar/shortcut invocation also works with site access withheld
+    'scripting', // Bootstrap already-open tabs and explicit selection fallback
     'storage', // chrome.storage.session (captures) + .local (settings)
     'contextMenus', // Show saved conversations from the toolbar icon's context menu
     'clipboardWrite', // Copy an answer from the extension iframe on explicit user action
   ],
-
-  // Not requested at install. Asked at runtime, per-site, when a capture needs
-  // a tab the user didn't invoke on. The screenshot stays gated per origin.
-  optional_host_permissions: ['<all_urls>'],
 
   web_accessible_resources: [
     {

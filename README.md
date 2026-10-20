@@ -6,7 +6,10 @@ Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
 selection → pick a task or ask your own question. The answer streams in beside
 the page in the answer language selected in Settings. The toolbar icon also starts
 region selection; chat
-opens after a successful crop and continues the conversation selected for that tab.
+opens after a successful crop and continues the shared active conversation across tabs.
+A floating Study Buddy icon is available on ordinary web pages. It restores the
+shared active chat, or starts region selection when no chat is active. Switching
+tabs keeps an existing answer running; Stop works from any view of that chat.
 Right-click the toolbar icon → **Show history** to return to a saved chat without
 selecting another region. Opening History creates no chat and makes no model request.
 Inside a chat, **New chat** opens an empty conversation with text input;
@@ -52,8 +55,10 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
 - The service worker only coordinates (MV3 workers are ephemeral and have no DOM).
 - Capture uses `chrome.tabs.captureVisibleTab` — clean composited pixels, taint-free
   even over cross-origin `<video>` (e.g. code shown in a paused video).
-- No declared content script: the overlay is injected on demand (`activeTab`),
-  so there is no "read and change all your data" install warning.
+- A declared content script adds a lightweight launcher to HTTP/HTTPS pages.
+  Persistent site access is declared at installation; there is no separate
+  in-app all-sites permission prompt. Capture and model requests still require
+  explicit user actions. Already-open web tabs are bootstrapped on install/update.
 - The chat window lives in a **closed shadow root**, so page styles can't leak in
   and ours can't leak out.
 - Language/panel settings and the anonymous backend access session live in
@@ -71,9 +76,14 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   same row and an in-app confirmation dialog. Shared images remain while any
   retained conversation references them. Copy unsaved text before leaving.
 - New-topic title generation from model responses is currently disabled. Existing saved titles and transcript content remain unchanged.
-- Minimize keeps the iframe/stream alive. Close saves and cancels; navigation
-  or writer loss retains the latest committed partial as interrupted, without
-  automatic paid resume. One local generation is admitted across windows.
+- The active conversation is shared across tabs for the current browser session.
+  New chat and History selection update existing panels. Minimize keeps the
+  iframe/stream alive; switching tabs does not move or duplicate its request.
+  Close saves and cancels the shared chat, dismisses all its panels and keeps
+  the launchers available. A new capture after Close starts a fresh chat.
+  Navigation/reload/closure of the writer's page retains the latest committed
+  partial as interrupted, without automatic paid resume. One local generation
+  is admitted across windows.
 - Context selection estimates one text token per four UTF-8 bytes under a nominal
   200,000 estimated input-token budget with 20,000 held in reserve. It includes
   selected transcript text and a 1,024-token estimate per image; task templates are currently empty.

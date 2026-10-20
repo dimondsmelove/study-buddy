@@ -20,9 +20,8 @@ export default defineConfig({
         // The chat window: an extension page embedded as an iframe by the
         // overlay (or opened as a detached popup window by the SW fallback).
         chat: 'src/chat/chat.html',
-        // Selection overlay + chat-window host: NOT a declared content script
-        // (that would cost the all-sites install warning). The SW injects it on
-        // demand, which needs a stable, module-free file — hence the fixed name.
+        // The declared content script also has a stable classic entry for
+        // already-open tabs and the explicit activeTab fallback.
         overlay: 'src/content/overlay.ts',
       },
       output: {

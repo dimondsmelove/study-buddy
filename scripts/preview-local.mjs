@@ -36,8 +36,8 @@ delete buildEnv.OPENROUTER_API_KEY
 delete buildEnv.OPENAI_API_KEY
 execFileSync('npm', ['run', 'build', '--', '--outDir', dist], { cwd: root, env: buildEnv, stdio: 'inherit' })
 const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
-if (manifest.host_permissions?.join(',') !== `${gatewayUrl}/*` || manifest.permissions?.includes('<all_urls>')) {
-  throw new Error('Preview build must use only the configured gateway host permission.')
+if (manifest.host_permissions?.length !== 2 || !manifest.host_permissions.includes(`${gatewayUrl}/*`) || !manifest.host_permissions.includes('<all_urls>')) {
+  throw new Error('Preview build must use the configured gateway and the production all-sites launcher permissions.')
 }
 const token = randomUUID()
 let ctx

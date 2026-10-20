@@ -30,6 +30,8 @@ export interface StartSelection {
   type: 'START_SELECTION'
 }
 export interface RestoreChat { type: 'RESTORE_CHAT' }
+/** SW → content hosts: switch the shared chat, or dismiss it after Close. */
+export interface DialogChanged { type: 'DIALOG_CHANGED'; conversationId?: string }
 
 /** SW → overlay: show the drag-selection overlay. */
 export interface ShowOverlay {
@@ -94,6 +96,7 @@ export type ConversationAction =
   | { action: 'attach'; conversationId: string; imageId: string }
   | { action: 'delete'; conversationId: string }
   | { action: 'prune' }
+  | { action: 'stop'; conversationId: string }
 
 export type ConversationResponse<T> = { ok: true; value: T } | { ok: false; error: string }
 export const GENERATION_PORT = 'study-buddy-generation'
@@ -101,6 +104,7 @@ export const GENERATION_PORT = 'study-buddy-generation'
 export type Message =
   | StartSelection
   | RestoreChat
+  | DialogChanged
   | ShowOverlay
   | PrepareSelection
   | HideOverlay

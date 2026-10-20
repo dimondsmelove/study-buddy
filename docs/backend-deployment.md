@@ -164,9 +164,13 @@ in place with the same ID and confirmed localhost host permission plus an
 extension-origin /health response of HTTP 200. The baseline retained 13 conversations, 12 attachments, and
 English UI/answer-language settings. One UI conversation returned 42 from 17 + 25
 and saved as complete. OpenRouter reported openai/gpt-6-luna usage of 211 prompt
-and 103 completion tokens at $0.0000726. A separate language probe returned a
-numeric-only answer, so language compliance was inconclusive; no compliance claim
-is made from that probe. These checks record private integration evidence only.
+and 103 completion tokens at $0.0000726. The same text call returned numeric-only
+42, so it did not assess answer-language compliance. The following fixed Solve
+image case routed successfully but the model answered 124 for 18 × 7; see the
+[private live quality note](prompts-quality/private-live-2026-10-20.md). The input
+image matched the stored attachment bytes, so no capture mismatch or image-quality
+fix is claimed. The hidden-target screenshot attempt failed/timed out, so there is
+no visual acceptance claim.
 
 The architecture is one Node process and one SQLite file on persistent local
 disk. Startup recovery assumes no other instance owns an active generation.

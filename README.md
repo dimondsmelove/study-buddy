@@ -4,7 +4,8 @@ Select a question on your screen, then choose a task or type a question. Approve
 
 Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
 selection → pick a task or ask your own question. The answer streams in beside
-the page, in English by default. The toolbar icon also starts region selection; chat
+the page in the answer language selected in Settings. The toolbar icon also starts
+region selection; chat
 opens after a successful crop and continues the conversation selected for that tab.
 Right-click the toolbar icon → **Show history** to return to a saved chat without
 selecting another region. Opening History creates no chat and makes no model request.
@@ -25,7 +26,7 @@ contact and audience decisions are complete.
 Manual use:
 
 ```
-Ctrl+Shift+Y or left-click toolbar icon  →  drag a box around a question  →  Solve / Quiz / …  →  read
+Ctrl+Shift+Y or left-click toolbar icon  →  drag a box around a question  →  Solve / Hint / Check  →  read
 Right-click toolbar icon  →  Show history  →  choose a saved chat  →  continue
 New selection inside a chat  →  add another image message  →  ask about both
 New chat  →  empty conversation  →  type a question or select an image

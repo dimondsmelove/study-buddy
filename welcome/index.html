@@ -5,41 +5,68 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Study Buddy is installed</title>
-  <link rel="icon" href="./icon32.png">
   <link rel="stylesheet" href="./styles.css">
   <script src="./app.js" defer></script>
 </head>
 <body>
   <main class="page">
-    <header class="brand">
-      <img src="./icon32.png" alt="" width="32" height="32">
-      <span>Study Buddy</span>
-    </header>
+    <h1 id="page-title">Study Buddy is installed</h1>
 
-    <h1>Study Buddy is installed</h1>
-    <p class="intro">Try it on a real exercise. Select a region, then ask for a hint.</p>
-
-    <section class="pin" id="pin" aria-labelledby="pin-title" hidden>
-      <div class="pin-mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32"><path d="M20 4 28 12l-4 1-5 5-1 5-2 2-4-7-7 9-2-2 9-7-7-4 2-2 5-1 5-5z"/></svg>
-      </div>
-      <div>
-        <h2 id="pin-title">Pin Study Buddy for quick access</h2>
-        <ol>
-          <li>Open the <strong>Extensions</strong> menu in your browser toolbar.</li>
-          <li>Find Study Buddy and select the pin icon.</li>
-        </ol>
-        <button class="text-button" id="skip-pin" type="button">I’ll try it first</button>
-      </div>
+    <section id="pin-guide" aria-labelledby="pin-instruction">
+      <p class="instruction" id="pin-instruction">Click the puzzle piece (1) in the top right of your browser, then pin Study Buddy (2).</p>
+      <figure class="screenshot">
+        <div class="shot">
+        <picture>
+          <source media="(max-width: 600px)" srcset="./pin-toolbar-mobile.png">
+          <img src="./pin-toolbar.png" alt="The browser Extensions menu is open. The toolbar puzzle piece is marked 1 and Study Buddy’s pin control is marked 2.">
+        </picture>
+        <svg class="markers" viewBox="0 0 1100 360" aria-hidden="true" focusable="false">
+          <defs><marker id="arrow-pin" markerWidth="14" markerHeight="14" viewBox="0 0 10 10" refX="8" refY="5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 10 5 0 10z" fill="#e53935"/></marker></defs>
+          <path class="arrow" d="M872 53 Q918 37 963 58" marker-end="url(#arrow-pin)"/>
+          <circle class="target" cx="986" cy="63" r="19"/>
+          <circle class="number" cx="850" cy="53" r="22"/><text x="850" y="61">1</text>
+          <path class="arrow" d="M1014 291 Q980 269 940 238" marker-end="url(#arrow-pin)"/>
+          <circle class="target" cx="917" cy="224" r="19"/>
+          <circle class="number" cx="1036" cy="302" r="22"/><text x="1036" y="310">2</text>
+        </svg>
+        <svg class="markers mobile-markers" viewBox="0 0 480 360" aria-hidden="true" focusable="false">
+          <defs><marker id="arrow-pin-mobile" markerWidth="14" markerHeight="14" viewBox="0 0 10 10" refX="8" refY="5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 10 5 0 10z" fill="#e53935"/></marker></defs>
+          <path class="arrow" d="M284 52 Q323 39 346 56" marker-end="url(#arrow-pin-mobile)"/>
+          <circle class="target" cx="366" cy="63" r="17"/>
+          <circle class="number" cx="260" cy="53" r="21"/><text x="260" y="60">1</text>
+          <path class="arrow" d="M393 283 Q356 267 319 236" marker-end="url(#arrow-pin-mobile)"/>
+          <circle class="target" cx="297" cy="224" r="17"/>
+          <circle class="number" cx="414" cy="292" r="21"/><text x="414" y="299">2</text>
+        </svg>
+        </div>
+      </figure>
     </section>
 
-    <section class="exercise" id="exercise" aria-labelledby="exercise-title">
-      <p class="eyebrow" id="exercise-title">Try a hint</p>
-      <p class="equation">2x + 6 = 10</p>
-      <p class="instruction">Click the Study Buddy icon or press <kbd id="capture-modifier">Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Y</kbd>, then drag over the equation and choose <strong>Hint</strong>.</p>
+    <section class="open-guide" aria-labelledby="open-instruction">
+      <p class="instruction" id="open-instruction">Open Study Buddy (3), then drag over content on any webpage to select a region.</p>
+      <figure class="screenshot">
+        <div class="shot">
+        <picture>
+          <source media="(max-width: 600px)" srcset="./open-toolbar-mobile.png">
+          <img src="./open-toolbar.png" alt="Study Buddy is pinned in the browser toolbar and ready to open, marked 3.">
+        </picture>
+        <svg class="markers" viewBox="0 0 1100 160" aria-hidden="true" focusable="false">
+          <defs><marker id="arrow-open" markerWidth="14" markerHeight="14" viewBox="0 0 10 10" refX="8" refY="5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 10 5 0 10z" fill="#e53935"/></marker></defs>
+          <path class="arrow" d="M884 122 Q914 107 936 82" marker-end="url(#arrow-open)"/>
+          <circle class="target" cx="950" cy="63" r="19"/>
+          <circle class="number" cx="860" cy="132" r="22"/><text x="860" y="140">3</text>
+        </svg>
+        <svg class="markers mobile-markers" viewBox="0 0 480 160" aria-hidden="true" focusable="false">
+          <defs><marker id="arrow-open-mobile" markerWidth="14" markerHeight="14" viewBox="0 0 10 10" refX="8" refY="5" markerUnits="userSpaceOnUse" orient="auto"><path d="M0 0 10 5 0 10z" fill="#e53935"/></marker></defs>
+          <path class="arrow" d="M254 120 Q293 103 318 82" marker-end="url(#arrow-open-mobile)"/>
+          <circle class="target" cx="330" cy="63" r="17"/>
+          <circle class="number" cx="234" cy="132" r="21"/><text x="234" y="139">3</text>
+        </svg>
+        </div>
+      </figure>
     </section>
 
-    <p class="privacy">Your selection and relevant chat context are sent to AI when you ask for help.</p>
+    <button id="show-pin-guide" class="text-button" type="button" aria-expanded="false" hidden>Show how to pin it</button>
   </main>
 </body>
 </html>

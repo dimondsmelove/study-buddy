@@ -7,10 +7,10 @@ import { GATEWAY_LIMITS } from '../shared/gateway-protocol'
 const HOUR_MS = 60 * 60 * 1_000
 const MONTHLY_BUDGET_NANO = 5_000_000_000
 const SERVICE_MONTHLY_BUDGET_NANO = 100_000_000_000
-// At the 2026-10-20 OpenRouter max-price snapshot: 1.05M prompt tokens including
-// cache-write at $0.25/M plus 16,384 output tokens at $0.75/M is $0.274788.
-// Round up to $0.275; the byte token estimator is not a monetary bound.
+// Retained at the approved $0.275 wallet reserve after the model and output cap
+// changed. The provider byte/token estimate is not a monetary bound.
 const GENERATION_RESERVE_NANO = 275_000_000
+const LEGACY_MODEL = 'openai/gpt-6-luna'
 
 export interface Session {
   id: string
@@ -75,6 +75,7 @@ export class OperationalStore {
     this.ensureColumn('sessions', 'installation_id', 'TEXT')
     this.ensureColumn('operations', 'installation_id', 'TEXT')
     this.ensureColumn('budget_charges', 'next_reconcile_at', 'INTEGER NOT NULL DEFAULT 0')
+    this.ensureColumn('budget_charges', 'expected_model', 'TEXT')
     this.db.exec('CREATE INDEX IF NOT EXISTS operations_installation_status ON operations(installation_id, status)')
     this.transaction(() => {
       this.db.prepare("UPDATE operations SET status = 'interrupted', finished_at = ? WHERE status = 'active'").run(now)
@@ -191,7 +192,7 @@ export class OperationalStore {
     })
   }
 
-  admit(sessionId: string, requestId: string, fingerprint: string, now: number): Admission {
+  admit(sessionId: string, requestId: string, fingerprint: string, now: number, expectedModel = LEGACY_MODEL): Admission {
     return this.transaction(() => {
       this.prune(now)
       const session = this.db.prepare(
@@ -260,9 +261,9 @@ export class OperationalStore {
         'ON CONFLICT(installation_id, month_key) DO UPDATE SET reserved_nano = reserved_nano + excluded.reserved_nano',
       ].join(' ')).run(session.installation_id, monthKey, GENERATION_RESERVE_NANO)
       this.db.prepare([
-        "INSERT INTO budget_charges(installation_id, request_id, month_key, reserved_nano, status, updated_at)",
-        "VALUES (?, ?, ?, ?, 'reserved', ?)",
-      ].join(' ')).run(session.installation_id, requestId, monthKey, GENERATION_RESERVE_NANO, now)
+        "INSERT INTO budget_charges(installation_id, request_id, month_key, reserved_nano, status, updated_at, expected_model)",
+        "VALUES (?, ?, ?, ?, 'reserved', ?, ?)",
+      ].join(' ')).run(session.installation_id, requestId, monthKey, GENERATION_RESERVE_NANO, now, expectedModel)
 
       this.db.prepare('UPDATE sessions SET last_started_at = ? WHERE id = ?').run(now, sessionId)
       if (session.installation_id) this.db.prepare('UPDATE installations SET last_started_at = ? WHERE id = ?').run(now, session.installation_id)
@@ -334,13 +335,13 @@ export class OperationalStore {
     return this.transaction(() => this.settleBudgetInTransaction(installationId, requestId, chargedNano, now))
   }
 
-  pendingBudgetReconciliation(now: number, limit = 20): Array<{ installationId: string; requestId: string; monthKey: string; generationId: string }> {
+  pendingBudgetReconciliation(now: number, limit = 20): Array<{ installationId: string; requestId: string; monthKey: string; generationId: string; expectedModel: string }> {
     return this.db.prepare([
-      "SELECT installation_id AS installationId, request_id AS requestId, month_key AS monthKey, provider_generation_id AS generationId",
+      "SELECT installation_id AS installationId, request_id AS requestId, month_key AS monthKey, provider_generation_id AS generationId, COALESCE(expected_model, 'openai/gpt-6-luna') AS expectedModel",
       "FROM budget_charges WHERE status = 'held' AND provider_generation_id IS NOT NULL AND next_reconcile_at <= ?",
       'ORDER BY next_reconcile_at, updated_at LIMIT ?',
     ].join(' ')).all(now, Math.max(1, Math.min(100, limit))) as Array<{
-      installationId: string; requestId: string; monthKey: string; generationId: string
+      installationId: string; requestId: string; monthKey: string; generationId: string; expectedModel: string
     }>
   }
 

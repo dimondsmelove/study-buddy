@@ -401,7 +401,14 @@ function reportError(err: unknown): void {
 }
 
 async function projectContext(value: Conversation, generation?: Parameters<typeof contextProjection>[1]['generation']): Promise<ContextProjection> {
-  return contextProjection(value, { generation })
+  const imageByteSizes = new Map<string, { size: number; type: string }>()
+  const attachmentIds = new Set(value.turns.flatMap((turn) => turn.attachmentId ? [turn.attachmentId] : []))
+  const attachments = await Promise.all([...attachmentIds].map((id) => getAttachment(id)))
+  for (const [index, id] of [...attachmentIds].entries()) {
+    const attachment = attachments[index]
+    if (attachment) imageByteSizes.set(id, { size: attachment.data.size, type: attachment.data.type || 'image/png' })
+  }
+  return contextProjection(value, { generation, imageByteSizes })
 }
 
 async function imageUrl(id: string): Promise<string> {
@@ -552,6 +559,7 @@ function updateStatus(): void {
 }
 
 function applyContextProjection(projection: ContextProjection): void {
+  for (const note of thread.querySelectorAll('.context-boundary')) note.remove()
   for (const entry of projection.entries) {
     const wrap = [...thread.children].find((child) => (child as HTMLElement).dataset.turn === entry.turn.id) as HTMLElement | undefined
     if (!wrap) continue
@@ -583,6 +591,27 @@ function applyContextProjection(projection: ContextProjection): void {
       }
     }
     wrap.appendChild(action)
+  }
+  const firstIncludedUser = projection.entries.findIndex((entry) => entry.included && entry.turn.kind !== 'capture' && entry.turn.role === 'user')
+  const boundary = projection.entries.slice(0, firstIncludedUser < 0 ? undefined : firstIncludedUser)
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => !entry.included && entry.reason === 'olderTask')
+    .at(-1)
+  if (boundary) {
+    const entry = projection.entries[boundary.index]
+    const wrap = [...thread.children].find((child) => (child as HTMLElement).dataset.turn === entry.turn.id) as HTMLElement | undefined
+    if (wrap) {
+      const note = document.createElement('div')
+      note.className = 'msg note context-boundary'
+      const body = document.createElement('div')
+      body.className = 'msg-body'
+      const currentTurn = [...projection.entries].reverse().find((candidate) => candidate.included && candidate.turn.role === 'user' && candidate.turn.kind !== 'capture')?.turn
+      const currentImageId = currentTurn?.attachmentId ?? conversation?.activeAttachmentId
+      const currentImageIncluded = !!currentImageId && projection.images.has(currentImageId)
+      body.textContent = t(uiLang, currentImageIncluded ? 'context.boundaryWithImage' : 'context.boundary')
+      note.appendChild(body)
+      wrap.after(note)
+    }
   }
 }
 
@@ -634,7 +663,9 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
         currentUser.kind === 'check' && currentUser.input !== undefined ? { taskInput: currentUser.input } : {}),
     } : undefined
     projection = await projectContext({ ...selected, turns }, generation)
+    if (sequence !== previewUpdate || selected !== conversation) return
   } catch (err) {
+    if (sequence !== previewUpdate || selected !== conversation) return
     const key = err instanceof Error ? err.message : 'context.text'
     contextPreview = undefined
     setComposerError(key.startsWith('context.') ? key : 'context.text')

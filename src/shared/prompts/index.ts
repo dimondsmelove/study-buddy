@@ -95,8 +95,8 @@ Rules:
 }
 
 const TURN_PARAMS: Record<TurnKind, { maxTokens: number }> = {
-  solve: { maxTokens: 16_384 }, quiz: { maxTokens: 16_384 }, translate: { maxTokens: 16_384 },
-  explain: { maxTokens: 16_384 }, summarize: { maxTokens: 16_384 }, hint: { maxTokens: 16_384 },
-  check: { maxTokens: 16_384 }, ask: { maxTokens: 16_384 }, simpler: { maxTokens: 16_384 },
+  solve: { maxTokens: 8_192 }, quiz: { maxTokens: 8_192 }, translate: { maxTokens: 8_192 },
+  explain: { maxTokens: 8_192 }, summarize: { maxTokens: 8_192 }, hint: { maxTokens: 8_192 },
+  check: { maxTokens: 8_192 }, ask: { maxTokens: 8_192 }, simpler: { maxTokens: 8_192 },
 }
 export function turnParams(kind: TurnKind): { maxTokens: number } { return TURN_PARAMS[kind] }

@@ -605,7 +605,7 @@ try {
   // reply must stream into the thread, and
   // the request must carry the crop as an image_url. The model is fixed by the
   // app's chain (settings.model no longer exists).
-  const PRIMARY = 'openai/gpt-6-luna'
+  const PRIMARY = 'anthropic/claude-haiku-5.5'
   // Pin uiLanguage 'en' so the prompt assertions below are deterministic
   // regardless of the test machine's browser locale (auto would follow it).
   await sw.evaluate(
@@ -838,14 +838,14 @@ try {
     'canonical Solve text and captured image are both present in the request history',
   )
   check(
-    lastAiRequest?.max_tokens === 16_384 && !('temperature' in lastAiRequest) && !('reasoning' in lastAiRequest),
-    `Luna request carries max_tokens=16384 and provider-default reasoning/sampling (${JSON.stringify(lastAiRequest && { max_tokens: lastAiRequest.max_tokens, temperature: lastAiRequest.temperature, reasoning: lastAiRequest.reasoning })})`,
+    lastAiRequest?.max_tokens === 8_192 && !('temperature' in lastAiRequest) && JSON.stringify(lastAiRequest.reasoning) === JSON.stringify({ effort: 'medium', exclude: true }),
+    `Haiku request carries max_tokens=8192 and medium excluded reasoning (${JSON.stringify(lastAiRequest && { max_tokens: lastAiRequest.max_tokens, temperature: lastAiRequest.temperature, reasoning: lastAiRequest.reasoning })})`,
   )
   let previousAssistantCount = await ai.locator('.msg.assistant').count()
   await clickMessageAction(ai, 0, 'Explain simpler')
   const firstSimplerReply = await waitForNewReply(ai, previousAssistantCount)
   const firstSimplerPrompt = lastAiRequest.messages.at(-1).content
-  check(firstSimplerReply === 'Hello world' && firstSimplerPrompt.includes('The first selected answer') &&
+  check(firstSimplerReply === 'Hello world' && JSON.stringify(firstSimplerPrompt).includes('The first selected answer') &&
     !JSON.stringify(lastAiRequest.messages).includes('[[STUDY_BUDDY_TITLE]]'),
     'Simpler targets the clicked answer and later requests omit the first-reply title instruction')
   await resetCooldown(ai)
@@ -862,20 +862,38 @@ try {
   const simplerDb = await readSaved(ai)
   const simplerConversation = simplerDb.conversations.find(item => item.id === simplerDb.state.lastConversationId)
   const olderSimplerTurn = [...(simplerConversation?.turns ?? [])].reverse().find(turn => turn.role === 'user' && turn.kind === 'simpler')
-  check(olderSimplerPrompt.includes('The first selected answer') &&
+  check(JSON.stringify(olderSimplerPrompt).includes('The first selected answer') &&
     olderSimplerTurn?.input === 'The first selected answer' && olderSimplerTurn.attachmentId === capture.id,
     'Simpler uses an older clicked reply even after later answers and stores that target for reuse (' + JSON.stringify({ prompt: olderSimplerPrompt, input: olderSimplerTurn?.input, attachmentId: olderSimplerTurn?.attachmentId, captureId: capture.id }) + ')')
   await resetCooldown(ai)
   previousAssistantCount = await ai.locator('.msg.assistant').count()
   await clickMessageAction(ai, previousAssistantCount - 1, 'Retry')
   await waitForNewReply(ai, previousAssistantCount)
-  check(lastAiRequest.messages.at(-1).content.includes('The first selected answer'),
+  check(JSON.stringify(lastAiRequest.messages.at(-1).content).includes('The first selected answer'),
     'Retry preserves the selected Simpler target instead of choosing the latest answer')
   await ai.close()
 
   const oversized = await openCapture()
   const oversizedConversationId = new URL(oversized.url()).searchParams.get('conversation')
-  await oversized.evaluate((conversationId) => new Promise((resolve, reject) => {
+  const originalPng = await oversized.evaluate((conversationId) => new Promise((resolve, reject) => {
+    const open = indexedDB.open('study-buddy-conversations', 1)
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const db = open.result
+      const request = db.transaction(['conversations', 'attachments'], 'readonly').objectStore('conversations').get(conversationId)
+      request.onerror = () => reject(request.error)
+      request.onsuccess = async () => {
+        const attachment = await new Promise((done, fail) => {
+          const get = db.transaction('attachments', 'readonly').objectStore('attachments').get(request.result.activeAttachmentId)
+          get.onsuccess = () => done(get.result)
+          get.onerror = () => fail(get.error)
+        })
+        resolve(Array.from(new Uint8Array(await attachment.data.arrayBuffer())))
+        db.close()
+      }
+    }
+  }), oversizedConversationId)
+  await oversized.evaluate(({ conversationId, pngBytes }) => new Promise((resolve, reject) => {
     const open = indexedDB.open('study-buddy-conversations', 1)
     open.onerror = () => reject(open.error)
     open.onsuccess = () => {
@@ -883,9 +901,27 @@ try {
       const tx = db.transaction(['conversations', 'attachments'], 'readwrite')
       const conversations = tx.objectStore('conversations')
       const request = conversations.get(conversationId)
+      let reusableId
+      let reusableTaskId
       request.onsuccess = () => {
         const conversation = request.result
-        const payload = new Blob([new Uint8Array(4 * 1024 * 1024)], { type: 'image/png' })
+        const original = Uint8Array.from(pngBytes)
+        const chunk = new Uint8Array(4 * 1024 * 1024 - original.length)
+        const chunkDataLength = chunk.length - 12
+        const view = new DataView(chunk.buffer)
+        view.setUint32(0, chunkDataLength)
+        chunk.set([118, 112, 65, 103], 4) // Ancillary vpAg chunk, ignored by PNG decoders.
+        for (let i = 0; i < chunkDataLength; i++) chunk[8 + i] = i & 255
+        const table = new Uint32Array(256)
+        for (let n = 0; n < 256; n++) {
+          let value = n
+          for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1
+          table[n] = value >>> 0
+        }
+        let crc = 0xffffffff
+        for (let i = 4; i < chunk.length - 4; i++) crc = table[(crc ^ chunk[i]) & 255] ^ (crc >>> 8)
+        new DataView(chunk.buffer).setUint32(chunk.length - 4, (crc ^ 0xffffffff) >>> 0)
+        const payload = new Blob([original.slice(0, -12), chunk, original.slice(-12)], { type: 'image/png' })
         const ids = Array.from({ length: 7 }, () => crypto.randomUUID())
         for (const [index, id] of ids.entries()) {
           const createdAt = Date.now() + index
@@ -898,20 +934,22 @@ try {
       tx.oncomplete = () => { db.close(); resolve() }
       tx.onerror = () => reject(tx.error)
     }
-  }), oversizedConversationId)
+  }), { conversationId: oversizedConversationId, pngBytes: originalPng })
   await oversized.reload()
   await oversized.waitForFunction(() => document.querySelectorAll('.turn-image').length === 8)
   const largeDraft = 'Keep this draft when the encoded image payload is too large'
   const beforeOversizedPayload = requestCount
   await oversized.fill('#ask-input', largeDraft)
   await oversized.click('#ask-btn')
-  await oversized.waitForFunction(() => document.getElementById('composer-error')?.textContent.includes('32 MiB'), { timeout: 10_000 })
+  await oversized.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent.includes('Complete'), { timeout: 15_000 })
   const oversizedSaved = await readSaved(oversized)
   const oversizedConversation = oversizedSaved.conversations.find(item => item.id === oversizedConversationId)
-  check(await oversized.locator('#ask-input').inputValue() === largeDraft &&
-    !oversizedConversation.turns.some(turn => turn.role === 'user' && turn.input === largeDraft) &&
-    requestCount === beforeOversizedPayload,
-  'over-32-MiB encoded payload is rejected before admission, keeps the draft and makes no upstream call')
+  const oversizedRequestBytes = lastAiRequest ? Buffer.byteLength(JSON.stringify(lastAiRequest)) : Infinity
+  const oversizedIncludedImages = lastAiRequest?.messages?.flatMap(message => Array.isArray(message.content) ? message.content : []).filter(part => part.type === 'image_url').length ?? 0
+  check(await oversized.locator('#ask-input').inputValue() === '' &&
+    oversizedConversation.turns.some(turn => turn.role === 'user' && turn.input === largeDraft) &&
+    requestCount === beforeOversizedPayload + 1 && oversizedRequestBytes <= 32 * 1024 * 1024 && oversizedIncludedImages >= 2 && oversizedIncludedImages < 8,
+  '32-MiB transport projection trims older images while sending the current image and draft')
   await oversized.close()
 
   responseMode = 'long'
@@ -1116,9 +1154,9 @@ try {
   await unavailable.click('.preset[data-preset="solve"]')
   await unavailable.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .reply-status')].some(node => node.textContent?.includes('may have reached the answer service')))
   check(lastAiRequest?.model === PRIMARY && requestCount === beforeUnavailable + 1,
-    'unavailable Luna surfaces the provider error after one request with no model switch')
+    'unavailable Haiku surfaces the provider error after one request with no model switch')
   check(!(await unavailable.evaluate(() => !!document.querySelector('.msg.note'))),
-    'no fallback notice is shown when Luna is unavailable')
+    'no fallback notice is shown when Haiku is unavailable')
   await unavailable.close()
 
   failModel = null
@@ -1243,6 +1281,8 @@ try {
       const tx = db.transaction(['conversations', 'attachments'], 'readwrite')
       const conversations = tx.objectStore('conversations')
       const request = conversations.get(conversationId)
+      let reusableId
+      let reusableTaskId
       request.onsuccess = () => {
         const conversation = request.result
         const oldAttachmentId = conversation.activeAttachmentId
@@ -1252,42 +1292,46 @@ try {
           if (!sourceImage?.data) { reject(new Error('The captured PNG fixture is missing')); return }
           const ids = [crypto.randomUUID(), crypto.randomUUID()]
           reusableId = ids[0]
-          const largeTaskId = crypto.randomUUID()
           const largeText = 'word  '.repeat(130000)
-          conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Earlier task', display: 'Earlier task', input: 'Earlier task', kind: 'ask', attachmentId: oldAttachmentId, createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' })
+          reusableTaskId = crypto.randomUUID()
+          conversation.turns.push({ id: reusableTaskId, role: 'user', text: 'Earlier task', display: 'Earlier task', input: 'Earlier task', kind: 'ask', attachmentId: oldAttachmentId, createdAt: Date.now(), locale: 'en', promptVersion: 'fixture' })
           for (const [index, id] of ids.entries()) {
             const createdAt = Date.now() + index * 2
             tx.objectStore('attachments').put({ id, data: sourceImage.data, createdAt })
             conversation.turns.push({ id, role: 'user', text: '', kind: 'capture', attachmentId: id, createdAt, locale: 'en', promptVersion: 'capture' })
-            if (index === 0) conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: largeText, display: 'Longer follow-up outside the current context', input: largeText, kind: 'ask', attachmentId: largeTaskId, createdAt: createdAt + 1, locale: 'en', promptVersion: 'fixture' })
+            if (index === 0) {
+              conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: largeText, display: 'Longer follow-up outside the current context', input: largeText, kind: 'ask', attachmentId: id, createdAt: createdAt + 1, locale: 'en', promptVersion: 'fixture' })
+            }
           }
           conversation.activeAttachmentId = ids.at(-1)
-          conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Review the newest selection', display: 'Review the newest selection', input: 'Review the newest selection', kind: 'ask', createdAt: Date.now() + 3, locale: 'en', promptVersion: 'fixture' })
+          conversation.turns.push({ id: crypto.randomUUID(), role: 'user', text: 'Review the newest selection', display: 'Review the newest selection', input: 'Review the newest selection', kind: 'ask', attachmentId: ids.at(-1), createdAt: Date.now() + 3, locale: 'en', promptVersion: 'fixture' })
           conversations.put(conversation)
         }
       }
-      let reusableId
-      tx.oncomplete = () => { db.close(); resolve(reusableId) }
+      tx.oncomplete = () => { db.close(); resolve({ imageId: reusableId, taskId: reusableTaskId }) }
       tx.onerror = () => reject(tx.error)
     }
   }))
-  const reusableImageId = await seedExtraImages()
+  const { taskId: reusableTaskId } = await seedExtraImages()
   await layout.reload()
   await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
   await layout.waitForFunction(() => !!document.querySelector('.msg.context-excluded .context-reuse'))
   const excludedMessages = await layout.evaluate(() => {
     const excluded = [...document.querySelectorAll('.msg.context-excluded')]
-    const first = excluded.find(message => message.querySelector('.context-reuse') && message.querySelector('.turn-image'))
+    const first = excluded.find(message => message.querySelector('.context-reuse'))
     const reuse = first?.querySelector('.context-reuse')
     const body = first?.querySelector('.msg-body')
     const includedBody = document.querySelector('.msg.user:not(.context-excluded) .msg-body')
     const image = first?.querySelector('.turn-image')
     return {
       count: excluded.length,
-      marked: !!first && !!image,
-      mutedBody: !body || getComputedStyle(body).backgroundColor !== getComputedStyle(includedBody).backgroundColor,
-      mutedImage: !!image && getComputedStyle(image).opacity === '0.68',
-      noteCount: document.querySelectorAll('.context-exclusion-note').length,
+      marked: !!first,
+      mutedBody: !!body && getComputedStyle(body).backgroundColor !== getComputedStyle(includedBody).backgroundColor,
+      mutedImage: !image || getComputedStyle(image).opacity === '0.68',
+      includedImage: !!document.querySelector('.msg.user:not(.context-excluded) .turn-image'),
+      noteCount: document.querySelectorAll('.context-boundary').length,
+      boundaryText: document.querySelector('.context-boundary')?.textContent,
+      boundaryRect: document.querySelector('.context-boundary')?.getBoundingClientRect().toJSON(),
       reuseLabel: reuse?.getAttribute('aria-label'),
       reuseTitle: reuse?.title,
       reuseHasOnlyIcon: !!reuse?.querySelector('svg') && !reuse.textContent.trim(),
@@ -1295,15 +1339,16 @@ try {
     }
   })
   const reuseLabel = i18nModule.exports.t('en', 'context.reuseTitle')
-  check(excludedMessages.count > 0 && excludedMessages.marked && excludedMessages.mutedBody && excludedMessages.mutedImage && excludedMessages.noteCount === 0 &&
-    excludedMessages.reuseLabel === reuseLabel && excludedMessages.reuseTitle === reuseLabel && excludedMessages.reuseHasOnlyIcon && excludedMessages.reuseSize[0] === 44 && excludedMessages.reuseSize[1] === 44,
-  'excluded history is visibly muted without explanatory text and keeps an accessible 44px reuse icon (' + JSON.stringify(excludedMessages) + ')')
+  check(excludedMessages.count > 0 && excludedMessages.marked && excludedMessages.mutedBody && excludedMessages.mutedImage && excludedMessages.includedImage && excludedMessages.noteCount === 1 && excludedMessages.boundaryText === i18nModule.exports.t('en', 'context.boundaryWithImage') &&
+    excludedMessages.boundaryRect.width > 0 && excludedMessages.reuseLabel === reuseLabel && excludedMessages.reuseTitle === reuseLabel && excludedMessages.reuseHasOnlyIcon && excludedMessages.reuseSize[0] === 44 && excludedMessages.reuseSize[1] === 44,
+  'excluded task text is muted, its separately retained capture stays visible, and reuse remains accessible (' + JSON.stringify(excludedMessages) + ')')
   const reuseRequestCount = requestCount
   await resetCooldown(layout)
   await layout.reload()
   await layout.waitForFunction(() => document.querySelectorAll('.msg.context-excluded .context-reuse').length > 0)
-  const reuseButton = layout.locator(`.msg.context-excluded[data-turn="${reusableImageId}"] .context-reuse`)
-  check(await reuseButton.count() === 1, 'the excluded image has one reuse action')
+  const reuseButton = layout.locator(`.msg.context-excluded[data-turn="${reusableTaskId}"] .context-reuse`)
+  await reuseButton.waitFor({ state: 'attached' })
+  check(await reuseButton.count() === 1, 'the excluded task has one reuse action')
   await reuseButton.click()
   const reuseDeadline = Date.now() + 5000
   while (requestCount === reuseRequestCount && Date.now() < reuseDeadline) {
@@ -1351,6 +1396,13 @@ try {
   await layout.reload()
   await layout.waitForFunction(() => document.querySelectorAll('.turn-image').length === 3)
   await layout.fill('#ask-input', 'Compare the saved images')
+  await layout.setViewportSize({ width: 320, height: 568 })
+  await layout.evaluate(() => {
+    const thread = document.querySelector('#thread')
+    const boundary = document.querySelector('.context-boundary')
+    if (thread && boundary) thread.scrollTop = Math.max(0, boundary.offsetTop - thread.offsetTop - 60)
+  })
+  await layout.screenshot({ path: '/tmp/study-buddy-haiku-20261021/context-boundary-ru-320.png' })
   await layout.setViewportSize({ width: 480, height: 568 })
   const wideRussian = await layout.evaluate(() => {
     const selection = document.querySelector('#new-selection-btn')
@@ -1372,7 +1424,7 @@ try {
   await hint.setViewportSize({ width: 480, height: 564 })
   await hint.click('[data-preset="hint"]')
   await waitSaved(hint, 'Complete')
-  check(lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest), 'Hint UI uses the shared Luna cap and omits temperature')
+  check(lastAiRequest.max_tokens === 8_192 && !('temperature' in lastAiRequest), 'Hint UI uses the shared Haiku cap and omits temperature')
   const hintDb = await readSaved(hint)
   const hintId = hintDb.state.lastConversationId
   check(hintDb.conversations.find(c => c.id === hintId).turns.at(-1).status === 'complete', 'completion status committed to IndexedDB')
@@ -1528,7 +1580,7 @@ try {
   await hint.click('[data-retry]')
   await hint.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 3)
   await waitSaved(hint, 'Complete')
-  check(await hint.locator('.msg.user').count() === usersBeforeRetry && lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest), 'explicit Regenerate preserves the source user turn and its original turn budget')
+  check(await hint.locator('.msg.user').count() === usersBeforeRetry && lastAiRequest.max_tokens === 8_192 && !('temperature' in lastAiRequest), 'explicit Regenerate preserves the source user turn and its original turn budget')
 
   const checked = await openCapture()
   await checked.setViewportSize({ width: 480, height: 564 })
@@ -1560,8 +1612,8 @@ try {
     typeof message.content === 'string' && message.content.length > 0 ||
     Array.isArray(message.content) && message.content.some(part => part.type === 'text' && part.text.length > 0))
   check(lastAiRequest.messages.length > 0 && checkedHasImage && checkedHasInstruction &&
-    JSON.stringify(lastAiRequest.messages).includes('Check the student\'s work visible in the image') && lastAiRequest.max_tokens === 16_384 && !('temperature' in lastAiRequest) && !('reasoning' in lastAiRequest),
-    'Check sends its approved visible-work instruction with the image and keeps the Luna request budget')
+    JSON.stringify(lastAiRequest.messages).includes('Check the student\'s work visible in the image') && lastAiRequest.max_tokens === 8_192 && !('temperature' in lastAiRequest) && JSON.stringify(lastAiRequest.reasoning) === JSON.stringify({ effort: 'medium', exclude: true }),
+    'Check sends its approved visible-work instruction with the image and keeps the Haiku request budget')
   await resetCooldown(checked)
   responseMode = 'slow'
   await checked.fill('#ask-input', 'Accepted draft should clear immediately')
@@ -1729,15 +1781,15 @@ try {
       hostCdps.set(targetPage, targetCdp)
     }
     const { root: documentNode } = await targetCdp.send('DOM.getDocument', { depth: -1, pierce: true })
+    const labels = text === 'Restore Study Buddy' ? [text, 'Открыть Study Buddy'] : [text]
     const attribute = (node, name) => {
       const index = node.attributes?.indexOf(name) ?? -1
       return index < 0 ? undefined : node.attributes[index + 1]
     }
     const find = (node) => {
       if (node.nodeName === 'BUTTON' && (
-        node.children?.some(child => child.nodeValue === text) ||
-        attribute(node, 'aria-label')?.startsWith(text) ||
-        attribute(node, 'title')?.startsWith(text)
+        node.children?.some(child => labels.includes(child.nodeValue)) ||
+        labels.some(label => attribute(node, 'aria-label')?.startsWith(label) || attribute(node, 'title')?.startsWith(label))
       )) return node
       for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) {
         const found = find(child)
@@ -1761,6 +1813,8 @@ try {
   const findHostButton = (text) => findHostButtonOn(page, text)
   const clickHostButton = (text) => clickHostButtonOn(page, text)
   if (await page.locator('[data-study-buddy="chat"][data-state="open"]').count()) await clickHostButton('−')
+  await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'minimized' &&
+    !!document.querySelector('[data-study-buddy="launcher"]'))
   await clickHostButton('Restore Study Buddy')
   let embedded = await chatFrameOn(page)
   await embedded.waitForSelector('#view-capture:not([hidden])')

@@ -23,7 +23,7 @@ thread and open at full size; there is no permanent upper preview.
 **Status: private laptop integration test.** Capture, streaming, Markdown/LaTeX, local History, image messages and visible context exclusions use the Study Buddy backend; only the backend holds the OpenRouter credential and owns the model and limits. Approved task and title instructions are assembled server-side. Ask remains free-form and transcript text remains immutable. The private backend runs on homelab-laptop; public hosting and store publication remain deferred. See the [private backend handoff](docs/backend-deployment.md#private-laptop-integration-test-2026-10-20) for the endpoint, service commands, update steps and acceptance evidence. No provider key or local tokenizer is needed in the browser.
 
 The backend uses Node 22.22.2 and built-in SQLite for operational state, without
-cloud chat history. Requests go through the backend using OpenAI GPT-6 Luna via OpenRouter; provider errors are surfaced without switching models.
+cloud chat history. Requests go through the backend using anthropic/claude-haiku-5.5 via OpenRouter, with medium reasoning excluded from returned content; provider errors are surfaced without switching models.
 Implementation and acceptance evidence for this slice are recorded in `ToDo.md`
 and the local loop ledger; earlier UI acceptance records remain historical.
 Store copy and privacy disclosures in `store/` are drafts until actual hosting,
@@ -89,22 +89,23 @@ chat window  (extension-page iframe in a closed shadow root, near the selection,
   partial as interrupted, without automatic paid resume. One local generation
   is admitted across windows.
 - Context selection estimates one text token per four UTF-8 bytes under a nominal
-  200,000 estimated input-token budget with 20,000 held in reserve. It includes
-  selected transcript text and a 1,024-token estimate per image; task templates are currently empty.
-  Whole older task groups are excluded first; the transcript stays saved locally.
+  100,000 estimated input-token budget with 20,000 held in reserve. It includes
+  selected transcript text, canonical task instructions and a 1,024-token estimate per image.
+  The current request and source image stay included, then newest complete exchanges are added
+  while the token and 32 MiB request limits allow; the transcript stays saved locally.
   Excluded messages remain muted with a reuse action. Only the selected context is
   transmitted. The backend independently validates its canonical request with
   the same estimator; there is no model tokenizer or provider-exact guarantee.
 - Each image is limited to 4 MiB decoded; the HTTP payload limit is 32 MiB.
   Server validation accepts inline PNG/JPEG/WebP with bounded dimensions, without
-  downloading arbitrary image URLs. Oversized active context is refused and the
-  draft stays available.
+  downloading arbitrary image URLs. Only an oversized current request or essential image is
+  refused; older context is trimmed while the draft stays available.
 - Provider-reported usage is saved on the local assistant turn when available.
   A lost final usage chunk means unknown usage. The server does not keep detailed
   per-chat usage or conversation text/images/responses.
 - The backend admits one start per installation per ten seconds, one in flight
   per installation, and four globally; issuance of new installations is limited
-  per network. It owns a shared 16,384-token response cap and timeout. Provider
+  per network. It owns a shared 8,192-token response cap and timeout. Provider
   availability errors surface without switching models. Duplicate request IDs
   do not restart a generation within the 24-hour idempotency window.
   Each installation has a $5 monthly budget and this backend has a $100 monthly

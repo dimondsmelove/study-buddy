@@ -92,3 +92,10 @@ FACT: целевой native Chromium fake-provider прогон прошёл в�
 
 
 FACT — финальные QA-уточнения 2026-10-20: tooltip использует auto popover и явное host→iframe уведомление о внешнем pointerdown; описание очищается при закрытии. У Copy/Simpler/Retry удалён hover-сдвиг, отступ от ответа20px; native geometry проверила точное совпадение midpoint с краем ответа и11px до текста, соседнее сообщение не перекрывается. Общий lifecycle native-прогон с restart и restricted fallback прошёл без page errors. Default standalone480×564 сохраняет thread362px; narrow320×324 —104px. Полный монолитный verify после этих последних поправок не повторялся; typecheck/build и соответствующие целевые сценарии прошли.
+
+
+## Model and sliding context update — 2026-10-21
+
+DECISION: primary model is `anthropic/claude-haiku-5.5` through the existing OpenRouter path, with reasoning effort `medium` and reasoning output excluded. There is no model fallback. Each task caps output at 8,192 tokens. Nominal input budget is 100,000 estimated tokens; the existing 20,000-token variance reserve remains, so client selection targets at most 80,000. Existing provider max-price settings and the $0.275 generation reserve remain unchanged.
+
+DECISION: context slides by complete recent exchanges even within one image/task or an all-text chat. Always pin the current user task and its necessary source image, then add newest complete exchanges while token and 32 MiB JSON request limits allow. An oversized current task is blocked only when its essential request alone exceeds a valid limit. Saved history is preserved, excluded rows remain muted with reuse, and the boundary explains that older messages remain saved; it qualifies the included current image when that pinned image appears above the boundary. No automatic summaries are introduced.

@@ -172,9 +172,9 @@ async function createFixture(options = {}) {
   const provider = await startProvider(options.responder ?? (async ({ response }) => {
     response.writeHead(200, { 'Content-Type': 'text/event-stream' })
     response.end(
-      sse({ model: 'openai/gpt-6-luna', choices: [{ delta: { content: 'PROVIDER_OUTPUT_SENTINEL' }, finish_reason: null }] }) +
-      sse({ model: 'openai/gpt-6-luna', choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
-      sse({ model: 'openai/gpt-6-luna', choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
+      sse({ model: 'anthropic/claude-haiku-5.5', choices: [{ delta: { content: 'PROVIDER_OUTPUT_SENTINEL' }, finish_reason: null }] }) +
+      sse({ model: 'anthropic/claude-haiku-5.5', choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
+      sse({ model: 'anthropic/claude-haiku-5.5', choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
       sse({ choices: [], usage: { prompt_tokens: 23, completion_tokens: 4, cost: 0.0001 } }) +
       'data: [DONE]\n\n',
     )
@@ -189,6 +189,7 @@ async function createFixture(options = {}) {
     trustedProxyIps: options.trustedProxyIps ?? [],
     operationTimeoutMs: options.timeoutMs ?? 180_000,
   }
+  await options.beforeBackend?.(config)
   const backend = createBackend(config, {
     now: () => clock,
     log: (entry) => logs.push(entry),
@@ -266,7 +267,7 @@ await test('shared preparation includes canonical approved prompts and estimates
   assert.match(prepared.messages[0].content, /Respond in English/)
   assert.match(prepared.messages.at(-1).content, /What is 2 \+ 2\?/)
   assert.equal('temperature' in prepared, false)
-  assert.equal(prepared.maxTokens, 16_384)
+  assert.equal(prepared.maxTokens, 8_192)
   assert.equal(protocol.estimateTextTokens('abcde'), 2)
   assert.equal(protocol.estimateTextTokens('ЯЯЯ'), 2)
   assert.equal(protocol.estimateTextTokens('😀'), 1)
@@ -572,10 +573,10 @@ await test('HTTP session, CORS, canonical provider request, final usage chunk, a
     assert.equal(complete.usage.completionTokens, 4)
     assert.equal(fixture.provider.requests.length, 1)
     const upstream = fixture.provider.requests[0]
-    assert.equal(upstream.model, 'openai/gpt-6-luna')
+    assert.equal(upstream.model, 'anthropic/claude-haiku-5.5')
     assert.equal('temperature' in upstream, false)
-    assert.equal('reasoning' in upstream, false)
-    assert.equal(upstream.max_tokens, 16_384)
+    assert.deepEqual(upstream.reasoning, { effort: 'medium', exclude: true })
+    assert.equal(upstream.max_tokens, 8_192)
     assert.equal(upstream.messages.some((message) => message.role === 'system'), true)
     assert.match(upstream.messages[0].content, /Use the supplied text, images, and relevant conversation history as the source of task-specific facts/)
     assert.equal(upstream.messages.at(-1).content, 'What is 2 + 2?')
@@ -637,14 +638,14 @@ await test('HTTP budget denies legacy sessions and reconciles missing SSE usage 
         const id = new URL(request.url, 'http://provider.invalid').searchParams.get('id')
         response.writeHead(200, { 'Content-Type': 'application/json' })
         response.end(JSON.stringify({ data: {
-          id, model: 'openai/gpt-6-luna', finish_reason: 'stop', generation_time: 1, total_cost: 0.0123456781,
+          id, model: 'anthropic/claude-haiku-5.5', finish_reason: 'stop', generation_time: 1, total_cost: 0.0123456781,
         } }))
         return
       }
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Generation-Id': 'gen-local-usage' })
       response.end(
-        sse({ id: 'gen-local-usage', model: 'openai/gpt-6-luna', choices: [{ delta: { content: 'answer' }, finish_reason: null }] }) +
-        sse({ id: 'gen-local-usage', model: 'openai/gpt-6-luna', choices: [{ delta: {}, finish_reason: 'stop' }] }) +
+        sse({ id: 'gen-local-usage', model: 'anthropic/claude-haiku-5.5', choices: [{ delta: { content: 'answer' }, finish_reason: null }] }) +
+        sse({ id: 'gen-local-usage', model: 'anthropic/claude-haiku-5.5', choices: [{ delta: {}, finish_reason: 'stop' }] }) +
         'data: [DONE]\n\n',
       )
     },
@@ -665,10 +666,11 @@ await test('HTTP budget denies legacy sessions and reconciles missing SSE usage 
     assert.equal(first.status, 200)
     await first.text()
     const pending = databaseFor(fixture.config.databasePath)
-    const charge = pending.prepare('SELECT status, provider_generation_id FROM budget_charges WHERE request_id = ?')
+    const charge = pending.prepare('SELECT status, provider_generation_id, expected_model FROM budget_charges WHERE request_id = ?')
       .get('usage_missing_0001')
     assert.equal(charge.status, 'held')
     assert.equal(charge.provider_generation_id, 'gen-local-usage')
+    assert.equal(charge.expected_model, 'anthropic/claude-haiku-5.5')
     fixture.now += 10_000
     const second = await postGeneration(fixture, issued.token, input('usage_missing_0002'))
     assert.equal(second.status, 200)
@@ -684,6 +686,76 @@ await test('HTTP budget denies legacy sessions and reconciles missing SSE usage 
   }
 })
 
+await test('reconciliation keeps a Haiku hold when OpenRouter returns Luna metadata', async () => {
+  const generationIds = ['gen-haiku-held-one', 'gen-haiku-held-two']
+  const fixture = await createFixture({
+    responder: async ({ request, response, requests }) => {
+      if (request.method === 'GET') {
+        const id = new URL(request.url, 'http://provider.invalid').searchParams.get('id')
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ data: { id, model: 'openai/gpt-6-luna', finish_reason: 'stop', generation_time: 1, total_cost: 0.01 } }))
+        return
+      }
+      const id = generationIds[requests.filter((item) => item.method === 'POST').length - 1]
+      response.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Generation-Id': id })
+      response.end(sse({ id, model: 'anthropic/claude-haiku-5.5', choices: [{ delta: {}, finish_reason: 'stop' }] }) + 'data: [DONE]\n\n')
+    },
+  })
+  try {
+    const issued = await issueSession(fixture)
+    const first = await postGeneration(fixture, issued.token, input('haiku_hold_one'))
+    assert.equal(first.status, 200)
+    await first.text()
+    const database = databaseFor(fixture.config.databasePath)
+    const firstCharge = database.prepare('SELECT status, expected_model FROM budget_charges WHERE request_id = ?').get('haiku_hold_one')
+    assert.equal(firstCharge.status, 'held')
+    assert.equal(firstCharge.expected_model, 'anthropic/claude-haiku-5.5')
+    fixture.now += 10_000
+    const second = await postGeneration(fixture, issued.token, input('haiku_hold_two'))
+    assert.equal(second.status, 200)
+    await second.text()
+    const stillHeld = database.prepare('SELECT status FROM budget_charges WHERE request_id = ?').get('haiku_hold_one')
+    assert.equal(stillHeld.status, 'held', 'wrong-model provider metadata cannot release the Haiku reserve')
+    assert.equal(fixture.provider.requests.some((request) => request.method === 'GET' && request.url.includes('gen-haiku-held-one')), true)
+    database.close()
+  } finally {
+    await fixture.close()
+  }
+})
+
+await test('legacy held Luna charges migrate without a model column and reconcile independently of the Haiku primary', async () => {
+  const fixture = await createFixture({
+    beforeBackend: async (config) => {
+      const database = new DatabaseSync(config.databasePath)
+      database.exec("CREATE TABLE budget_charges (installation_id TEXT NOT NULL, request_id TEXT NOT NULL, month_key TEXT NOT NULL, reserved_nano INTEGER NOT NULL, charged_nano INTEGER, status TEXT NOT NULL, provider_generation_id TEXT, updated_at INTEGER NOT NULL, next_reconcile_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(installation_id, request_id))")
+      database.exec('CREATE TABLE monthly_budgets (installation_id TEXT NOT NULL, month_key TEXT NOT NULL, spent_nano INTEGER NOT NULL, reserved_nano INTEGER NOT NULL, PRIMARY KEY(installation_id, month_key))')
+      database.prepare("INSERT INTO budget_charges(installation_id, request_id, month_key, reserved_nano, status, provider_generation_id, updated_at) VALUES ('legacy-install', 'legacy-luna-request', '2026-10', 275000000, 'held', 'gen-legacy-luna', ?)")
+        .run(nowBase)
+      database.close()
+    },
+    responder: async ({ request, response }) => {
+      if (request.method !== 'GET') { response.writeHead(500); response.end(); return }
+      const id = new URL(request.url, 'http://provider.invalid').searchParams.get('id')
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify({ data: { id, model: 'openai/gpt-6-luna', finish_reason: 'stop', generation_time: 1, total_cost: 0.01 } }))
+    },
+  })
+  try {
+    for (let attempt = 0; attempt < 20 && !fixture.provider.requests.some((request) => request.method === 'GET'); attempt++) await new Promise((resolve) => setTimeout(resolve, 5))
+    const database = databaseFor(fixture.config.databasePath)
+    const migrated = database.prepare('PRAGMA table_info(budget_charges)').all().some((column) => column.name === 'expected_model')
+    const charge = database.prepare('SELECT status, charged_nano, expected_model FROM budget_charges WHERE request_id = ?').get('legacy-luna-request')
+    assert.equal(migrated, true)
+    assert.equal(charge.status, 'settled', 'legacy null model maps to its saved Luna generation')
+    assert.equal(charge.charged_nano, 10_000_000)
+    assert.equal(charge.expected_model, null, 'migration preserves legacy rows without inventing a new expected model')
+    assert.equal(fixture.provider.requests[0].url.includes('gen-legacy-luna'), true)
+    database.close()
+  } finally {
+    await fixture.close()
+  }
+})
+
 await test('global monthly reserve aggregates installations atomically and survives database reopen', async () => {
   const fixture = await createFixture({
     responder: async ({ request, response }) => {
@@ -694,8 +766,8 @@ await test('global monthly reserve aggregates installations atomically and survi
       }
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Generation-Id': 'gen-global-held' })
       response.end(
-        sse({ id: 'gen-global-held', model: 'openai/gpt-6-luna', choices: [{ delta: { content: 'answer' }, finish_reason: null }] }) +
-        sse({ id: 'gen-global-held', model: 'openai/gpt-6-luna', choices: [{ delta: {}, finish_reason: 'stop' }] }) +
+        sse({ id: 'gen-global-held', model: 'anthropic/claude-haiku-5.5', choices: [{ delta: { content: 'answer' }, finish_reason: null }] }) +
+        sse({ id: 'gen-global-held', model: 'anthropic/claude-haiku-5.5', choices: [{ delta: {}, finish_reason: 'stop' }] }) +
         'data: [DONE]\n\n',
       )
     },
@@ -907,7 +979,7 @@ await test('malformed, oversized, image, client-system, and client-parameter req
   }
 })
 
-await test('unavailable Luna surfaces an error without a second model attempt', async () => {
+await test('unavailable Haiku surfaces an error without a second model attempt', async () => {
   for (const status of [404, 429, 503]) {
     const unavailable = await createFixture({
       responder: async ({ response }) => {
@@ -923,10 +995,10 @@ await test('unavailable Luna surfaces an error without a second model attempt', 
       assert.equal(error.code, status === 429 ? 'provider.rate_limited' : 'provider.unavailable')
       assert.equal(emitted.some((event) => event.event === 'fallback'), false)
       assert.equal(unavailable.provider.requests.length, 1)
-      assert.equal(unavailable.provider.requests[0].model, 'openai/gpt-6-luna')
-      assert.equal(unavailable.provider.requests[0].max_tokens, 16_384)
+      assert.equal(unavailable.provider.requests[0].model, 'anthropic/claude-haiku-5.5')
+      assert.equal(unavailable.provider.requests[0].max_tokens, 8_192)
       assert.equal('temperature' in unavailable.provider.requests[0], false)
-      assert.equal('reasoning' in unavailable.provider.requests[0], false)
+      assert.deepEqual(unavailable.provider.requests[0].reasoning, { effort: 'medium', exclude: true })
     } finally {
       await unavailable.close()
       await rm(unavailable.directory, { recursive: true, force: true })

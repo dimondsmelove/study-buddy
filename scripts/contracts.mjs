@@ -359,17 +359,17 @@ await contract('documented OpenRouter context-length metadata is redacted and ne
   await assert.rejects(ask({ onFallback: () => assert.fail('Context rejections must not fall back') }), (error) => safeError(error, 'context'))
   assert.equal(requests.length, 1)
 })
-await contract('Luna is the sole model and unavailable responses are surfaced after one request', async () => {
-  assert.equal(JSON.stringify(ai.MODEL_CHAIN), JSON.stringify(['openai/gpt-6-luna']))
+await contract('Haiku is the sole model and unavailable responses are surfaced after one request', async () => {
+  assert.equal(JSON.stringify(ai.MODEL_CHAIN), JSON.stringify(['anthropic/claude-haiku-5.5']))
   assert.equal(ai.MODEL_FALLBACKS.length, 0)
   for (const status of [404, 429, 503]) {
     const requests = stubFetch(() => jsonResponse({ error: { message: 'fixture unavailable' } }, status))
-    await assert.rejects(ask({ maxTokens: 16_384 }), (error) => error.status === status)
+    await assert.rejects(ask({ maxTokens: 8_192 }), (error) => error.status === status)
     assert.equal(requests.length, 1)
-    assert.equal(requests[0].body.model, 'openai/gpt-6-luna')
-    assert.equal(requests[0].body.max_tokens, 16_384)
+    assert.equal(requests[0].body.model, 'anthropic/claude-haiku-5.5')
+    assert.equal(requests[0].body.max_tokens, 8_192)
     assert.equal('temperature' in requests[0].body, false)
-    assert.equal('reasoning' in requests[0].body, false)
+    assert.deepEqual(requests[0].body.reasoning, { effort: 'medium', exclude: true })
   }
 })
 await contract('no fallback for partial output, network, abort, parse or HTTP 200 provider errors', async () => {
@@ -414,7 +414,7 @@ await contract('Gateway binds stored sessions to the configured origin and keeps
       installationId: '123e4567-e89b-12d3-a456-426614174000', installationSecret: 'a'.repeat(43),
     }, 201)
     if (url.endsWith('/api/v1/generations')) return streamResponse(
-      'event: context\ndata: {"estimatedInputTokens":17,"inputBudget":200000,"estimateHeadroom":20000}\n\n' +
+      'event: context\ndata: {"estimatedInputTokens":17,"inputBudget":100000,"estimateHeadroom":20000}\n\n' +
       'event: delta\ndata: {"text":"bounded"}\n\n' +
       'event: complete\ndata: {"status":"complete","model":"server-model","usage":{"promptTokens":17,"completionTokens":2}}\n\n',
     )
@@ -426,7 +426,7 @@ await contract('Gateway binds stored sessions to the configured origin and keeps
     taskInput: 'current question', messages: gatewayMessages, onContext: value => { context = value },
   })
   assert.deepEqual(plain(result), { text: 'bounded', status: 'complete', model: 'server-model', usage: { promptTokens: 17, completionTokens: 2 } })
-  assert.deepEqual(plain(context), { estimatedInputTokens: 17, inputBudget: 200000, estimateHeadroom: 20000 })
+  assert.deepEqual(plain(context), { estimatedInputTokens: 17, inputBudget: 100000, estimateHeadroom: 20000 })
   assert.equal(requests.length, 2)
   assert(requests[0].url.endsWith('/api/v1/session'), 'cross-origin stale token is discarded instead of sent')
   assert.equal(requests[1].body.requestId, 'request-fixture')

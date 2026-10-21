@@ -57,7 +57,7 @@ async function reconcilePendingBudget(
       const root = recordOrUndefined(payload)
       const data = recordOrUndefined(root?.data)
       const terminal = (typeof data?.finish_reason === 'string' && data.finish_reason.length > 0) || data?.cancelled === true
-      if (data?.id !== charge.generationId || data.model !== MODEL_CHAIN[0] || !terminal ||
+      if (data?.id !== charge.generationId || data.model !== charge.expectedModel || !terminal ||
           typeof data.generation_time !== 'number' || !Number.isFinite(data.generation_time) ||
           typeof data.total_cost !== 'number' || !Number.isFinite(data.total_cost) || data.total_cost < 0) continue
       const chargedNano = costToNano(data.total_cost)
@@ -285,7 +285,7 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
       .update(JSON.stringify({ modelChain: MODEL_CHAIN, request: gatewayFingerprint(input, prepared) }))
       .digest('hex')
     await reconcileBudget().catch(() => {})
-    const admission = store.admit(session.id, input.requestId, fingerprint, now())
+    const admission = store.admit(session.id, input.requestId, fingerprint, now(), MODEL_CHAIN[0])
     if (!admission.accepted) {
       const message = admission.code === 'generation.cooldown'
         ? 'Please wait before starting another generation.'

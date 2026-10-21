@@ -57,7 +57,7 @@ assert.ok(prompts.taskPrompt('translate', explicitDe).includes('into German'))
 
 for (const kind of ['solve', 'quiz', 'translate', 'explain', 'summarize', 'hint', 'check', 'ask', 'simpler']) {
   const params = prompts.turnParams(kind)
-  assert.equal(params.maxTokens, 16_384)
+  assert.equal(params.maxTokens, 8_192)
   assert.equal(Object.hasOwn(params, 'temperature'), false)
   assert.equal(Object.hasOwn(params, 'reasoning'), false)
 }

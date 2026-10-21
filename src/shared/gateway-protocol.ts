@@ -3,7 +3,7 @@ import type { AnswerLanguage } from './settings'
 import { firstAnswerTitleInstruction, simplerPrompt, systemPrompt, taskPrompt, turnParams, type TurnKind } from './prompts'
 
 export const GATEWAY_LIMITS = {
-  inputTokens: 200_000,
+  inputTokens: 100_000,
   estimateHeadroom: 20_000,
   imageTokenEstimate: 1_024,
   imageBytes: 4 * 1024 * 1024,

@@ -64,13 +64,15 @@ const EN: Dict = {
   'reply.provider_error': 'Provider error · available text saved',
   'reply.empty': 'Empty answer · saved',
   'capture.newSelection': 'Select another screen area and add its image to this chat',
-  'context.usage': 'About {tokens}k input tokens · 200k budget',
+  'context.usage': 'About {tokens}k input tokens · 100k budget',
+  'context.boundary': 'Older messages above are saved, but are not sent to the model.',
+  'context.boundaryWithImage': 'Older messages above are saved, but are not sent to the model. The current task image is included.',
 
 
   'context.details': 'Details',
 
   'context.detailsTitle': 'What the next answer includes',
-  'context.limits': 'About 200,000 estimated input tokens per request, including system instructions and an image reserve; 20,000 tokens are held back for estimate variance. Whole older task groups are omitted first. Each image has a separate app-side 4 MiB payload guard; base64 and JSON add transport overhead. Omitted messages stay saved and can be sent again.',
+  'context.limits': 'About 100,000 estimated input tokens per request, including system instructions and an image reserve; 20,000 tokens are held back for estimate variance. Older exchanges are omitted first when the token or request-size limit is reached. Each image has a separate 4 MiB payload guard. Omitted messages stay saved and can be sent again.',
   'context.included': 'Included',
   'context.excluded': 'Not sent',
   'context.reuse': 'Use again',
@@ -199,13 +201,15 @@ const RU: Dict = {
   'reply.provider_error': 'Ошибка провайдера · доступный текст сохранён',
   'reply.empty': 'Пустой ответ · сохранено',
   'capture.newSelection': 'Выделить другую область экрана и добавить изображение в этот чат',
-  'context.usage': '≈{tokens} тыс. / 200 тыс. токенов',
+  'context.usage': '≈{tokens} тыс. / 100 тыс. токенов',
+  'context.boundary': 'Старые сообщения выше сохранены, но не отправляются модели.',
+  'context.boundaryWithImage': 'Старые сообщения выше сохранены, но не отправляются модели. Текущее изображение задания отправляется.',
 
 
   'context.details': 'Состав',
 
   'context.detailsTitle': 'Что войдёт в следующий ответ',
-  'context.limits': 'Около 200 000 оценочных входных токенов на запрос, включая системные инструкции и резерв на изображения; 20 000 токенов оставлены на погрешность оценки. Сначала исключаются целые старые группы заданий. Для изображения отдельно действует внутренний лимит полезной нагрузки 4 МиБ; base64 и JSON увеличивают объём передачи. Данные остаются в переписке, их можно отправить повторно.',
+  'context.limits': 'Около 100 000 оценочных входных токенов на запрос, включая системные инструкции и резерв на изображения; 20 000 токенов оставлены на погрешность оценки. Сначала исключаются старые обмены сообщениями, если достигнут лимит токенов или размера запроса. Для каждого изображения отдельно действует лимит 4 МиБ. Исключённые данные остаются в переписке, их можно отправить повторно.',
   'context.included': 'В запросе',
   'context.excluded': 'Не отправляется',
   'context.reuse': 'Использовать снова',

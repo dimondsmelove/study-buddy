@@ -85,6 +85,7 @@ export interface ChatCompletionOpts {
   temperature?: number
   /** Hard token cutoff for the answer (a cap, not a length target). */
   maxTokens?: number
+  reasoning?: { effort: 'medium'; exclude: true }
   /** Aborts the request (fetch signal). */
   signal?: AbortSignal
   /** Streaming callback: each text delta as it arrives. */
@@ -170,7 +171,7 @@ function isAbort(err: unknown): boolean {
 /** One completion, retaining text even when a stream ends without a terminal
  *  event. Transport, cancellation and provider failures throw typed ApiError. */
 export async function chatCompletion(opts: ChatCompletionOpts): Promise<CompletionResult> {
-  const { settings, model, messages, signal, onDelta, onProviderGenerationId, onProviderResponseAccepted, temperature, maxTokens } = opts
+  const { settings, model, messages, signal, onDelta, onProviderGenerationId, onProviderResponseAccepted, temperature, maxTokens, reasoning } = opts
   // A user error, thrown BEFORE any network call: a request without a model
   // id can only fail, so it must not even be attempted.
   if (!model) throw new ApiError('Choose a model first.', 'response')
@@ -193,6 +194,7 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<Completi
         provider: { max_price: { prompt: 0.25, completion: 0.75, request: 0, image: 0 } },
         ...(temperature !== undefined ? { temperature } : {}),
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+        ...(reasoning ? { reasoning } : {}),
       }),
       signal,
     })

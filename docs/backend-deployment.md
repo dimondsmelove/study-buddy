@@ -2,7 +2,7 @@
 
 ## Public backend: Stage 1 hosting record (2026-10-19)
 
-This is a verified design record for the approved public-backend direction. It is not a deployment record. Public domain, tunnel, deployment, and store release work is deferred to later sessions; users must not need Tailscale for the eventual public release. Only the Study Buddy backend is in scope for public reachability. The extension, its local chat/image history, and its independent UI/answer-language settings retain their current architecture. The model remains openai/gpt-6-luna through OpenRouter, with the approved prompt package and parameters unchanged.
+This is a verified design record for the approved public-backend direction. It is not a deployment record. Public domain, tunnel, deployment, and store release work is deferred to later sessions; users must not need Tailscale for the eventual public release. Only the Study Buddy backend is in scope for public reachability. The extension, its local chat/image history, and its independent UI/answer-language settings retain their current architecture. Current implementation update (2026-10-21): the primary is anthropic/claude-haiku-5.5 through OpenRouter, with medium reasoning excluded from returned content and no fallback. Output is capped at 8,192 tokens; nominal input budget is 100,000 with 20,000 held back for estimator variance. This supersedes the earlier model/output description; the approved prompt package remains unchanged.
 
 ### FACT
 
@@ -18,7 +18,7 @@ This is a verified design record for the approved public-backend direction. It i
 - The user selected a **named Cloudflare Tunnel** as ingress. Direct router HTTPS is not selected. A domain and stable hostname are still required; purchase and Cloudflare/DNS setup have not happened.
 - Access should be free to anyone installing the extension, with no account or invitation gate. The API remains anonymous: an extension install does not identify a caller, and public clients outside the extension can also call the endpoint. CORS is not authorization. No login or registration behavior is being added.
 - Each anonymous installation receives **$5 per UTC calendar month**. Each new generation atomically reserves $0.275; trusted final usage replaces the reserve, while missing or ambiguous usage remains reserved until reconciled. An installation with less than $0.275 available cannot start a request. A known charge above its reserve blocks that installation pending operator review. The backend also enforces a **$100 global aggregate per UTC calendar month** across all installations using this service database. This limits traffic through this service only; it does not cap unrelated usage of the same provider account.
-- The reserve uses the documented maximum prompt and completion rates: 1,050,000 prompt tokens × $0.25/M + 16,384 output tokens × $0.75/M = $0.274788, rounded up to $0.275. The request carries OpenRouter provider max_price limits for prompt/completion and zero request/image surcharges. Sources: [OpenRouter provider max price](https://openrouter.ai/docs/guides/routing/provider-selection#max-price), [usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting), and [generation metadata](https://openrouter.ai/docs/api/api-reference/generations/get-generation). Prompts, model, and output cap are unchanged.
+- The $0.275 reserve remains unchanged by the 2026-10-21 model and cap change. It preserves the earlier conservative envelope: 1,050,000 prompt tokens × $0.25/M + 16,384 output tokens × $0.75/M = $0.274788, rounded up to $0.275. The request carries OpenRouter provider max_price limits for prompt/completion and zero request/image surcharges. Sources: [OpenRouter provider max price](https://openrouter.ai/docs/guides/routing/provider-selection#max-price), [usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting), and [generation metadata](https://openrouter.ai/docs/api/api-reference/generations/get-generation). The request currently uses the approved prompt package and caps output at 8,192 tokens.
 
 ### Selected ingress — named Cloudflare Tunnel
 
@@ -278,8 +278,8 @@ The 10-second cooldown, one in-flight request per installation, four globally,
 approximate input budget and per-task output caps remain additional controls.
 There is no hidden queue, cloud history, or account billing.
 
-The 200,000-input-token policy keeps 20,000 in reserve and estimates one text token
-per four UTF-8 bytes, with a separate allowance per image.
+The current 100,000-input-token policy keeps 20,000 in reserve and estimates one text token
+per four UTF-8 bytes, with a separate allowance per image. Context selection retains the current task and source image, then adds recent complete exchanges under the token and 32 MiB request limits. Older exchanges remain locally saved and can be reused.
 Provider-native text/image token counts can differ. Stop requests cancellation;
 already processed upstream work can still be billed, and a lost final usage
 chunk means unknown usage. Explicit Retry starts a new operation. Never

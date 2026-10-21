@@ -2449,11 +2449,17 @@ try {
   await otherFrame.waitForFunction(length => [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)?.textContent?.length > length, mirroredBefore)
   check(page.frames().includes(sharedFrame) && requestCount === beforeSharedStart + 1,
     'switching tabs and minimizing preserves one writer while the other tab renders its streaming reply')
+  if (await otherPage.evaluate(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'minimized')) {
+    await clickHostButtonOn(otherPage, 'Restore Study Buddy')
+    await otherPage.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
+  }
   await otherFrame.click('#ask-btn')
   await otherFrame.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent?.includes('Stopped'))
   const sharedStopped = await readSaved(otherFrame)
   check(!sharedStopped.state.generation && sharedStopped.conversations.find(c => c.id === nextConversationId).turns.at(-1).status === 'cancelled',
     'Stop in a mirrored tab aborts the original writer and saves its final partial reply')
+  await clickHostButtonOn(otherPage, '−')
+  await otherPage.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
   await otherPage.reload()
   await otherPage.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
   await clickHostButtonOn(otherPage, 'Restore Study Buddy')

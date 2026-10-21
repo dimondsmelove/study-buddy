@@ -23,6 +23,15 @@ const contentWindow = window as unknown as Record<string, unknown>
 const ownsHost = !contentWindow.__studyBuddyContent
 if (ownsHost) {
   contentWindow.__studyBuddyContent = true
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' &&
+        chatPanel?.style.display !== 'none' &&
+        chatRoot?.getAttribute('data-state') === 'open' &&
+        !cancelOverlay &&
+        !selectionRestoreState) {
+      minimizeChat()
+    }
+  })
   chrome.runtime.onMessage.addListener((msg: Message) => {
     if (msg.type === 'SHOW_OVERLAY') {
       showOverlay()

@@ -1,9 +1,9 @@
 import { chromium } from 'playwright'
 import { createServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createServer as createViteServer } from 'vite'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -61,20 +61,52 @@ const upstream = createServer((req, res) => {
 await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve))
 const origin = `http://127.0.0.1:${upstream.address().port}`
 let ctx
+let browser
+let browserProcess
 let backend
 let vite
 try {
+  if (process.env.SB_HEADED !== '1') throw new Error('Tab visibility acceptance requires SB_HEADED=1 and an isolated headed display')
   execFileSync('npm', ['run', 'build', '--', '--outDir', dist], {
     cwd: repo,
     env: { ...process.env, STUDY_BUDDY_GATEWAY_URL: `http://127.0.0.1:${gatewayPort}` },
     stdio: 'inherit',
   })
-  ctx = await chromium.launchPersistentContext(profile, {
-    channel: 'chromium',
-    args: ['--enable-unsafe-extension-debugging', `--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
-  })
+  const executablePath = process.env.SB_BROWSER_EXECUTABLE || chromium.executablePath()
+  browserProcess = spawn(executablePath, [
+    `--user-data-dir=${profile}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--no-sandbox',
+    '--disable-component-extensions-with-background-pages',
+    '--remote-debugging-address=127.0.0.1',
+    '--remote-debugging-port=0',
+    '--enable-unsafe-extension-debugging',
+    `--disable-extensions-except=${dist}`,
+    `--load-extension=${dist}`,
+  ], { stdio: 'ignore' })
+  const activePortFile = join(profile, 'DevToolsActivePort')
+  const debugDeadline = Date.now() + 10_000
+  while (!existsSync(activePortFile) && Date.now() < debugDeadline && browserProcess.exitCode === null) {
+    await new Promise(resolve => setTimeout(resolve, 50))
+  }
+  if (!existsSync(activePortFile)) throw new Error('Isolated headed Chromium did not expose its DevTools endpoint')
+  const [debugPort] = readFileSync(activePortFile, 'utf8').split('\n')
+  // Playwright's defaults force background documents visible; connect without them to test native tab visibility.
+  browser = await chromium.connectOverCDP({ endpointURL: `http://127.0.0.1:${debugPort}`, noDefaults: true })
+  ctx = browser.contexts()[0]
+  if (!ctx) throw new Error('Isolated Chromium did not create its default browser context')
   await ctx.route('https://**/*', route => route.abort())
-  const [sw] = ctx.serviceWorkers().length ? ctx.serviceWorkers() : [await ctx.waitForEvent('serviceworker')]
+  let sw = ctx.serviceWorkers().find(worker => worker.url().endsWith('/service-worker-loader.js'))
+  if (!sw) sw = await ctx.waitForEvent('serviceworker', { timeout: 10_000, predicate: worker => worker.url().endsWith('/service-worker-loader.js') })
+  const extensionRuntime = await sw.evaluate(async () => {
+    const deadline = Date.now() + 5_000
+    while ((!globalThis.chrome?.runtime?.id || !globalThis.chrome?.storage?.local) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    return { href: self.location.href, runtimeId: globalThis.chrome?.runtime?.id, hasStorage: Boolean(globalThis.chrome?.storage?.local) }
+  })
+  if (!extensionRuntime.runtimeId || !extensionRuntime.hasStorage) throw new Error('Extension APIs did not initialize in its service worker')
   const extensionId = new URL(sw.url()).hostname
   vite = await createViteServer({ configFile: false, root: repo, appType: 'custom', server: { middlewareMode: true } })
   const [{ createBackend }, { loadBackendConfig }] = await Promise.all([
@@ -93,20 +125,45 @@ try {
 
   const [page] = await Promise.all([ctx.newPage()])
   await page.setViewportSize({ width: 1280, height: 800 })
-  await page.goto(origin)
+  await page.goto(origin + '/tab-a')
+  const otherPage = await ctx.newPage()
+  await otherPage.setViewportSize({ width: 1280, height: 800 })
+  await otherPage.goto(origin.replace('127.0.0.1', 'localhost') + '/tab-b')
   await sw.evaluate(() => chrome.storage.local.set({ settings: { uiLanguage: 'en', answerLanguage: 'auto' } }))
+  const hostPages = [page, otherPage]
+  const activate = async targetPage => {
+    const tabId = await sw.evaluate(async url => (await chrome.tabs.query({})).find(tab => tab.url === url)?.id, targetPage.url())
+    if (tabId === undefined) throw new Error('Could not find native tab for ' + targetPage.url())
+    await sw.evaluate(id => chrome.tabs.update(id, { active: true }), tabId)
+    await targetPage.waitForFunction(() => document.visibilityState === 'visible')
+    await Promise.all(hostPages.filter(item => item !== targetPage).map(item => item.waitForFunction(() => document.visibilityState === 'hidden')))
+  }
+  await activate(page)
+  await otherPage.waitForFunction(() => document.visibilityState === 'hidden')
+  if (await page.locator('[data-study-buddy="launcher"]').count() || await otherPage.locator('[data-study-buddy="launcher"]').count()) throw new Error('A launcher appeared before the chat was opened')
   const browserCdp = await ctx.browser().newBrowserCDPSession()
   const triggerAction = async () => {
-    await page.bringToFront()
+    await activate(page)
     const { targetInfos } = await browserCdp.send('Target.getTargets', { filter: [{ type: 'tab', exclude: false }, { exclude: true }] })
     const target = targetInfos.find(item => item.type === 'tab' && item.url === page.url())
     if (!target) throw new Error('Target host tab was not found')
     await browserCdp.send('Extensions.triggerAction', { id: extensionId, targetId: target.targetId })
   }
-  const getChatFrame = () => page.frames().find(frame => frame.url().startsWith(`chrome-extension://${extensionId}/src/chat/chat.html`))
+  const getChatFrameOn = targetPage => targetPage.frames().find(frame => frame.url().includes('/src/chat/chat.html'))
+  const waitForChatFrameOn = async targetPage => {
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      const frame = getChatFrameOn(targetPage)
+      if (frame) return frame
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    return undefined
+  }
+  const getChatFrame = () => getChatFrameOn(page)
   const cdp = await ctx.newCDPSession(page)
-  const clickLauncher = async () => {
-    const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true })
+  const clickLauncherOn = async (targetPage = page) => {
+    const targetCdp = targetPage === page ? cdp : await ctx.newCDPSession(targetPage)
+    const { root } = await targetCdp.send('DOM.getDocument', { depth: -1, pierce: true })
     const label = node => {
       const i = node.attributes?.indexOf('aria-label') ?? -1
       return i < 0 ? '' : node.attributes[i + 1]
@@ -120,12 +177,15 @@ try {
     }
     const button = find(root)
     if (!button) throw new Error('Restore launcher button is missing')
-    const { model } = await cdp.send('DOM.getBoxModel', { nodeId: button.nodeId })
-    await page.mouse.click((model.border[0] + model.border[4]) / 2, (model.border[1] + model.border[5]) / 2)
+    const { model } = await targetCdp.send('DOM.getBoxModel', { nodeId: button.nodeId })
+    await targetPage.mouse.click((model.border[0] + model.border[4]) / 2, (model.border[1] + model.border[5]) / 2)
+    if (targetPage !== page) await targetCdp.detach()
   }
+  const clickLauncher = () => clickLauncherOn(page)
   const clickInsideFrame = async frame => frame.locator('#ask-input').click()
-  const assertState = state => page.waitForFunction(expected =>
+  const assertStateOn = (targetPage, state) => targetPage.waitForFunction(expected =>
     document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === expected, state)
+  const assertState = state => assertStateOn(page, state)
   await triggerAction()
   await page.waitForSelector('[data-study-buddy="overlay"]')
   await page.mouse.move(60, 50)
@@ -158,7 +218,7 @@ try {
   console.log('PASS inside click stays open; outside click reaches host, minimizes, and restores same iframe and draft')
 
   responseMode = 'stream'
-  await frame.locator('#ask-input').fill('Continue while hidden')
+  await frame.locator('#ask-input').fill('Continue while switching tabs')
   const requestsBeforeStream = requestCount
   await frame.locator('#ask-btn').click()
   const providerDeadline = Date.now() + 5000
@@ -166,29 +226,48 @@ try {
   if (requestCount !== requestsBeforeStream + 1) throw new Error('Expected one mock stream request; before=' + requestsBeforeStream + ', after=' + requestCount)
   await frame.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.length > 5)
   const streamingRequestCount = requestCount
-  await page.locator('#underlay-target').click()
+
+  await activate(otherPage)
+  await page.waitForFunction(() => document.visibilityState === 'hidden')
   await assertState('minimized')
-  const streamDeadline = Date.now() + 10_000
-  let streamState
-  do {
-    streamState = await frame.evaluate(() => ({
-      status: [...document.querySelectorAll('.reply-status')].at(-1)?.textContent,
-      answer: [...document.querySelectorAll('.msg.assistant .msg-body')].at(-1)?.textContent,
-      input: document.querySelector('#ask-input')?.value,
-    }))
-    if (streamState.status?.includes('Complete')) break
-    await new Promise(resolve => setTimeout(resolve, 50))
-  } while (Date.now() < streamDeadline)
-  if (!streamState.status?.includes('Complete')) throw new Error('Stream did not complete while minimized: ' + JSON.stringify(streamState))
-  if (requestCount !== streamingRequestCount || getChatFrame() !== frame) throw new Error('Stream completion created a second request or replaced the iframe')
+  await otherPage.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
+
+  const latePage = await ctx.newPage()
+  hostPages.push(latePage)
+  await latePage.setViewportSize({ width: 1280, height: 800 })
+  await latePage.goto(origin + '/tab-c')
+  await latePage.waitForSelector('[data-study-buddy="launcher"]', { state: 'attached' })
+  await activate(otherPage)
+  await clickLauncherOn(otherPage)
+  await assertStateOn(otherPage, 'open')
+  const otherFrame = await waitForChatFrameOn(otherPage)
+  if (!otherFrame) throw new Error('The destination launcher did not restore the shared chat')
+  await otherFrame.waitForSelector('#ask-input')
+  await otherFrame.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent.includes('Complete'), undefined, { timeout: 10_000 })
+  const otherConversationId = new URL(otherFrame.url()).searchParams.get('conversation')
+  const sourceConversationId = new URL(frame.url()).searchParams.get('conversation')
+  if (!otherConversationId || otherConversationId !== sourceConversationId) throw new Error('Destination restored a different conversation')
+  if (requestCount !== streamingRequestCount) throw new Error('Restoring the destination started another provider request')
+
+  await activate(page)
+  await otherPage.waitForFunction(() => document.visibilityState === 'hidden')
+  await assertState('minimized')
+  await page.waitForFunction(() => !document.querySelector('[data-study-buddy="launcher"]')?.hidden)
   await clickLauncher()
   await assertState('open')
-  console.log('PASS stream continues while minimized with one provider call and the same iframe')
+  if (getChatFrame() !== frame || requestCount !== streamingRequestCount) throw new Error('Returning to the source did not restore its original iframe without another request')
+  await frame.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent.includes('Complete'))
+  console.log('PASS tab switch minimizes source, destination restores same conversation, late tab receives launcher, and returning restores source iframe after one streamed request')
 
   const beforeSelectionRequests = requestCount
   await triggerAction()
   await page.waitForSelector('[data-study-buddy="overlay"]')
   await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'selecting')
+  await activate(otherPage)
+  await page.waitForFunction(() => document.visibilityState === 'hidden')
+  await assertState('selecting')
+  await activate(page)
+  await page.waitForFunction(() => document.visibilityState === 'visible')
   await page.keyboard.press('Escape')
   await assertState('open')
   if (getChatFrame() !== frame) throw new Error('Escape from selection replaced the chat iframe')
@@ -203,8 +282,56 @@ try {
   await frame.waitForFunction(() => document.querySelectorAll('.turn-image').length >= 2)
   if (getChatFrame() !== frame || requestCount !== beforeSelectionRequests) throw new Error('Selection drag did not preserve the iframe or started a model request')
   console.log('PASS selection Escape and drag preserve the open panel without model requests')
+
+  const { root: hostRoot } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true })
+  const labelOf = node => {
+    const i = node.attributes?.indexOf('aria-label') ?? -1
+    return i < 0 ? '' : node.attributes[i + 1]
+  }
+  const findClose = node => {
+    if (node.nodeName === 'BUTTON' && labelOf(node) === 'Close and save') return node
+    for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) {
+      const found = findClose(child)
+      if (found) return found
+    }
+  }
+  const closeButton = findClose(hostRoot)
+  if (!closeButton) throw new Error('Close button is missing from the open source panel')
+  const closeBox = await cdp.send('DOM.getBoxModel', { nodeId: closeButton.nodeId })
+  await page.mouse.click((closeBox.model.border[0] + closeBox.model.border[4]) / 2, (closeBox.model.border[1] + closeBox.model.border[5]) / 2)
+  await page.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  await otherPage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+  if (await page.locator('[data-study-buddy="launcher"]').count()) throw new Error('Close left a source launcher')
+
+  const lateCdp = await ctx.newCDPSession(latePage)
+  const { root: lateRoot } = await lateCdp.send('DOM.getDocument', { depth: -1, pierce: true })
+  const findLauncher = node => {
+    if (node.nodeName === 'BUTTON' && labelOf(node).startsWith('Restore Study Buddy')) return node
+    for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) {
+      const found = findLauncher(child)
+      if (found) return found
+    }
+  }
+  const lateLauncher = findLauncher(lateRoot)
+  if (lateLauncher && !lateLauncher.attributes?.includes('hidden')) {
+    const lateBox = await lateCdp.send('DOM.getBoxModel', { nodeId: lateLauncher.nodeId })
+    const width = Math.abs(lateBox.model.border[2] - lateBox.model.border[0])
+    const height = Math.abs(lateBox.model.border[5] - lateBox.model.border[1])
+    if (width || height) throw new Error('Close left a visible launcher on the new tab')
+  }
+  await lateCdp.detach()
+  console.log('PASS Close removes the shared chat and all visible launchers; fresh tabs had no launcher before a chat')
 } finally {
-  if (ctx) await ctx.close()
+  if (browser) await browser.close()
+  if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
+    const waitForExit = () => Promise.race([new Promise(resolve => browserProcess.once('exit', () => resolve(true))), new Promise(resolve => setTimeout(() => resolve(false), 2000))])
+    browserProcess.kill('SIGTERM')
+    let exited = await waitForExit()
+    if (!exited) {
+      browserProcess.kill('SIGKILL')
+      await waitForExit()
+    }
+  }
   if (backend) await backend.close()
   if (vite) await vite.close()
   await new Promise(resolve => upstream.close(() => resolve()))

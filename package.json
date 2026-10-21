@@ -14,6 +14,7 @@
     "contracts:prompts": "node scripts/prompt-contracts.mjs",
     "preview:local": "node scripts/preview-local.mjs",
     "verify": "node scripts/verify.mjs",
+    "verify:overlay-click": "node scripts/overlay-outside-click-contracts.mjs",
     "playtest": "node scripts/playtest.mjs",
     "quality": "npm run build && node scripts/quality.mjs",
     "screenshots": "npm run build && node scripts/screenshots.mjs",

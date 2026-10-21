@@ -579,6 +579,13 @@ function showChat(state: ChatState): void {
     if (event.composedPath().includes(root)) return
     const url = new URL(CHAT_URL)
     frame.contentWindow?.postMessage({ source: 'study-buddy-host', action: 'dismiss-tooltip' }, `${url.protocol}//${url.hostname}`)
+    if (event.button === 0 &&
+        chatPanel?.style.display !== 'none' &&
+        chatRoot?.getAttribute('data-state') === 'open' &&
+        !cancelOverlay &&
+        !selectionRestoreState) {
+      minimizeChat()
+    }
   }
   document.addEventListener('pointerdown', hostPointerDown, true)
   w[CHAT_FLAG] = true

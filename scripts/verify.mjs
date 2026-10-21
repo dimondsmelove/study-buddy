@@ -56,7 +56,7 @@ const check = (ok, label) => {
 // A local page to capture (data: URLs are restricted; file:// needs a toggle).
 const pageHtml = `<!doctype html><meta charset="utf-8"><title>target</title>
 <style>body{margin:0;font:24px system-ui}.capture-proof{position:fixed;left:220px;top:230px;width:140px;height:90px;background:rgb(19,135,64)}</style>
-<body><p style="padding:40px">homework text 12345</p><div class="capture-proof"></div></body>`
+<body><p style="padding:40px">homework text 12345</p><div class="capture-proof"></div><script>window.hostClickCount=0;document.addEventListener("click",()=>window.hostClickCount++)</script></body>`
 
 // This isolated HTTP server serves the local capture page and acts as the
 // injected fake OpenAI-compatible upstream for the real backend process.
@@ -1824,12 +1824,18 @@ try {
     ? { x: Math.max(4, Math.floor(embeddedBounds.x - 8)), y: Math.max(8, Math.floor(embeddedBounds.y + 12)) }
     : { x: Math.min(1270, Math.ceil(embeddedBounds.x + embeddedBounds.width + 8)), y: Math.max(8, Math.floor(embeddedBounds.y + 12)) }
   const requestCountBeforeHostDismiss = requestCount
+  const hostClicksBeforeDismiss = await page.evaluate(() => window.hostClickCount)
   await embedded.locator('[data-preset="explain"]').hover()
   await embedded.waitForFunction(() => document.querySelector('#task-tooltip')?.matches(':popover-open'))
   await page.mouse.click(outsidePoint.x, outsidePoint.y)
+  await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'minimized' &&
+    !!document.querySelector('[data-study-buddy="launcher"]'))
   await embedded.waitForFunction(() => !document.querySelector('#task-tooltip')?.matches(':popover-open'))
-  check(requestCount === requestCountBeforeHostDismiss,
-    'a click on the host page outside the iframe dismisses the task tooltip without starting an action')
+  check(requestCount === requestCountBeforeHostDismiss &&
+    await page.evaluate(() => window.hostClickCount) === hostClicksBeforeDismiss + 1,
+    'a host-page click dismisses the tooltip, reaches the page, and minimizes without starting an action')
+  await clickHostButton('Restore Study Buddy')
+  await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
   await resetCooldown(embedded)
   responseMode = 'slow'
   const nativeBefore = requestCount

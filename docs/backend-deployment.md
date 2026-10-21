@@ -290,3 +290,13 @@ extension ID, complete support/privacy contact and audience decisions, reconcile
 host/ingress/provider retention disclosures, and refresh store assets. Public
 reachability, abuse/cost posture, and the streaming path must be accepted before
 release. These are release actions, not evidence that this branch is deployed.
+
+## Private laptop Haiku update (2026-10-21)
+
+Implementation is committed locally as 2879aeb. The primary reviewed the source and independently passed both typechecks, all 20 backend contracts, context-estimator contracts, synthetic 125k text/same-image projection checks, and a rendered 320 x 568 Russian same-image context boundary check in a fresh agent-owned Chromium. The selected inputs were 75,316 and 76,340 estimated tokens; stored history stayed unchanged, current image was deduplicated on the current request, and preview matched canonical provider preparation.
+
+The worker also passed API, storage and prompt contracts. The full isolated verify harness passed the changed request settings, valid-PNG 32 MiB history trimming, context/reuse and narrow RU/EN UI checks. It did not complete its final native-host lifecycle section: that fixture waited for a minimized host on a page without a chat root. This is not a full-suite pass. No real model-quality or paid-provider acceptance call was made.
+
+The private service was stopped with no active generations. Its SQLite file was backed up before the additive expected_model migration; the original backend and installed extension were also retained at ~/.local/share/study-buddy/private/rollback-haiku-20261021T162403Z. The staged source hashes matched the reviewed source. Backend SHA-256 is b808d97abeb4efcfebb3344343a6a16ddaa081093c8a1e03660d5cca6210076d. The service restarted successfully and /health returned {"ok":true}. The single existing installation and all 25 charge records were retained.
+
+The 71 installed extension files at ~/Загрузки/Study-Buddy-Local exactly match the staged release for http://127.0.0.1:8787. Browser activation is pending the user's choice to reload only Study Buddy in their live Vivaldi. This is a private laptop update; public hosting and store release remain deferred. Detailed non-secret primary metrics and deployment receipts are in /tmp/study-buddy-haiku-20261021.

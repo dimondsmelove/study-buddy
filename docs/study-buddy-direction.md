@@ -99,3 +99,12 @@ FACT — финальные QA-уточнения 2026-10-20: tooltip испол
 DECISION: primary model is `anthropic/claude-haiku-5.5` through the existing OpenRouter path, with reasoning effort `medium` and reasoning output excluded. There is no model fallback. Each task caps output at 8,192 tokens. Nominal input budget is 100,000 estimated tokens; the existing 20,000-token variance reserve remains, so client selection targets at most 80,000. Existing provider max-price settings and the $0.275 generation reserve remain unchanged.
 
 DECISION: context slides by complete recent exchanges even within one image/task or an all-text chat. Always pin the current user task and its necessary source image, then add newest complete exchanges while token and 32 MiB JSON request limits allow. An oversized current task is blocked only when its essential request alone exceeds a valid limit. Saved history is preserved, excluded rows remain muted with reuse, and the boundary explains that older messages remain saved; it qualifies the included current image when that pinned image appears above the boundary. No automatic summaries are introduced.
+
+
+## Outside page click — 2026-10-21
+
+DECISION: clicking the page outside the floating panel should invoke the existing Minimize behavior. Primary pointerdown outside the panel now minimizes without cancelling the page click. Clicks within the panel and capture-selection mode remain unchanged. The same iframe retains the draft and active generation; restore uses the existing launcher.
+
+FACT: worker and primary independently passed typecheck, context contracts, and the focused real Chromium extension/backend fixture (`npm run verify:overlay-click`) with a fake provider. The fixture checks click propagation, inside click, same-iframe draft preservation, stream completion while hidden with one provider request, and selection Escape/drag. No paid calls or user-browser changes were needed for acceptance. The existing monolithic verify tooltip scenario now expects outside-click minimize and restores before continuing; the full monolith was not rerun.
+
+LIMITATION: pointer events within other embedded iframes do not reach the top document. Tested blur/activeElement approaches did not identify that case reliably, so this version covers clicks in the main page document. It does not add general window/tab blur behavior.

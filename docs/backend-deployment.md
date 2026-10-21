@@ -307,3 +307,14 @@ The 71 installed extension files at ~/Загрузки/Study-Buddy-Local exactly
 Implementation is committed locally as 56e59be. Primary independently passed typecheck, context contracts, and the native Chromium `verify:overlay-click` scenario with a fake provider. A private localhost:8787 release was rebuilt; the only changed installed artifact is content/overlay.js (SHA-256 586b3b8afac00416e6be9f8c76ade33cf7c61283918f4fdadcc45305e47b79c4). All 71 installed extension files match staging. The preceding overlay is backed up at ~/.local/share/study-buddy/private/rollback-outside-click-20261021T172655Z/overlay.js. Backend service and database were not changed.
 
 Evidence and file hashes: /tmp/study-buddy-outside-click-20261021. The already verified live Haiku runtime predates this overlay update. Activation of the outside-click feature is pending an extension reload and a refresh of the host page; the agent did not reload a user website or discard its state. External iframe clicks remain outside this version, as recorded in the UI direction document.
+
+
+## Private laptop tab-switch update (2026-10-21)
+
+Implementation is committed locally as 45be73e. When an open panel tab becomes hidden, the existing Minimize path publishes the shared launcher state; another web tab can restore the same conversation while the source iframe remains mounted. Capture selection is excluded.
+
+Primary independently passed typecheck, context contracts, and all four focused native browser scenario groups on an agent-owned Xvfb display in headed Chromium 151 (1280 x 800). The exact source/test snapshot was copied from the laptop; standalone Chromium plus connectOverCDP(noDefaults:true) avoids Playwright focus emulation, so actual native tab activation produced visible/hidden transitions. The fake-provider fixture checked cross-origin A-to-B restore, a late third tab, return to the source iframe, a continuing single request, capture selection, and Close cleanup. No real provider calls or user-browser changes were made. The full monolithic verify was not rerun; its shared-panel scenario was adapted for automatic minimize.
+
+The private localhost:8787 release differs only in content/overlay.js, SHA-256 e692e403b53b72785994398e501c58961e0f63af2967e718e52169ac7cd14713. All 71 installed files match staging. The preceding overlay is retained at ~/.local/share/study-buddy/private/rollback-tab-switch-20261021T182000Z/overlay.js. Backend and database are unchanged; backend health returned ok. Evidence, primary-final.log and deployment.json are in /tmp/study-buddy-tab-switch-20261021 on the laptop (the isolated QA checkout/logs also exist under that path on the coordinator).
+
+Live activation is pending extension reload and refresh of the web tabs being used. The agent did not reload a user website or discard page state.

@@ -318,3 +318,14 @@ Primary independently passed typecheck, context contracts, and all four focused 
 The private localhost:8787 release differs only in content/overlay.js, SHA-256 e692e403b53b72785994398e501c58961e0f63af2967e718e52169ac7cd14713. All 71 installed files match staging. The preceding overlay is retained at ~/.local/share/study-buddy/private/rollback-tab-switch-20261021T182000Z/overlay.js. Backend and database are unchanged; backend health returned ok. Evidence, primary-final.log and deployment.json are in /tmp/study-buddy-tab-switch-20261021 on the laptop (the isolated QA checkout/logs also exist under that path on the coordinator).
 
 Live activation is pending extension reload and refresh of the web tabs being used. The agent did not reload a user website or discard page state.
+
+
+## Private laptop context-notice UI update (2026-10-22)
+
+Implementation is committed locally as a22a643. The notice below the six actions starts at 40,000 estimated tokens and adds the saved-but-unsent explanation when olderTask exclusions actually occur; the existing muted rows and in-thread boundary remain. The conversation title is 16px/650 in the main text color with a full-title tooltip. Context selection, backend limits and stored transcripts are unchanged.
+
+Primary independently passed typecheck, context contracts and 33 rendered checks on an exact source snapshot in an agent-owned headless Chromium 151. The synthetic fixture checked 39,999/40,000/40,001 boundaries, RU/EN omission and actual projection IDs, short selected suffix after an oversized old exchange, draft/error/New chat resets, incomplete-reply false positives, unchanged saved history, title styling and 480x568/320x324 geometry. No model calls or page errors occurred. Screenshots were viewed; the default warning is 44.4px high and leaves a 313.6px thread. At 320x324 the compact RU/EN thread is 23.3/39.4px; the composer stays accessible. The full monolithic verify was not rerun. Worker additionally passed prompt and 16 API contract groups and the production build.
+
+The keyless release keeps the same private localhost:8787 host permissions. All 71 installed extension files match staging and the tested source hashes match the committed files. The previous installed extension is backed up at ~/.local/share/study-buddy/private/rollback-context-ui-20261022T074022Z/extension.tar. Backend and database were not changed; health returned ok. Receipts and primary metrics/logs are in /tmp/study-buddy-context-ui-20261022 on the laptop; the coordinator directory of the same name also holds the isolated fixture and intentional user-preview screenshots.
+
+Live activation remains pending an extension reload and refresh of the web tabs being used. No user-owned browser was manipulated.

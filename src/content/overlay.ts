@@ -41,7 +41,7 @@ if (ownsHost) {
     } else if (msg.type === 'HIDE_OVERLAY') {
       cancelOverlay?.()
     } else if (msg.type === 'SHOW_CHAT') {
-      showChat(msg.state)
+      void showChat(msg.state)
     } else if (msg.type === 'CAPTURE_FAILED') {
       captureFailed(msg.message)
     } else if (msg.type === 'HIDE_CHAT') {
@@ -68,6 +68,9 @@ if (ownsHost) {
       launcherMinimized = state?.minimized === true
       refreshLauncher()
     }).catch(() => {})
+  })
+  window.addEventListener('resize', () => {
+    if (chatPanel) applyPanelGeometry()
   })
 }
 
@@ -229,6 +232,7 @@ let selectionRestoreState: 'open' | 'minimized' | undefined
 let selectionRestoreNotice: { hidden: boolean; display: string } | undefined
 let hostMessages: ((event: MessageEvent) => void) | undefined
 let hostPointerDown: ((event: PointerEvent) => void) | undefined
+let showChatRevision = 0
 
 function trackConversation(nextConversationId: string | undefined, cancelClose: boolean): void {
   if (activeConversationId && nextConversationId && activeConversationId !== nextConversationId) {
@@ -241,22 +245,65 @@ function trackConversation(nextConversationId: string | undefined, cancelClose: 
   if (nextConversationId) activeConversationId = nextConversationId
 }
 
-/** User-resized panel size, persisted across pages/sessions. Loaded async;
- *  until it arrives (or if never resized) the defaults below apply. */
-let savedSize: { w: number; h: number } | null = null
-void chrome.storage.local.get(PANEL_SIZE_KEY).then((r) => {
-  const s = r[PANEL_SIZE_KEY]
-  if (s && typeof s.w === 'number' && typeof s.h === 'number') savedSize = s
-})
+type PanelGeometry = { w: number; h: number; x?: number; y?: number }
+
+/** Preferred user geometry survives viewport clamping on smaller pages. */
+let preferredGeometry: PanelGeometry | undefined
+let geometryRevision = 0
+let geometryReady: Promise<void> = Promise.resolve()
+if (ownsHost) {
+  geometryReady = chrome.storage.local.get(PANEL_SIZE_KEY).then((r) => {
+    if (geometryRevision === 0) preferredGeometry = readPanelGeometry(r[PANEL_SIZE_KEY])
+  }).catch(() => {})
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    const change = changes[PANEL_SIZE_KEY]
+    if (areaName !== 'local' || !change) return
+    geometryRevision++
+    preferredGeometry = readPanelGeometry(change.newValue)
+    if (chatPanel) applyPanelGeometry()
+  })
+}
+
+function readPanelGeometry(value: unknown): PanelGeometry | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const geometry = value as Record<string, unknown>
+  if (typeof geometry.w !== 'number' || !Number.isFinite(geometry.w) ||
+      typeof geometry.h !== 'number' || !Number.isFinite(geometry.h)) return undefined
+  const hasPosition = typeof geometry.x === 'number' && Number.isFinite(geometry.x) &&
+    typeof geometry.y === 'number' && Number.isFinite(geometry.y)
+  return {
+    w: geometry.w,
+    h: geometry.h,
+    ...(hasPosition ? { x: geometry.x as number, y: geometry.y as number } : {}),
+  }
+}
 
 function panelWidth(): number {
-  const def = savedSize ? savedSize.w : 480
+  const def = preferredGeometry ? preferredGeometry.w : 480
   return Math.min(def, document.documentElement.clientWidth - 16)
 }
 
 function panelHeight(): number {
-  const def = savedSize ? savedSize.h : 600
+  const def = preferredGeometry ? preferredGeometry.h : 600
   return Math.min(def, document.documentElement.clientHeight - 16)
+}
+
+function savePanelGeometry(panel: HTMLDivElement, sizeChanged: boolean, positionChanged: boolean): void {
+  const rect = panel.getBoundingClientRect()
+  const geometry: PanelGeometry = {
+    w: sizeChanged ? Math.round(rect.width) : preferredGeometry?.w ?? Math.round(rect.width),
+    h: sizeChanged ? Math.round(rect.height) : preferredGeometry?.h ?? Math.round(rect.height),
+    x: positionChanged ? Math.round(rect.left) : preferredGeometry?.x ?? Math.round(rect.left),
+    y: positionChanged ? Math.round(rect.top) : preferredGeometry?.y ?? Math.round(rect.top),
+  }
+  preferredGeometry = geometry
+  geometryRevision++
+  void chrome.storage.local.set({ [PANEL_SIZE_KEY]: geometry }).catch(() => {})
+}
+
+function saveInitialPanelPosition(panel: HTMLDivElement): void {
+  if (Number.isFinite(preferredGeometry?.x) && Number.isFinite(preferredGeometry?.y)) return
+  savePanelGeometry(panel, false, true)
 }
 
 function chatUrl(state: ChatState): string {
@@ -359,7 +406,10 @@ function minimizeChat(): void {
 /** Embed or update the chat window. The window persists across captures (the
  *  conversation keeps its context); a new state is relayed in via postMessage
  *  instead of reloading the iframe. */
-function showChat(state: ChatState): void {
+async function showChat(state: ChatState): Promise<void> {
+  const revision = ++showChatRevision
+  await geometryReady
+  if (revision !== showChatRevision) return
   setLauncherState(false)
   const nextConversationId = state.kind === 'capture' || state.kind === 'conversation' ? state.conversationId : undefined
   if (chatFrame) {
@@ -378,7 +428,8 @@ function showChat(state: ChatState): void {
     }
     if (!sameConversation) postStateToChat(state)
     else chatFrame.focus()
-    if (state.kind === 'capture') positionPanel(state.rect)
+    applyPanelGeometry(state.kind === 'capture' ? state.rect : undefined)
+    if (chatPanel) saveInitialPanelPosition(chatPanel)
     return
   }
 
@@ -401,6 +452,7 @@ function showChat(state: ChatState): void {
   const panel = document.createElement('div')
   panel.style.cssText = [
     'position:fixed',
+    'box-sizing:border-box',
     `width:${panelWidth()}px`,
     `height:${panelHeight()}px`,
     'display:flex',
@@ -524,8 +576,8 @@ function showChat(state: ChatState): void {
   notice.hidden = true
   shadow.appendChild(notice)
   document.documentElement.appendChild(root)
-  makeDraggable(panel, bar)
-  makeResizable(panel, grip)
+  makeDraggable(panel, bar, () => savePanelGeometry(panel, false, true))
+  makeResizable(panel, grip, () => savePanelGeometry(panel, true, false))
 
   chatRoot = root
   chatPanel = panel
@@ -598,10 +650,12 @@ function showChat(state: ChatState): void {
   }
   document.addEventListener('pointerdown', hostPointerDown, true)
   w[CHAT_FLAG] = true
-  positionPanel(state.kind === 'capture' ? state.rect : undefined)
+  applyPanelGeometry(state.kind === 'capture' ? state.rect : undefined)
+  saveInitialPanelPosition(panel)
 }
 
 function prepareForSelection(): void {
+  showChatRevision++
   if (chatFrame && chatRoot && chatPanel && launcher && !selectionRestoreState) {
     selectionRestoreState = chatPanel.style.display === 'none' ? 'minimized' : 'open'
   }
@@ -661,6 +715,7 @@ function postStateToChat(state: ChatState): void {
 }
 
 function removeChat(): void {
+  showChatRevision++
   if (hostMessages) window.removeEventListener('message', hostMessages)
   hostMessages = undefined
   if (hostPointerDown) document.removeEventListener('pointerdown', hostPointerDown, true)
@@ -695,7 +750,11 @@ function positionPanel(rect: Rect | undefined): void {
 
   let x: number
   let y: number
-  if (rect && rect.width > 0) {
+  if (preferredGeometry && Number.isFinite(preferredGeometry.x) && Number.isFinite(preferredGeometry.y)) {
+    // Keep the preferred position; a capture anchors only the first panel placement.
+    x = preferredGeometry.x!
+    y = preferredGeometry.y!
+  } else if (rect && rect.width > 0) {
     x = rect.x + rect.width + pad
     if (x + w > vw - 8) x = rect.x - w - pad
     if (x < 8) x = Math.max(8, Math.min(vw - w - 8, rect.x + rect.width - w))
@@ -709,7 +768,14 @@ function positionPanel(rect: Rect | undefined): void {
   chatPanel.style.top = `${Math.round(Math.max(8, Math.min(y, vh - h - 8)))}px`
 }
 
-function makeDraggable(panel: HTMLDivElement, handle: HTMLDivElement): void {
+function applyPanelGeometry(rect?: Rect): void {
+  if (!chatPanel) return
+  chatPanel.style.width = `${panelWidth()}px`
+  chatPanel.style.height = `${panelHeight()}px`
+  positionPanel(rect)
+}
+
+function makeDraggable(panel: HTMLDivElement, handle: HTMLDivElement, onEnd: () => void): void {
   handle.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return
     e.preventDefault()
@@ -729,6 +795,7 @@ function makeDraggable(panel: HTMLDivElement, handle: HTMLDivElement): void {
       handle.removeEventListener('pointermove', move)
       handle.removeEventListener('pointerup', up)
       handle.removeEventListener('pointercancel', up)
+      onEnd()
     }
     handle.addEventListener('pointermove', move)
     handle.addEventListener('pointerup', up)
@@ -738,7 +805,7 @@ function makeDraggable(panel: HTMLDivElement, handle: HTMLDivElement): void {
 
 /** Bottom-right grip resize. Clamped to a minimum readable size and to the
  *  viewport; the resulting size is persisted so the panel reopens as sized. */
-function makeResizable(panel: HTMLDivElement, grip: HTMLDivElement): void {
+function makeResizable(panel: HTMLDivElement, grip: HTMLDivElement, onEnd: () => void): void {
   grip.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return
     e.preventDefault()
@@ -761,8 +828,7 @@ function makeResizable(panel: HTMLDivElement, grip: HTMLDivElement): void {
       grip.removeEventListener('pointermove', move)
       grip.removeEventListener('pointerup', up)
       grip.removeEventListener('pointercancel', up)
-      savedSize = { w: panel.offsetWidth, h: panel.offsetHeight }
-      void chrome.storage.local.set({ [PANEL_SIZE_KEY]: savedSize })
+      onEnd()
     }
     grip.addEventListener('pointermove', move)
     grip.addEventListener('pointerup', up)

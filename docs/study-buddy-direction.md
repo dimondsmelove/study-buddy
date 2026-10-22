@@ -116,6 +116,13 @@ DECISION: when an open chat tab becomes hidden, invoke the existing Minimize beh
 FACT: the visibility listener uses the existing shared minimized state and launcher projection. A focused headed Chromium fixture verified native A-to-B activation, destination restoration, a late third tab, returning to A, one continuing mock stream request, selection Escape/drag, and Close cleanup. Playwright focus emulation is disabled by connecting to an isolated Chromium process with `noDefaults`; no synthetic visibility events or real provider calls are used.
 
 
+## Shared panel geometry — 2026-10-22
+
+DECISION: panel size and position follow the shared conversation across tabs and windows. The first capture anchors the panel when no position is stored; subsequent captures retain that position. Drag and resize persist the user's latest choice. Smaller viewports clamp the rendered panel without replacing the preferred geometry, which returns when the viewport grows. Existing size-only storage remains readable.
+
+FACT: a focused headed Chromium extension fixture used native pointer drag/resize across A→B→A, checked storage updates on already-open tabs, a new tab at 320×324 and restoration after expanding it, and a later capture retaining geometry. A fake stream continued with one request; typecheck and build passed. No real provider calls or user-browser changes were used.
+
+
 ## Long-context notice and conversation title — 2026-10-22
 
 DECISION: show a compact, non-blocking notice below the six task actions when the shared context projection estimates at least 40,000 input tokens. Advise that long context may affect answer quality and suggest starting a new chat. When the projection excludes older exchanges, add that those messages remain saved but are not sent to the model. Incomplete and superseded turns do not trigger the exclusion explanation. Keep the existing muted rows, reuse controls, context window, and request behavior. Render the conversation title at a clearer size and contrast while retaining ellipsis for long titles.

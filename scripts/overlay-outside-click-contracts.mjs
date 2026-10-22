@@ -161,6 +161,62 @@ try {
   }
   const getChatFrame = () => getChatFrameOn(page)
   const cdp = await ctx.newCDPSession(page)
+  const findHostNode = async (targetCdp, styleToken) => {
+    const { root } = await targetCdp.send('DOM.getDocument', { depth: -1, pierce: true })
+    const find = node => {
+      const styleIndex = node.attributes?.indexOf('style') ?? -1
+      const style = styleIndex < 0 ? '' : node.attributes[styleIndex + 1]
+      if (node.nodeName === 'DIV' && style.includes(styleToken)) return node
+      for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) {
+        const found = find(child)
+        if (found) return found
+      }
+    }
+    return find(root)
+  }
+  const hostRect = async (targetCdp, styleToken) => {
+    const node = await findHostNode(targetCdp, styleToken)
+    if (!node) {
+      throw new Error('Host panel node missing for ' + styleToken)
+    }
+    const { model } = await targetCdp.send('DOM.getBoxModel', { nodeId: node.nodeId })
+    return {
+      x: Math.round(model.border[0]),
+      y: Math.round(model.border[1]),
+      w: Math.round(model.border[4] - model.border[0]),
+      h: Math.round(model.border[5] - model.border[1]),
+    }
+  }
+  const waitForHostRect = async (targetCdp, styleToken, expected) => {
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      const actual = await hostRect(targetCdp, styleToken)
+      if (actual.x === expected.x && actual.y === expected.y && actual.w === expected.w && actual.h === expected.h) return actual
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error('Host panel geometry did not settle at ' + JSON.stringify(expected) + ': ' + JSON.stringify(await hostRect(targetCdp, styleToken)))
+  }
+  const dragHostNode = async (targetPage, targetCdp, styleToken, dx, dy) => {
+    const node = await findHostNode(targetCdp, styleToken)
+    if (!node) throw new Error('Host drag node missing for ' + styleToken)
+    const { model } = await targetCdp.send('DOM.getBoxModel', { nodeId: node.nodeId })
+    const x = (model.border[0] + model.border[4]) / 2
+    const y = (model.border[1] + model.border[5]) / 2
+    await targetPage.mouse.move(x, y)
+    await targetPage.mouse.down()
+    await targetPage.mouse.move(x + dx, y + dy, { steps: 5 })
+    await targetPage.mouse.up()
+  }
+  const readSavedGeometry = () => sw.evaluate(async () => (await chrome.storage.local.get('panel.size'))['panel.size'])
+  const waitForSavedGeometry = async expected => {
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      const actual = await readSavedGeometry()
+      if (actual && Object.entries(expected).every(([key, value]) => actual[key] === value)) return actual
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error('Stored panel geometry did not match ' + JSON.stringify(expected) + ': ' + JSON.stringify(await readSavedGeometry()))
+  }
   const clickLauncherOn = async (targetPage = page) => {
     const targetCdp = targetPage === page ? cdp : await ctx.newCDPSession(targetPage)
     const { root } = await targetCdp.send('DOM.getDocument', { depth: -1, pierce: true })
@@ -199,6 +255,17 @@ try {
   await frame.waitForSelector('#ask-input')
   await frame.waitForFunction(() => document.querySelector('.turn-image')?.naturalWidth > 0)
 
+  const initialGeometry = await hostRect(cdp, 'flex-direction: column')
+  await waitForSavedGeometry(initialGeometry)
+  await dragHostNode(page, cdp, 'cursor: move', 340, 90)
+  await dragHostNode(page, cdp, 'cursor: nwse-resize', 28, 18)
+  const geometryA = await hostRect(cdp, 'flex-direction: column')
+  if (geometryA.x !== initialGeometry.x + 340 || geometryA.y !== initialGeometry.y + 90 ||
+      geometryA.w <= initialGeometry.w || geometryA.h <= initialGeometry.h) {
+    throw new Error('Native source drag/resize did not produce expected geometry: ' + JSON.stringify({ initialGeometry, geometryA }))
+  }
+  await waitForSavedGeometry(geometryA)
+
   const clicksBeforeInside = await page.evaluate(() => window.hostClickCount)
   await clickInsideFrame(frame)
   if (await page.locator('[data-study-buddy="chat"]').getAttribute('data-state') !== 'open') throw new Error('Click inside iframe minimized the panel')
@@ -215,7 +282,7 @@ try {
   await clickLauncher()
   await assertState('open')
   if (getChatFrame() !== frame || await frame.locator('#ask-input').inputValue() !== draft) throw new Error('Restore did not preserve the iframe draft')
-  console.log('PASS inside click stays open; outside click reaches host, minimizes, and restores same iframe and draft')
+  console.log('PASS native drag/resize persisted source panel geometry; inside/outside clicks and draft restoration remain correct')
 
   responseMode = 'stream'
   await frame.locator('#ask-input').fill('Continue while switching tabs')
@@ -243,11 +310,46 @@ try {
   const otherFrame = await waitForChatFrameOn(otherPage)
   if (!otherFrame) throw new Error('The destination launcher did not restore the shared chat')
   await otherFrame.waitForSelector('#ask-input')
+  const otherCdp = await ctx.newCDPSession(otherPage)
+  const geometryOnB = await hostRect(otherCdp, 'flex-direction: column')
+  if (JSON.stringify(geometryOnB) !== JSON.stringify(geometryA)) {
+    throw new Error('Restoring on tab B did not reuse preferred geometry: ' + JSON.stringify({ geometryA, geometryOnB }))
+  }
   await otherFrame.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent.includes('Complete'), undefined, { timeout: 10_000 })
   const otherConversationId = new URL(otherFrame.url()).searchParams.get('conversation')
   const sourceConversationId = new URL(frame.url()).searchParams.get('conversation')
   if (!otherConversationId || otherConversationId !== sourceConversationId) throw new Error('Destination restored a different conversation')
   if (requestCount !== streamingRequestCount) throw new Error('Restoring the destination started another provider request')
+
+  await dragHostNode(otherPage, otherCdp, 'cursor: move', -100, 20)
+  await dragHostNode(otherPage, otherCdp, 'cursor: nwse-resize', -20, 10)
+  const geometryB = await hostRect(otherCdp, 'flex-direction: column')
+  if (geometryB.x !== geometryOnB.x - 100 || geometryB.y !== geometryOnB.y + 20 ||
+      geometryB.w >= geometryOnB.w || geometryB.h <= geometryOnB.h) {
+    throw new Error('Native destination drag/resize did not update geometry: ' + JSON.stringify({ geometryOnB, geometryB }))
+  }
+  await waitForSavedGeometry(geometryB)
+
+  await latePage.setViewportSize({ width: 320, height: 324 })
+  await activate(latePage)
+  await otherPage.waitForFunction(() => document.visibilityState === 'hidden')
+  await clickLauncherOn(latePage)
+  await assertStateOn(latePage, 'open')
+  const lateCdp = await ctx.newCDPSession(latePage)
+  const compactGeometry = await hostRect(lateCdp, 'flex-direction: column')
+  if (compactGeometry.w > 304 || compactGeometry.h > 308 || compactGeometry.x < 8 || compactGeometry.y < 8 ||
+      compactGeometry.x + compactGeometry.w > 312 || compactGeometry.y + compactGeometry.h > 316) {
+    throw new Error('Preferred geometry was not clamped into the compact viewport: ' + JSON.stringify(compactGeometry))
+  }
+  const preferredAfterClamp = await readSavedGeometry()
+  if (preferredAfterClamp.x !== geometryB.x || preferredAfterClamp.y !== geometryB.y ||
+      preferredAfterClamp.w !== geometryB.w || preferredAfterClamp.h !== geometryB.h) {
+    throw new Error('Viewport clamp overwrote preferred geometry: ' + JSON.stringify({ preferredAfterClamp, geometryB }))
+  }
+  await latePage.setViewportSize({ width: 1280, height: 800 })
+  await latePage.waitForFunction(() => innerWidth === 1280 && innerHeight === 800)
+  const geometryAfterExpand = await waitForHostRect(lateCdp, 'flex-direction: column', geometryB)
+  await lateCdp.detach()
 
   await activate(page)
   await otherPage.waitForFunction(() => document.visibilityState === 'hidden')
@@ -257,7 +359,11 @@ try {
   await assertState('open')
   if (getChatFrame() !== frame || requestCount !== streamingRequestCount) throw new Error('Returning to the source did not restore its original iframe without another request')
   await frame.waitForFunction(() => [...document.querySelectorAll('.reply-status')].at(-1)?.textContent.includes('Complete'))
-  console.log('PASS tab switch minimizes source, destination restores same conversation, late tab receives launcher, and returning restores source iframe after one streamed request')
+  const geometryAfterReturn = await hostRect(cdp, 'flex-direction: column')
+  if (JSON.stringify(geometryAfterReturn) !== JSON.stringify(geometryB)) {
+    throw new Error('Already-mounted source did not apply destination geometry update: ' + JSON.stringify({ geometryB, geometryAfterReturn }))
+  }
+  console.log('PASS native geometry follows A→B→A, smaller view clamps without overwriting preference, and one mock stream continues')
 
   const beforeSelectionRequests = requestCount
   await triggerAction()
@@ -281,6 +387,8 @@ try {
   await assertState('open')
   await frame.waitForFunction(() => document.querySelectorAll('.turn-image').length >= 2)
   if (getChatFrame() !== frame || requestCount !== beforeSelectionRequests) throw new Error('Selection drag did not preserve the iframe or started a model request')
+  const geometryAfterCapture = await hostRect(cdp, 'flex-direction: column')
+  if (JSON.stringify(geometryAfterCapture) !== JSON.stringify(geometryB)) throw new Error('A later capture changed the stored panel position or size')
   console.log('PASS selection Escape and drag preserve the open panel without model requests')
 
   const { root: hostRoot } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true })
@@ -303,8 +411,8 @@ try {
   await otherPage.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
   if (await page.locator('[data-study-buddy="launcher"]').count()) throw new Error('Close left a source launcher')
 
-  const lateCdp = await ctx.newCDPSession(latePage)
-  const { root: lateRoot } = await lateCdp.send('DOM.getDocument', { depth: -1, pierce: true })
+  const lateCleanupCdp = await ctx.newCDPSession(latePage)
+  const { root: lateRoot } = await lateCleanupCdp.send('DOM.getDocument', { depth: -1, pierce: true })
   const findLauncher = node => {
     if (node.nodeName === 'BUTTON' && labelOf(node).startsWith('Restore Study Buddy')) return node
     for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) {
@@ -314,12 +422,12 @@ try {
   }
   const lateLauncher = findLauncher(lateRoot)
   if (lateLauncher && !lateLauncher.attributes?.includes('hidden')) {
-    const lateBox = await lateCdp.send('DOM.getBoxModel', { nodeId: lateLauncher.nodeId })
+    const lateBox = await lateCleanupCdp.send('DOM.getBoxModel', { nodeId: lateLauncher.nodeId })
     const width = Math.abs(lateBox.model.border[2] - lateBox.model.border[0])
     const height = Math.abs(lateBox.model.border[5] - lateBox.model.border[1])
     if (width || height) throw new Error('Close left a visible launcher on the new tab')
   }
-  await lateCdp.detach()
+  await lateCleanupCdp.detach()
   console.log('PASS Close removes the shared chat and all visible launchers; fresh tabs had no launcher before a chat')
 } finally {
   if (browser) await browser.close()

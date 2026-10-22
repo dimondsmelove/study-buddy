@@ -15,9 +15,6 @@ h1 { margin: 0 0 20px; font-size: 48px; line-height: 1.2; font-weight: 700; lett
 .frame-cleanup, .frame-annotations { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; }
 .open-guide .instruction { margin-bottom: 50px; }
 .open-guide .screenshot { margin-bottom: 0; }
-.text-button { margin-top: 26px; min-height: 44px; padding: 8px 12px; border: 1px solid #777; border-radius: 4px; background: #fff; color: #171717; font: inherit; font-size: 15px; cursor: pointer; }
-.text-button:hover { background: #eee; }
-.text-button[hidden] { display: none; }
 :focus-visible { outline: 3px solid #2563eb; outline-offset: 3px; }
 @media (max-width: 600px) {
   .page { width: min(100% - 32px, 1100px); padding: 60px 0 40px; }
@@ -27,3 +24,8 @@ h1 { margin: 0 0 20px; font-size: 48px; line-height: 1.2; font-weight: 700; lett
   .open-guide .instruction { margin-bottom: 32px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+
+.mode-link { margin: 24px 0; font-size: 15px; }
+.mode-link a { color: #2563eb; text-decoration: underline; text-underline-offset: 3px; }
+body[data-mode="usage"] #pin { display: none; }
+body[data-mode="usage"] .pin-mode-link, body[data-mode="pin"] .usage-mode-link { display: none; }

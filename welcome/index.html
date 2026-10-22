@@ -11,11 +11,11 @@
   <link rel="stylesheet" href="./styles.css">
   <script src="./app.js" defer></script>
 </head>
-<body>
+<body data-mode="pin">
   <main class="page">
     <h1 id="page-title">Study Buddy Installed</h1>
 
-    <section id="pin-guide" aria-labelledby="pin-instruction">
+    <section id="pin" aria-labelledby="pin-instruction">
       <p class="instruction" id="pin-instruction">Click the puzzle piece (1) in the top right of your browser. Then, click the little pin (2) next to the extension:</p>
       <figure class="screenshot">
         <img src="./pin-toolbar.png" alt="Chrome’s Extensions menu is open with a Study Buddy extension row.">
@@ -63,7 +63,7 @@
       </figure>
     </section>
 
-    <section class="open-guide" aria-labelledby="open-instruction">
+    <section id="usage" class="open-guide" aria-labelledby="open-instruction" data-usage-guide>
       <p class="instruction" id="open-instruction">Open the extension (3) on any page to start using Study Buddy:</p>
       <figure class="screenshot">
         <img src="./open-toolbar.png" alt="Chrome’s toolbar shows the pinned Study Buddy icon beside the Extensions puzzle icon.">
@@ -95,7 +95,8 @@
       </figure>
     </section>
 
-    <button id="show-pin-guide" class="text-button" type="button" aria-expanded="false" hidden>Show how to pin it</button>
+    <p class="mode-link pin-mode-link"><a href="#usage" data-switch="usage">Already pinned? Start using it</a></p>
+    <p class="mode-link usage-mode-link"><a href="#pin" data-switch="pin">Don't see the icon? Show how to pin it</a></p>
   </main>
 </body>
 </html>

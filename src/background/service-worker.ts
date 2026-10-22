@@ -8,6 +8,7 @@
 import type { CaptureRequest, ChatState, Message, Rect, StoredCapture } from '../shared/messages'
 import { CAPTURE_PREFIX, MAX_KEPT_CAPTURES } from '../shared/messages'
 import { restrictedReason } from '../shared/restricted'
+import { createWelcomeInstallUrl, getPinnedState } from '../shared/welcome-pin'
 import { captureTab } from './capture'
 import { captureDialog, closeDialog, installConversationCoordinator, launcherState, restoreDialog } from './conversations'
 
@@ -17,11 +18,7 @@ const CHAT_URL = 'src/chat/chat.html'
 const HISTORY_MENU_ID = 'study-buddy-show-history'
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
-  if (reason === 'install') {
-    void chrome.tabs.create({ url: `${__SB_WELCOME_URL__}?id=${encodeURIComponent(chrome.runtime.id)}` }).catch((error) => {
-      console.warn('Study Buddy welcome page could not be opened:', error)
-    })
-  }
+  if (reason === 'install') void openWelcomePage()
   void bootstrapTabs()
   chrome.contextMenus.removeAll(() => {
     if (chrome.runtime.lastError) return
@@ -48,14 +45,20 @@ chrome.runtime.onMessageExternal.addListener((message, sender, respond) => {
   let actual: URL
   try { actual = new URL(sender.url ?? '') } catch { return false }
   if (actual.origin !== expected.origin || actual.pathname !== expected.pathname || message?.type !== 'GET_PIN_STATE') return false
-  const getUserSettings = chrome.action.getUserSettings
-  if (typeof getUserSettings !== 'function') { respond({ pinned: null }); return false }
-  void getUserSettings.call(chrome.action).then(
-    settings => respond({ pinned: settings.isOnToolbar }),
-    () => respond({ pinned: null }),
-  )
+  void getPinnedState(chrome.action).then(pinned => respond({ pinned }))
   return true
 })
+
+async function openWelcomePage(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  try {
+    const pinned = await getPinnedState(chrome.action)
+    const url = createWelcomeInstallUrl(__SB_WELCOME_URL__, chrome.runtime.id, pinned)
+    await chrome.tabs.create({ url })
+  } catch (error) {
+    console.warn('Study Buddy welcome page could not be opened:', error)
+  }
+}
 
 let captureBusy = false
 

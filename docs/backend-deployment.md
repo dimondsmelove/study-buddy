@@ -347,3 +347,12 @@ User reported capture completing without opening chat, followed by unresponsive 
 The installed extension was restored from ~/.local/share/study-buddy/private/rollback-context-ui-20261022T074022Z/extension.tar, from before the October 22 notice/title/test changes. All 71 files match that backup exactly. The displaced test build and receipt remain at ~/.local/share/study-buddy/private/before-restore-stable-20261022T080734Z. Backend/database were not changed. Activation requires extension reload and page refresh; post-rollback user behavior has not been verified.
 
 The 5,000/2,500 test is cancelled and must not be re-enabled automatically. Effective context is back to 80,000; the new notice/title UI is removed. Earlier sections describing the October 22 test as awaiting a manual check are superseded by this rollback.
+
+
+## October 22 UI and temporary test explicitly reapplied
+
+User reported that restarting Vivaldi restored operation and explicitly asked to reapply the written changes. This new authorization supersedes the earlier cancellation; a browser-specific root cause is not established by that report. Commit 6e8016a reverses rollback d3c2cc0, restoring the six exact files. Source matches e0a35f0 without a diff. Typecheck and context, prompt and API contracts passed; welcome/ changes were left untouched.
+
+The previously tested private 5,000/2,500 release was reused directly from /tmp/study-buddy-temporary-context-20261022/extension-release after verifying its stored hashes and matching tested source. All 71 installed files match that release. Earlier isolated rendered and native capture/fake-stream evidence applies to this identical bundle; no new live-browser experiment or model call was made for reapplication. Backend/database were not changed and health returned ok. The user-confirmed preceding installed build and durable temporary-state.json are backed up at ~/.local/share/study-buddy/private/before-reapply-context-20261022T081950Z. Reapply receipt: /tmp/study-buddy-temporary-context-20261022/reapply-deployment.json.
+
+Current intended manual-test values are advisory 2,500 and selected-context cap 5,000. After user confirms the check, restore only the source-only e0a35f0 limit changes to advisory 40,000/effective context 80,000, rebuild and install while retaining the new notice/title UI. Do not restore the whole pre-reapply extension backup for that normal-limit transition, since it predates the new UI. Activation is pending extension reload and refresh of used web tabs.

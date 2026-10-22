@@ -329,3 +329,12 @@ Primary independently passed typecheck, context contracts and 33 rendered checks
 The keyless release keeps the same private localhost:8787 host permissions. All 71 installed extension files match staging and the tested source hashes match the committed files. The previous installed extension is backed up at ~/.local/share/study-buddy/private/rollback-context-ui-20261022T074022Z/extension.tar. Backend and database were not changed; health returned ok. Receipts and primary metrics/logs are in /tmp/study-buddy-context-ui-20261022 on the laptop; the coordinator directory of the same name also holds the isolated fixture and intentional user-preview screenshots.
 
 Live activation remains pending an extension reload and refresh of the web tabs being used. No user-owned browser was manipulated.
+
+
+## TEMPORARY manual context test — awaiting user check (2026-10-22)
+
+User explicitly requested a temporary 5,000-token context window and 2,500-token advisory so the actual extension can be checked without building up 80k of chat. Source-only commit e0a35f0 adds a local projection cap and lowers the UI threshold. Backend metadata stays at 100,000 inputBudget/20,000 estimateHeadroom, so the existing client/server canonical comparison stays compatible; the server and output limits were not changed. The extension selects at most 5,000 estimated tokens for real requests.
+
+Primary independently passed 33 synthetic rendered checks with the temporary values, including 2,499/2,500/2,501 boundaries, actual sliding exclusions, RU/EN state resets and unchanged saved history. No model calls occurred. Worker passed typecheck/context contracts and a projection fixture. All 71 installed files match staging. Evidence is in /tmp/study-buddy-temporary-context-20261022. Live activation is pending extension reload and refresh of used tabs.
+
+RESTORE AFTER USER CONFIRMS CHECK: revert the two-file source commit e0a35f0, rebuild for http://127.0.0.1:8787 and reinstall the extension. Normal values are an effective 80,000-token context window and a 40,000-token advisory; do not restore early. The preceding production extension and durable restore receipt are at ~/.local/share/study-buddy/private/rollback-test-context-20261022T074938Z/{extension.tar,temporary-state.json}. No user history or database was changed. This temporary test is not a production policy decision.

@@ -338,3 +338,12 @@ User explicitly requested a temporary 5,000-token context window and 2,500-token
 Primary independently passed 33 synthetic rendered checks with the temporary values, including 2,499/2,500/2,501 boundaries, actual sliding exclusions, RU/EN state resets and unchanged saved history. No model calls occurred. Worker passed typecheck/context contracts and a projection fixture. All 71 installed files match staging. Evidence is in /tmp/study-buddy-temporary-context-20261022. Live activation is pending extension reload and refresh of used tabs.
 
 RESTORE AFTER USER CONFIRMS CHECK: revert the two-file source commit e0a35f0, rebuild for http://127.0.0.1:8787 and reinstall the extension. Normal values are an effective 80,000-token context window and a 40,000-token advisory; do not restore early. The preceding production extension and durable restore receipt are at ~/.local/share/study-buddy/private/rollback-test-context-20261022T074938Z/{extension.tar,temporary-state.json}. No user history or database was changed. This temporary test is not a production policy decision.
+
+
+## October 22 UI/test changes rolled back after regression report
+
+User reported capture completing without opening chat, followed by unresponsive invocation. Stop live-browser experiments; no root cause was established. The primary restored all October 22 UI and temporary limit source changes in d3c2cc0; src now matches the prior 787cf3c state. Typecheck and context contracts passed. User changes under welcome/ were left untouched.
+
+The installed extension was restored from ~/.local/share/study-buddy/private/rollback-context-ui-20261022T074022Z/extension.tar, from before the October 22 notice/title/test changes. All 71 files match that backup exactly. The displaced test build and receipt remain at ~/.local/share/study-buddy/private/before-restore-stable-20261022T080734Z. Backend/database were not changed. Activation requires extension reload and page refresh; post-rollback user behavior has not been verified.
+
+The 5,000/2,500 test is cancelled and must not be re-enabled automatically. Effective context is back to 80,000; the new notice/title UI is removed. Earlier sections describing the October 22 test as awaiting a manual check are superseded by this rollback.

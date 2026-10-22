@@ -23,9 +23,28 @@
           <rect x="46" y="9" width="83" height="25" fill="#fff" />
           <rect x="120" y="47" width="800" height="31" rx="15" fill="#edf2fa" />
           <rect x="999" y="89" width="100" height="60" fill="#fff" />
-          <rect x="683" y="132" width="320" height="76" fill="#fff" />
-          <rect x="687" y="249" width="312" height="35" fill="#fff" />
+          <defs>
+            <filter id="pin-menu-shadow" x="-10%" y="-10%" width="120%" height="125%">
+              <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#202124" flood-opacity=".22" />
+            </filter>
+            <clipPath id="pin-study-buddy-row" clipPathUnits="userSpaceOnUse"><rect x="683" y="208" width="320" height="42" /></clipPath>
+            <clipPath id="pin-search-icons" clipPathUnits="userSpaceOnUse">
+              <rect x="805" y="383" width="30" height="36" />
+              <rect x="842" y="383" width="30" height="36" />
+            </clipPath>
+          </defs>
+          <rect x="683" y="86" width="320" height="204" rx="10" fill="#fff" stroke="#dadce0" filter="url(#pin-menu-shadow)" />
+          <text x="704" y="117" fill="#202124" font-family="Roboto, Arial, sans-serif" font-size="18">Extensions</text>
+          <path d="M970 106l8 8m0-8l-8 8" fill="none" stroke="#5f6368" stroke-width="1.5" />
+          <rect x="704" y="151" width="20" height="20" rx="4" fill="#f1f3f4" />
+          <rect x="735" y="155" width="105" height="6" rx="3" fill="#e2e5e9" />
+          <rect x="735" y="166" width="66" height="4" rx="2" fill="#eef0f2" />
+          <image href="./pin-toolbar.png" x="0" y="0" width="1099" height="560" clip-path="url(#pin-study-buddy-row)" />
+          <rect x="704" y="259" width="20" height="20" rx="4" fill="#f1f3f4" />
+          <rect x="735" y="266" width="89" height="6" rx="3" fill="#e2e5e9" />
+          <rect x="700" y="383" width="80" height="36" fill="#fff" />
           <rect x="785" y="383" width="101" height="36" rx="18" fill="#fff" />
+          <image href="./pin-toolbar.png" x="95" y="0" width="1099" height="560" clip-path="url(#pin-search-icons)" />
           <rect x="398" y="451" width="296" height="48" fill="#fff" />
           <rect x="0" y="531" width="1099" height="29" fill="#fff" />
           <circle cx="549.5" cy="501" r="20" fill="#d8e6ff" />
@@ -42,7 +61,15 @@
           <rect x="46" y="9" width="83" height="25" fill="#fff" />
           <rect x="120" y="47" width="800" height="31" rx="15" fill="#edf2fa" />
           <rect x="830" y="90" width="269" height="55" fill="#fff" />
+          <defs>
+            <clipPath id="open-search-icons" clipPathUnits="userSpaceOnUse">
+              <rect x="805" y="383" width="30" height="36" />
+              <rect x="842" y="383" width="30" height="36" />
+            </clipPath>
+          </defs>
+          <rect x="700" y="383" width="80" height="36" fill="#fff" />
           <rect x="785" y="383" width="101" height="36" rx="18" fill="#fff" />
+          <image href="./open-toolbar.png" x="95" y="0" width="1099" height="560" clip-path="url(#open-search-icons)" />
           <rect x="398" y="451" width="296" height="48" fill="#fff" />
           <rect x="0" y="531" width="1099" height="29" fill="#fff" />
           <circle cx="549.5" cy="501" r="20" fill="#d8e6ff" />

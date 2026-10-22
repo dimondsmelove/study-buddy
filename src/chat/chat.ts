@@ -41,7 +41,8 @@ let lightboxOpener: HTMLElement | undefined
 let contextPreview: ContextProjection | undefined
 let previewKind: TurnKind | undefined
 let previewUpdate = 0
-const CONTEXT_WARNING_TOKENS = 40_000
+// TEMP manual-test override: restore to 40_000 after checking.
+const CONTEXT_WARNING_TOKENS = 2_500
 
 function closeLightbox(): void {
   if (lightbox.open) lightbox.close()

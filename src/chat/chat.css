@@ -97,8 +97,10 @@ section {
   min-width: 12px;
   margin: 0 4px;
   overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -155,6 +157,17 @@ section {
 }
 .preset svg { width: 20px; height: 20px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .preset[data-preset="solve"] svg { color: var(--accent); }
+#context-warning {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 3px solid var(--warning-ink);
+  border-radius: var(--radius-control);
+  color: var(--warning-ink);
+  background: var(--warning-surface);
+  font-size: 12px;
+  line-height: 1.35;
+}
 .preset:hover:not(:disabled) { color: var(--accent-hover); border-color: transparent; background: var(--surface-raised); }
 #task-tooltip {
   position: fixed;

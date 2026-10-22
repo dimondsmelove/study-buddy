@@ -65,8 +65,6 @@ const EN: Dict = {
   'reply.empty': 'Empty answer · saved',
   'capture.newSelection': 'Select another screen area and add its image to this chat',
   'context.usage': 'About {tokens}k input tokens · 100k budget',
-  'context.longWarning': 'Consider a new chat: long context may affect answer quality.',
-  'context.longWarningExcluded': 'Older messages stay saved, but some are not sent to the model.',
   'context.boundary': 'Older messages above are saved, but are not sent to the model.',
   'context.boundaryWithImage': 'Older messages above are saved, but are not sent to the model. The current task image is included.',
 
@@ -204,8 +202,6 @@ const RU: Dict = {
   'reply.empty': 'Пустой ответ · сохранено',
   'capture.newSelection': 'Выделить другую область экрана и добавить изображение в этот чат',
   'context.usage': '≈{tokens} тыс. / 100 тыс. токенов',
-  'context.longWarning': 'Советуем новый чат: длинный контекст может влиять на качество ответов.',
-  'context.longWarningExcluded': 'Часть истории сохранена, но не отправляется модели.',
   'context.boundary': 'Старые сообщения выше сохранены, но не отправляются модели.',
   'context.boundaryWithImage': 'Старые сообщения выше сохранены, но не отправляются модели. Текущее изображение задания отправляется.',
 

@@ -41,8 +41,6 @@ let lightboxOpener: HTMLElement | undefined
 let contextPreview: ContextProjection | undefined
 let previewKind: TurnKind | undefined
 let previewUpdate = 0
-// TEMP manual-test override: restore to 40_000 after checking.
-const CONTEXT_WARNING_TOKENS = 2_500
 
 function closeLightbox(): void {
   if (lightbox.open) lightbox.close()
@@ -432,9 +430,6 @@ function releaseImages(): void {
 
 async function openConversation(id: string, select = true): Promise<void> {
   if (closing) return
-  previewUpdate++
-  contextPreview = undefined
-  updateContextWarning()
   const epoch = ++opening
   pendingConversationId = id
   let value: Conversation
@@ -502,17 +497,11 @@ async function appendNewCaptureTurns(selected: Conversation): Promise<void> {
   }
 }
 
-function updateConversationTitle(value: string): void {
-  const title = el('conversation-title')
-  title.textContent = value
-  title.title = value
-}
-
 async function renderConversation(): Promise<void> {
   if (!conversation) return
   const epoch = ++rendering
   const selected = conversation
-  updateConversationTitle(conversationDisplayTitle(selected, t(uiLang, 'dialog.new')))
+  el('conversation-title').textContent = conversationDisplayTitle(selected, t(uiLang, 'dialog.new'))
   if (lightbox.open) lightbox.close()
   if (inflight || starting) {
     await appendNewCaptureTurns(selected)
@@ -626,23 +615,6 @@ function applyContextProjection(projection: ContextProjection): void {
   }
 }
 
-function updateContextWarning(projection?: ContextProjection): void {
-  const warning = el('context-warning')
-  const olderMessagesExcluded = !!projection?.entries.some((entry) => !entry.included && entry.reason === 'olderTask')
-  const longContext = (projection?.estimatedInputTokens ?? 0) >= CONTEXT_WARNING_TOKENS
-  const hidden = !longContext && !olderMessagesExcluded
-  const text = hidden
-    ? ''
-    : t(uiLang, 'context.longWarning') + (olderMessagesExcluded ? ` ${t(uiLang, 'context.longWarningExcluded')}` : '')
-  const changed = warning.textContent !== text
-  const wasAtBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight <= 8
-  warning.hidden = hidden
-  if (changed) {
-    warning.textContent = text
-    if (wasAtBottom) scrollThread()
-  }
-}
-
 function setComposerError(key?: string): void {
   const node = el('composer-error')
   node.textContent = key ? t(uiLang, key) : ''
@@ -674,7 +646,7 @@ function previewTurn(): Turn | undefined {
 async function updateContextPreview(override?: Turn | null): Promise<void> {
   const sequence = ++previewUpdate
   const selected = conversation
-  if (!selected) { updateContextWarning(); return }
+  if (!selected) return
   const draft = override === undefined ? previewTurn() : override ?? undefined
   const turns = draft && !selected.turns.some((turn) => turn.id === draft.id) ? [...selected.turns, draft] : selected.turns
   let projection: ContextProjection
@@ -696,19 +668,17 @@ async function updateContextPreview(override?: Turn | null): Promise<void> {
     if (sequence !== previewUpdate || selected !== conversation) return
     const key = err instanceof Error ? err.message : 'context.text'
     contextPreview = undefined
-    updateContextWarning()
     setComposerError(key.startsWith('context.') ? key : 'context.text')
     return
   }
   contextPreview = projection
-  updateContextWarning(projection)
   applyContextProjection(projection)
   setComposerError()
   for (const id of projection.images) {
     const attachment = await getAttachment(id)
     if (sequence !== previewUpdate) return
-    if (!attachment) { updateContextWarning(); setComposerError('context.imageMissing'); return }
-    if (attachment.data.size > CONTEXT_LIMITS.imageBytes) { updateContextWarning(); setComposerError('context.imageLarge'); return }
+    if (!attachment) { setComposerError('context.imageMissing'); return }
+    if (attachment.data.size > CONTEXT_LIMITS.imageBytes) { setComposerError('context.imageLarge'); return }
   }
 }
 
@@ -966,14 +936,13 @@ async function streamReply(settings: Settings, user: Turn | null, source: Turn, 
     const accepted = await connection.request<{ generation: { requestId: string }; conversation: Conversation }>({ action: 'start', conversationId: selectedId, user, assistant })
     conversation = accepted.conversation
     onAccepted?.()
-    updateConversationTitle(conversation.title)
+    el('conversation-title').textContent = conversation.title
     starting = false
     if (user) addMessage('user', user.display ?? user.text).wrap.dataset.turn = user.id
     reply = addMessage('assistant', '…')
     reply.wrap.dataset.turn = assistant.id
     await refreshStatus()
     contextPreview = projection
-    updateContextWarning(projection)
     applyContextProjection(projection)
     const generation = { ...preflightGeneration, requestId: accepted.generation.requestId }
     const result = await createGateway().ask({

@@ -169,8 +169,7 @@ export function contextProjection(conversation: Conversation, options: ContextPr
   const currentUnit = latestUser ? units.find((unit) => unit.some((turn) => turn.id === latestUser.id)) : undefined
   const selectedIds = new Set(pinnedIds)
   if (currentUnit) for (const turn of currentUnit) selectedIds.add(turn.id)
-  // TEMP manual-test override: restore to CONTEXT_LIMITS.inputTokens - CONTEXT_LIMITS.estimateHeadroom after checking.
-  const inputLimit = Math.min(CONTEXT_LIMITS.inputTokens - CONTEXT_LIMITS.estimateHeadroom, 5_000)
+  const inputLimit = CONTEXT_LIMITS.inputTokens - CONTEXT_LIMITS.estimateHeadroom
   const estimate = (ids: Set<string>): number => {
     const turns = usable.filter((turn) => ids.has(turn.id))
     const messages = previewContextMessages(turns)

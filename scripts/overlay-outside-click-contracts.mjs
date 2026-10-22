@@ -24,6 +24,8 @@ body{margin:0;font:22px system-ui}#capture-proof{position:fixed;left:220px;top:2
 <button id="underlay-target">Click the page beneath the panel</button>
 <script>window.hostClickCount=0;document.addEventListener('click',()=>window.hostClickCount++)</script></body>`
 let requestCount = 0
+let activeRequestCount = 0
+let holdStream = false
 let responseMode = 'stream'
 const upstream = createServer((req, res) => {
   if (req.url?.includes('/chat/completions')) {
@@ -32,25 +34,34 @@ const upstream = createServer((req, res) => {
     req.on('data', chunk => body += chunk)
     req.on('end', () => {
       try { JSON.parse(body) } catch { res.writeHead(400).end(); return }
+      activeRequestCount++
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       const chunks = [
         '[[STUDY_BUDDY_TITLE]]Outside click\n',
-        'The first streamed section ',
-        'continues while the panel is hidden. ',
+        'The first streamed section continues while the panel is hidden. '.repeat(100),
+        ...Array.from({ length: 10 }, (_, index) => `Additional section ${index + 1}. `.repeat(30)),
         'The final section is saved.',
       ]
       if (responseMode === 'stream') {
+        let finished = false
+        const finish = () => {
+          if (finished) return
+          finished = true
+          activeRequestCount--
+        }
         const send = () => {
+          if (holdStream) return
           const content = chunks.shift()
           if (content !== undefined) res.write('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n')
           else {
             clearInterval(timer)
+            finish()
             res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":12,"cost":0.0001}}\n\ndata: [DONE]\n\n')
           }
         }
         const timer = setInterval(send, 350)
         send()
-        res.on('close', () => clearInterval(timer))
+        res.on('close', () => { clearInterval(timer); finish() })
       }
     })
     return
@@ -84,7 +95,7 @@ try {
     '--enable-unsafe-extension-debugging',
     `--disable-extensions-except=${dist}`,
     `--load-extension=${dist}`,
-  ], { stdio: 'ignore' })
+  ], { stdio: 'ignore', detached: process.platform !== 'win32' })
   const activePortFile = join(profile, 'DevToolsActivePort')
   const debugDeadline = Date.now() + 10_000
   while (!existsSync(activePortFile) && Date.now() < debugDeadline && browserProcess.exitCode === null) {
@@ -148,6 +159,15 @@ try {
     const target = targetInfos.find(item => item.type === 'tab' && item.url === page.url())
     if (!target) throw new Error('Target host tab was not found')
     await browserCdp.send('Extensions.triggerAction', { id: extensionId, targetId: target.targetId })
+  }
+  const captureProof = async () => {
+    await triggerAction()
+    await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'selecting')
+    await page.mouse.move(220, 230)
+    await page.mouse.down()
+    await page.mouse.move(340, 300, { steps: 4 })
+    await page.mouse.up()
+    await assertState('open')
   }
   const getChatFrameOn = targetPage => targetPage.frames().find(frame => frame.url().includes('/src/chat/chat.html'))
   const waitForChatFrameOn = async targetPage => {
@@ -239,6 +259,40 @@ try {
   }
   const clickLauncher = () => clickLauncherOn(page)
   const clickInsideFrame = async frame => frame.locator('#ask-input').click()
+  const assertLatestImageVisible = async (targetFrame, count, expectOverflow) => {
+    const imageVisible = expected => {
+      const images = [...document.querySelectorAll('.turn-image')]
+      const thread = document.querySelector('#thread')
+      const image = images.at(-1)
+      if (images.length < expected || !image?.naturalWidth || !thread) return false
+      const imageRect = image.getBoundingClientRect()
+      const threadRect = thread.getBoundingClientRect()
+      return imageRect.top >= threadRect.top - 1 && imageRect.bottom <= threadRect.bottom + 1
+    }
+    try { await targetFrame.waitForFunction(imageVisible, count, { timeout: 5000 }) }
+    catch (error) {
+      const debug = await targetFrame.evaluate(() => ({ images: [...document.querySelectorAll('.turn-image')].map(image => ({ id: image.dataset.attachmentId, naturalWidth: image.naturalWidth, top: image.getBoundingClientRect().top, bottom: image.getBoundingClientRect().bottom })), thread: (() => { const thread = document.querySelector('#thread'); return thread && { top: thread.getBoundingClientRect().top, bottom: thread.getBoundingClientRect().bottom, scrollTop: thread.scrollTop, scrollHeight: thread.scrollHeight, clientHeight: thread.clientHeight } })() }))
+      throw new Error('Newest capture image did not enter view: ' + JSON.stringify(debug) + '; ' + error.message)
+    }
+    const state = await targetFrame.evaluate(() => {
+      const thread = document.querySelector('#thread')
+      const image = [...document.querySelectorAll('.turn-image')].at(-1)
+      if (!thread || !image) return undefined
+      return {
+        imageTop: image.getBoundingClientRect().top,
+        imageBottom: image.getBoundingClientRect().bottom,
+        threadTop: thread.getBoundingClientRect().top,
+        threadBottom: thread.getBoundingClientRect().bottom,
+        scrollTop: thread.scrollTop,
+        scrollHeight: thread.scrollHeight,
+        clientHeight: thread.clientHeight,
+      }
+    })
+    if (!state || state.imageTop < state.threadTop - 1 || state.imageBottom > state.threadBottom + 1 ||
+        expectOverflow && (state.scrollHeight <= state.clientHeight + 20 || state.scrollTop <= 0)) {
+      throw new Error('Newest capture image is not visible at the end of the thread: ' + JSON.stringify(state))
+    }
+  }
   const assertStateOn = (targetPage, state) => targetPage.waitForFunction(expected =>
     document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === expected, state)
   const assertState = state => assertStateOn(page, state)
@@ -292,6 +346,14 @@ try {
   while (requestCount === requestsBeforeStream && Date.now() < providerDeadline) await new Promise(resolve => setTimeout(resolve, 20))
   if (requestCount !== requestsBeforeStream + 1) throw new Error('Expected one mock stream request; before=' + requestsBeforeStream + ', after=' + requestCount)
   await frame.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.length > 5)
+  await frame.waitForFunction(() => document.querySelector('.msg.assistant .msg-body')?.textContent?.length > 1000)
+  if (activeRequestCount !== 1) throw new Error('Long reply fixture completed before in-flight capture coverage')
+  holdStream = true
+  let visibleImageCount = await frame.locator('.turn-image').count()
+  await captureProof()
+  await assertLatestImageVisible(frame, ++visibleImageCount, true)
+  if (requestCount !== requestsBeforeStream + 1 || activeRequestCount !== 1) throw new Error(`Capturing during a long reply changed the active provider request (active=${activeRequestCount})`)
+  holdStream = false
   const streamingRequestCount = requestCount
 
   await activate(otherPage)
@@ -378,17 +440,14 @@ try {
   await assertState('open')
   if (getChatFrame() !== frame) throw new Error('Escape from selection replaced the chat iframe')
 
-  await triggerAction()
-  await page.waitForSelector('[data-study-buddy="overlay"]')
-  await page.mouse.move(220, 230)
-  await page.mouse.down()
-  await page.mouse.move(340, 300, { steps: 4 })
-  await page.mouse.up()
-  await assertState('open')
-  await frame.waitForFunction(() => document.querySelectorAll('.turn-image').length >= 2)
+  await captureProof()
+  await assertLatestImageVisible(frame, 3, true)
+  await captureProof()
+  await assertLatestImageVisible(frame, 4, true)
   if (getChatFrame() !== frame || requestCount !== beforeSelectionRequests) throw new Error('Selection drag did not preserve the iframe or started a model request')
   const geometryAfterCapture = await hostRect(cdp, 'flex-direction: column')
   if (JSON.stringify(geometryAfterCapture) !== JSON.stringify(geometryB)) throw new Error('A later capture changed the stored panel position or size')
+  console.log('PASS new capture images decode and remain visible at the thread end during a held stream and repeated captures')
   console.log('PASS selection Escape and drag preserve the open panel without model requests')
 
   const { root: hostRoot } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true })
@@ -430,18 +489,29 @@ try {
   await lateCleanupCdp.detach()
   console.log('PASS Close removes the shared chat and all visible launchers; fresh tabs had no launcher before a chat')
 } finally {
-  if (browser) await browser.close()
-  if (browserProcess && browserProcess.exitCode === null && browserProcess.signalCode === null) {
+  if (browser) {
+    try { await (await browser.newBrowserCDPSession()).send('Browser.close') } catch { /* Browser.close tears down the CDP transport. */ }
+  }
+  if (browserProcess) {
     const waitForExit = () => Promise.race([new Promise(resolve => browserProcess.once('exit', () => resolve(true))), new Promise(resolve => setTimeout(() => resolve(false), 2000))])
-    browserProcess.kill('SIGTERM')
-    let exited = await waitForExit()
-    if (!exited) {
-      browserProcess.kill('SIGKILL')
-      await waitForExit()
+    const signalGroup = signal => {
+      if (process.platform === 'win32' || !browserProcess.pid) return false
+      try { process.kill(-browserProcess.pid, signal); return true }
+      catch (error) { if (error.code === 'ESRCH') return false; throw error }
+    }
+    if (process.platform !== 'win32') signalGroup('SIGTERM')
+    else if (browserProcess.exitCode === null && browserProcess.signalCode === null) browserProcess.kill('SIGTERM')
+    if (browserProcess.exitCode === null && browserProcess.signalCode === null) {
+      const exited = await waitForExit()
+      if (!exited && process.platform === 'win32') browserProcess.kill('SIGKILL')
+    }
+    if (process.platform !== 'win32') {
+      await new Promise(resolve => setTimeout(resolve, 200))
+      signalGroup('SIGKILL')
     }
   }
   if (backend) await backend.close()
   if (vite) await vite.close()
   await new Promise(resolve => upstream.close(() => resolve()))
-  rmSync(profile, { recursive: true, force: true })
+  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }

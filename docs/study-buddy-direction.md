@@ -128,3 +128,9 @@ FACT: a focused headed Chromium extension fixture used native pointer drag/resiz
 DECISION: show a compact, non-blocking notice below the six task actions when the shared context projection estimates at least 40,000 input tokens. Advise that long context may affect answer quality and suggest starting a new chat. When the projection excludes older exchanges, add that those messages remain saved but are not sent to the model. Incomplete and superseded turns do not trigger the exclusion explanation. Keep the existing muted rows, reuse controls, context window, and request behavior. Render the conversation title at a clearer size and contrast while retaining ellipsis for long titles.
 
 FACT: primary passed 32 rendered Chromium checks with screenshots reviewed in both RU and EN, including estimates at 39,999/40,000/40,001 tokens, old-history omission, draft and error refresh, new-chat reset, incomplete-turn exclusion, and immutable saved history. At the default panel size the notice is 44.4px tall and the thread remains 313.6px; the main view keeps the final reply visible after the notice appears. At the 320×324 minimum, the thread is dense (23.25px RU / 39.4px EN), while the composer remains usable. No model calls were made.
+
+## Capture image visibility — 2026-10-22
+
+FACT: a newly captured image is brought into view after its thumbnail has decoded, including when the active conversation is already streaming. If a conversation update and explicit open race, the render fills an existing capture row instead of leaving it empty; stale render epochs cannot mutate or scroll a different conversation.
+
+FACT: focused headed Chromium coverage held a fake response stream while capturing, verified the newest image within the thread viewport, then repeated captures after completion. The stream remained a single mock request; no real provider calls were made.

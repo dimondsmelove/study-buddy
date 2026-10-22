@@ -174,7 +174,7 @@ async function showCapture(imageId: string, conversationId?: string): Promise<vo
   if (closing) return
   await conversationAction({ action: 'attach', conversationId: selected.id, imageId })
   if (closing) return
-  await openConversation(selected.id)
+  await openConversation(selected.id, true, imageId)
 }
 
 function showPermission(origin: string): void {
@@ -373,6 +373,7 @@ let profileState: ConversationState = { id: 'state', lastStartedAt: 0 }
 let opening = 0
 let pendingConversationId: string | undefined
 let rendering = 0
+let pendingRevealAttachmentId: string | undefined
 let starting = false
 let closing = false
 let activeCloseId: string | undefined
@@ -430,7 +431,7 @@ function releaseImages(): void {
   imageUrls.clear()
 }
 
-async function openConversation(id: string, select = true): Promise<void> {
+async function openConversation(id: string, select = true, revealAttachmentId?: string): Promise<void> {
   if (closing) return
   previewUpdate++
   contextPreview = undefined
@@ -452,11 +453,13 @@ async function openConversation(id: string, select = true): Promise<void> {
   if (epoch !== opening) return
   if (conversation && conversation.id !== id) {
     releaseImages()
+    pendingRevealAttachmentId = undefined
     ;(el('ask-input') as HTMLInputElement).value = ''
     previewKind = undefined
     setComposerError()
   }
   conversation = value
+  if (revealAttachmentId) pendingRevealAttachmentId = revealAttachmentId
   pendingConversationId = undefined
   current = { kind: 'conversation', conversationId: id }
   if (window.parent !== window) {
@@ -466,10 +469,10 @@ async function openConversation(id: string, select = true): Promise<void> {
     )
   }
   show('capture')
-  await renderConversation()
+  await renderConversation(revealAttachmentId)
 }
 
-async function appendTurnImage(message: Msg, turn: Turn, epoch?: number): Promise<void> {
+async function appendTurnImage(message: Pick<Msg, 'wrap'>, turn: Turn, epoch: number, openEpoch: number): Promise<void> {
   if (!turn.attachmentId) return
   const thumbnail = document.createElement('img')
   thumbnail.className = 'turn-image'
@@ -482,7 +485,8 @@ async function appendTurnImage(message: Msg, turn: Turn, epoch?: number): Promis
     message.wrap.appendChild(missing)
     return
   }
-  if (epoch !== undefined && epoch !== rendering) return
+  if (epoch !== rendering || openEpoch !== opening || closing) return
+  thumbnail.dataset.attachmentId = turn.attachmentId
   thumbnail.tabIndex = 0
   thumbnail.setAttribute('role', 'button')
   thumbnail.setAttribute('aria-label', t(uiLang, 'dialog.imagePreview'))
@@ -493,12 +497,15 @@ async function appendTurnImage(message: Msg, turn: Turn, epoch?: number): Promis
   message.wrap.appendChild(thumbnail)
 }
 
-async function appendNewCaptureTurns(selected: Conversation): Promise<void> {
+async function appendNewCaptureTurns(selected: Conversation, epoch: number, openEpoch: number): Promise<void> {
   for (const turn of selected.turns) {
-    if (turn.kind !== 'capture' || [...thread.querySelectorAll<HTMLElement>('[data-turn]')].some((node) => node.dataset.turn === turn.id)) continue
-    const message = addMessage('user', '')
+    if (epoch !== rendering || openEpoch !== opening || closing) return
+    if (turn.kind !== 'capture') continue
+    const existing = [...thread.querySelectorAll<HTMLElement>('[data-turn]')].find((node) => node.dataset.turn === turn.id)
+    if (existing?.querySelector('.turn-image, .turn-image-missing')) continue
+    const message = existing ? { wrap: existing as HTMLDivElement } : addMessage('user', '')
     message.wrap.dataset.turn = turn.id
-    await appendTurnImage(message, turn)
+    await appendTurnImage(message, turn, epoch, openEpoch)
   }
 }
 
@@ -508,16 +515,19 @@ function updateConversationTitle(value: string): void {
   title.title = value
 }
 
-async function renderConversation(): Promise<void> {
+async function renderConversation(revealAttachmentId?: string): Promise<void> {
   if (!conversation) return
   const epoch = ++rendering
+  const openEpoch = opening
+  const revealId = revealAttachmentId ?? pendingRevealAttachmentId
   const selected = conversation
   updateConversationTitle(conversationDisplayTitle(selected, t(uiLang, 'dialog.new')))
   if (lightbox.open) lightbox.close()
   if (inflight || starting) {
-    await appendNewCaptureTurns(selected)
+    await appendNewCaptureTurns(selected, epoch, openEpoch)
     await updateContextPreview(null)
     await refreshStatus()
+    await scrollToPendingCapture(revealId, epoch, openEpoch)
     return
   }
   const displayedImages = new Set<string>()
@@ -526,7 +536,7 @@ async function renderConversation(): Promise<void> {
     const msg = addMessage(turn.role, turn.role === 'user' ? turn.display ?? turn.text : turn.text)
     msg.wrap.dataset.turn = turn.id
     if (turn.role === 'user' && turn.attachmentId && !displayedImages.has(turn.attachmentId)) {
-      await appendTurnImage(msg, turn, epoch)
+      await appendTurnImage(msg, turn, epoch, openEpoch)
       displayedImages.add(turn.attachmentId)
     }
     if (epoch !== rendering) return
@@ -547,12 +557,26 @@ async function renderConversation(): Promise<void> {
     const legacyImage: Turn = { id: `legacy-${selected.activeAttachmentId}`, role: 'user', text: '', kind: 'capture', attachmentId: selected.activeAttachmentId, createdAt: selected.createdAt, locale: uiLang, promptVersion: 'legacy' }
     const msg = addMessage('user', '')
     msg.wrap.dataset.turn = legacyImage.id
-    await appendTurnImage(msg, legacyImage, epoch)
+    await appendTurnImage(msg, legacyImage, epoch, openEpoch)
   }
   if (epoch !== rendering) return
   ensureHint()
   await updateContextPreview()
   await refreshStatus()
+  await scrollToPendingCapture(revealId, epoch, openEpoch)
+}
+
+async function scrollToPendingCapture(attachmentId: string | undefined, epoch: number, openEpoch: number): Promise<void> {
+  if (!attachmentId || pendingRevealAttachmentId !== attachmentId || epoch !== rendering || openEpoch !== opening || closing) {
+    return
+  }
+  const image = [...thread.querySelectorAll<HTMLImageElement>('.turn-image')]
+    .find((candidate) => candidate.dataset.attachmentId === attachmentId)
+  if (!image) return
+  try { await image.decode() } catch { /* Preserve the existing broken-image rendering behavior. */ }
+  if (!image.isConnected || !image.naturalWidth || pendingRevealAttachmentId !== attachmentId || epoch !== rendering || openEpoch !== opening || closing) return
+  scrollThread()
+  pendingRevealAttachmentId = undefined
 }
 
 async function refreshStatus(): Promise<void> {

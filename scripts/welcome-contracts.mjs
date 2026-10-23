@@ -245,13 +245,15 @@ async function checkWelcomePageMocks(origin) {
   const noScriptPage = await mockBrowser.newPage({ javaScriptEnabled: false })
   await noScriptPage.goto(origin + '/welcome/')
   assert.equal(await noScriptPage.locator('#pin').evaluate(element => getComputedStyle(element).display), 'block')
-  assert.equal(await noScriptPage.locator('#usage').isVisible(), true)
+  assert.equal(await noScriptPage.locator('#usage').isVisible(), false, 'new usage guide must stay hidden in pin mode')
+  assert.equal(await noScriptPage.locator('#pin-launch').isVisible(), true, 'pin mode includes the original toolbar step 3')
   assert.equal(await noScriptPage.locator('.pin-mode-link a').getAttribute('href'), '#usage')
   assert.equal(await noScriptPage.locator('.usage-mode-link a').getAttribute('href'), '#pin')
   assert.equal(await noScriptPage.locator('.usage-mode-link').evaluate(element => getComputedStyle(element).display), 'none')
   await noScriptPage.locator('.pin-mode-link a').click()
   assert.equal(new URL(noScriptPage.url()).hash, '#usage', 'no-JS anchor remains usable')
   assert.equal(await noScriptPage.locator('#pin').evaluate(element => getComputedStyle(element).display), 'block', 'no-JS hash keeps pin fallback visible')
+  assert.equal(await noScriptPage.locator('#usage').isVisible(), false, 'no-JS hash does not show the separate usage guide')
   console.log('Behavioral mocks passed: pin API values and errors, URL hints, manual/hash priority, transport failure, invalid IDs, lifecycle, and no-JS fallback.')
 }
 

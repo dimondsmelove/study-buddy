@@ -28,4 +28,5 @@ h1 { margin: 0 0 20px; font-size: 48px; line-height: 1.2; font-weight: 700; lett
 .mode-link { margin: 24px 0; font-size: 15px; }
 .mode-link a { color: #2563eb; text-decoration: underline; text-underline-offset: 3px; }
 body[data-mode="usage"] #pin { display: none; }
+body[data-mode="pin"] #usage { display: none; }
 body[data-mode="usage"] .pin-mode-link, body[data-mode="pin"] .usage-mode-link { display: none; }

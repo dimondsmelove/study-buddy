@@ -2359,7 +2359,6 @@ try {
   check(JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8')).incognito === 'not_allowed', 'incognito is explicitly disabled')
   const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
   check(manifest.host_permissions.includes('<all_urls>') && manifest.host_permissions.includes(`${gatewayUrl}/*`) && manifest.content_scripts.some(script => script.matches.includes('https://*/*') && script.matches.includes('http://*/*')), 'build declares automatic web-page injection and persistent host access without a runtime permission prompt')
-  check(manifest.permissions.includes('clipboardWrite'), 'manifest grants extension-scoped clipboard write for the user-triggered Copy action')
   await racePeer.close()
 
   await duplicate.evaluate(conversationId => chrome.runtime.sendMessage({ type: 'CONVERSATION', action: 'select', conversationId }), nextConversationId)

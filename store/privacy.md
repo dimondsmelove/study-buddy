@@ -130,7 +130,6 @@ hosting and error-reporting logs consistently with these disclosures.
 - **scripting** — initialize already-open web pages and support explicit selection when automatic injection is unavailable.
 - **storage** — local settings/access state and transient session captures;
   saved conversations/images use IndexedDB.
-- **clipboardWrite** — copy an answer after an explicit Copy action.
 - **site access (`<all_urls>`)** — make the launcher available across web pages
   and capture the intended active page after an explicit selection action.
   The launcher is declared for HTTP/HTTPS pages; file access remains subject to

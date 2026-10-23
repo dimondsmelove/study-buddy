@@ -13,14 +13,21 @@ const welcomeMatch = welcomeOriginMatch(process.env.STUDY_BUDDY_WELCOME_URL ?? D
 //    page near the selection (see src/content/overlay.ts).
 export default defineManifest({
   manifest_version: 3,
+  // Chat layout uses :has() (Chrome 105+); chrome.storage.session needs 102+.
+  minimum_chrome_version: '105',
   incognito: 'not_allowed',
-  name: 'Study Buddy',
+  default_locale: 'en',
+  name: '__MSG_appName__',
   version: '0.1.0',
-  description:
-    'Select any region of the screen and ask an AI about it — solve, explain, translate.',
+  description: '__MSG_shortDesc__',
   action: {
     default_title: 'Study Buddy — select a region (Ctrl+Shift+Y)',
-    default_icon: { '16': 'icons/icon16.png', '32': 'icons/icon32.png' },
+    default_icon: {
+      '16': 'icons/icon16.png',
+      '32': 'icons/icon32.png',
+      '48': 'icons/icon48.png',
+      '128': 'icons/icon128.png',
+    },
   },
 
   externally_connectable: { matches: [welcomeMatch] },
@@ -46,7 +53,6 @@ export default defineManifest({
     'scripting', // Bootstrap already-open tabs and explicit selection fallback
     'storage', // chrome.storage.session (captures) + .local (settings)
     'contextMenus', // Show saved conversations from the toolbar icon's context menu
-    'clipboardWrite', // Copy an answer from the extension iframe on explicit user action
   ],
 
   web_accessible_resources: [

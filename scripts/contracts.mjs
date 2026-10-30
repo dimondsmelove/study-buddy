@@ -199,6 +199,7 @@ await contract('provider spend cap, generation ID capture, and rejection provena
   assert.deepEqual(ids, [id], 'header and repeated stream IDs persist once')
   assert.deepEqual(accepted, [true])
   assert.deepEqual(plain(requests[0].body.provider), {
+    data_collection: 'deny',
     max_price: { prompt: 0.25, completion: 0.75, request: 0, image: 0 },
   })
 

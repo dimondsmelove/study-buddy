@@ -367,3 +367,24 @@ Primary reviewed the three source commits and independently verified an exact 60
 The keyless localhost:8787 release was rebuilt and all 71 installed files in ~/Загрузки/Study-Buddy-Local match staging. Permissions are unchanged. The preceding installed extension and hashes are retained at ~/.local/share/study-buddy/private/before-geometry-normal-limits-20261022T084944Z. Backend binary and database were not changed; health returned ok. Source hashes, primary logs, normal-threshold metrics, release hashes and deployment.json are in /tmp/study-buddy-ui-geometry-20261022 on the laptop.
 
 Activation is pending an extension reload and refresh of the web tabs being used. The agent did not reload user pages, restart Vivaldi, or manipulate the live browser.
+
+## Deployment record — 2026-10-23 (diamondserver)
+
+- Backend: systemd `study-buddy.service`, image `study-buddy/backend:release-20261023`, container `study-buddy-backend-1`; nftables guard (inet/bridge `study_buddy_guard`) unchanged and loaded.
+- Network `study-buddy-egress` (bridge `study-buddy0`) pinned to `10.87.87.0/24`, gateway `10.87.87.1`; backend fixed at `10.87.87.10:8787` (172.30.0.0/16 was taken by searxng). Previous compose backed up as `/opt/study-buddy/compose.yaml.bak-20261023`.
+- `TRUSTED_PROXY_IPS="10.87.87.1"` (host-side cloudflared connects from the bridge gateway; X-Forwarded-For from Cloudflare is honored only from that peer). ALLOWED_ORIGINS unchanged.
+- Cloudflare Tunnel `study-buddy`, id `4afa9162-173e-4dc7-984c-35d13692d4c7`, locally managed. Config `/etc/cloudflared/config.yml`; credentials + cert.pem in `/etc/cloudflared/` (root, 0600). Ingress: `api.studybuddyai.one` -> `http://10.87.87.10:8787`, catch-all `http_status:404`. Metrics on `127.0.0.1:20241`. Host systemd unit `cloudflared.service`, enabled, `--no-autoupdate`.
+- DNS: CNAME `api.studybuddyai.one` -> tunnel (proxied). No inbound ports opened; UFW unchanged (port 9619 rules removed earlier the same day).
+- Open: Cloudflare Universal SSL edge certificate not yet issued at time of record (TLS handshake failure on api/apex); SSE >125 s idle behavior through Cloudflare untested.
+
+### 2026-10-23 — SSE heartbeat (release-20261023b)
+
+- `/api/v1/generations` now writes an SSE comment `: ping` every 20 s (`heartbeatMs`, default 20 000) while the stream is open; cleared in `finally`. Keeps Cloudflare's ~125 s idle cutoff from closing slow generations (timeout is 180 s).
+- The extension parser (`readGenerationStream` in `src/shared/gateway.ts`) already ignores `:` lines; it is now exported for the contract test `slow generation emits SSE heartbeat comments…`.
+- Deployed as image `study-buddy/backend:release-20261023b`.
+
+### 2026-10-23 — data_collection deny + 13-month inactivity cleanup (release-20261023c)
+
+- OpenRouter requests now send `provider.data_collection: "deny"` (`src/shared/api.ts`), so routing uses only providers that do not store/train on prompts. Asserted in `scripts/contracts.mjs` and `scripts/backend-contracts.mjs`.
+- `installations.last_seen_at` (new column; existing rows backfilled with migration time) is updated on issuance, claim, renewal, recovery and generation admission. `prune()` deletes installations idle for 395 days (13 months) together with their sessions, operations, budget_charges and monthly_budgets, except while an operation is active or a charge is reserved/held. New contract test `installations inactive for 13 months are pruned…` (22 tests pass).
+- Deployed as `study-buddy/backend:release-20261023c` (built in ~/apps/study-buddy on diamondserver). Backups: `/etc/systemd/system/study-buddy.service.bak-20261023T122633`, `/opt/study-buddy/compose.yaml.bak-20261023T122633`. Rollback image: `release-20261023b`. Health via https://api.studybuddyai.one/health returned ok.

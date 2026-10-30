@@ -10,6 +10,8 @@ export interface BackendConfig {
   allowedOrigins: string[]
   trustedProxyIps: string[]
   operationTimeoutMs: number
+  /** SSE comment interval; keeps Cloudflare (~125 s idle cutoff) from closing quiet streams. */
+  heartbeatMs?: number
 }
 
 export interface BackendDependencies {

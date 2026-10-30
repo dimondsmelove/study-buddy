@@ -188,6 +188,7 @@ async function createFixture(options = {}) {
     allowedOrigins: ['chrome-extension://test-extension'],
     trustedProxyIps: options.trustedProxyIps ?? [],
     operationTimeoutMs: options.timeoutMs ?? 180_000,
+    ...(options.heartbeatMs ? { heartbeatMs: options.heartbeatMs } : {}),
   }
   await options.beforeBackend?.(config)
   const backend = createBackend(config, {
@@ -407,6 +408,36 @@ await test('durable installation recovery, legacy claim, and cross-session admis
   await rm(directory, { recursive: true, force: true })
 })
 
+await test('installations inactive for 13 months are pruned with their usage records', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'study-buddy-inactive-'))
+  const path = join(directory, 'state.sqlite')
+  const DAY = 24 * 60 * 60 * 1_000
+  let store = new OperationalStore(path, secret, nowBase)
+  const stale = store.issueInstallation('198.51.100.40', nowBase)
+  const active = store.issueInstallation('198.51.100.41', nowBase)
+  assert.ok('token' in stale && 'token' in active)
+  assert.equal(store.admit(stale.session.id, 'inactive_req_01', 'f', nowBase + 1).accepted, true)
+  store.finish(stale.session.id, 'inactive_req_01', 'complete', nowBase + 2)
+  store.settleBudget(stale.installationId, 'inactive_req_01', 1_000, nowBase + 3)
+  // Keep the second installation active by recovering it 12 months later.
+  assert.ok(store.recoverInstallation(active.installationId, active.installationSecret, nowBase + 365 * DAY))
+  store.close()
+  const later = nowBase + 396 * DAY
+  store = new OperationalStore(path, secret, later)
+  const database = new DatabaseSync(path)
+  const count = (sql, id) => Number(database.prepare(sql).get(id).c)
+  assert.equal(count('SELECT COUNT(*) AS c FROM installations WHERE id = ?', stale.installationId), 0)
+  assert.equal(count('SELECT COUNT(*) AS c FROM monthly_budgets WHERE installation_id = ?', stale.installationId), 0)
+  assert.equal(count('SELECT COUNT(*) AS c FROM budget_charges WHERE installation_id = ?', stale.installationId), 0)
+  assert.equal(count('SELECT COUNT(*) AS c FROM sessions WHERE installation_id = ?', stale.installationId), 0)
+  assert.equal(store.recoverInstallation(stale.installationId, stale.installationSecret, later), undefined)
+  assert.equal(count('SELECT COUNT(*) AS c FROM installations WHERE id = ?', active.installationId), 1)
+  assert.ok(store.recoverInstallation(active.installationId, active.installationSecret, later + 1))
+  store.close()
+  database.close()
+  await rm(directory, { recursive: true, force: true })
+})
+
 await test('monthly installation wallet reserves atomically, settles once, rolls over at UTC, and keeps uncertain holds', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'study-buddy-budget-'))
   const path = join(directory, 'state.sqlite')
@@ -577,6 +608,7 @@ await test('HTTP session, CORS, canonical provider request, final usage chunk, a
     assert.equal('temperature' in upstream, false)
     assert.deepEqual(upstream.reasoning, { effort: 'medium', exclude: true })
     assert.equal(upstream.max_tokens, 8_192)
+    assert.equal(upstream.provider.data_collection, 'deny')
     assert.equal(upstream.messages.some((message) => message.role === 'system'), true)
     assert.match(upstream.messages[0].content, /Use the supplied text, images, and relevant conversation history as the source of task-specific facts/)
     assert.equal(upstream.messages.at(-1).content, 'What is 2 + 2?')
@@ -1044,6 +1076,35 @@ await test('unavailable Haiku surfaces an error without a second model attempt',
   } finally {
     await partial.close()
     await rm(partial.directory, { recursive: true, force: true })
+  }
+})
+
+await test('slow generation emits SSE heartbeat comments that the extension parser ignores', async () => {
+  const fixture = await createFixture({
+    heartbeatMs: 20,
+    responder: async ({ response }) => {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      response.flushHeaders()
+      await new Promise((resolve) => setTimeout(resolve, 120))
+      response.write(sse({ choices: [{ delta: { content: 'slow' }, finish_reason: null }] }))
+      response.write(sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.000001 } }))
+      response.end('data: [DONE]\n\n')
+    },
+  })
+  try {
+    const session = await issueSession(fixture)
+    const response = await postGeneration(fixture, session.token, input())
+    const body = await response.text()
+    assert.ok((body.match(/^: ping$/gm) ?? []).length >= 2, 'expected heartbeat comments')
+    globalThis.__SB_GATEWAY_URL__ ??= 'http://127.0.0.1:8787'
+    const { readGenerationStream } = await vite.ssrLoadModule('/src/shared/gateway.ts')
+    const deltas = []
+    const result = await readGenerationStream(new Blob([body]).stream(), { onDelta: (text) => deltas.push(text) })
+    assert.equal(result.text, 'slow')
+    assert.deepEqual(deltas, ['slow'])
+  } finally {
+    await fixture.close()
+    await rm(fixture.directory, { recursive: true, force: true })
   }
 })
 

@@ -5,6 +5,9 @@ import { DatabaseSync } from 'node:sqlite'
 import { GATEWAY_LIMITS } from '../shared/gateway-protocol'
 
 const HOUR_MS = 60 * 60 * 1_000
+// Installations (and their usage/session/operation records) are deleted after
+// 13 months (395 days) without any session issuance, renewal, recovery or generation.
+const INSTALLATION_INACTIVITY_MS = 395 * 24 * HOUR_MS
 const MONTHLY_BUDGET_NANO = 5_000_000_000
 const SERVICE_MONTHLY_BUDGET_NANO = 100_000_000_000
 // Retained at the approved $0.275 wallet reserve after the model and output cap
@@ -76,6 +79,9 @@ export class OperationalStore {
     this.ensureColumn('operations', 'installation_id', 'TEXT')
     this.ensureColumn('budget_charges', 'next_reconcile_at', 'INTEGER NOT NULL DEFAULT 0')
     this.ensureColumn('budget_charges', 'expected_model', 'TEXT')
+    if (this.ensureColumn('installations', 'last_seen_at', 'INTEGER')) {
+      this.db.prepare('UPDATE installations SET last_seen_at = ? WHERE last_seen_at IS NULL').run(Date.now())
+    }
     this.db.exec('CREATE INDEX IF NOT EXISTS operations_installation_status ON operations(installation_id, status)')
     this.transaction(() => {
       this.db.prepare("UPDATE operations SET status = 'interrupted', finished_at = ? WHERE status = 'active'").run(now)
@@ -102,7 +108,7 @@ export class OperationalStore {
         return { retryAfter: Math.max(1, Math.ceil((oldest + HOUR_MS - now) / 1_000)) }
       }
       const expiresAt = now + GATEWAY_LIMITS.sessionTtlMs
-      this.db.prepare('INSERT INTO installations(id, secret_hash) VALUES (?, ?)').run(installationId, hashToken(installationSecret))
+      this.db.prepare('INSERT INTO installations(id, secret_hash, last_seen_at) VALUES (?, ?, ?)').run(installationId, hashToken(installationSecret), now)
       this.db.prepare('INSERT INTO sessions(id, token_hash, created_at, expires_at, installation_id) VALUES (?, ?, ?, ?, ?)')
         .run(id, tokenHash, now, expiresAt, installationId)
       this.db.prepare('INSERT INTO issuance_buckets(ip_hash, issued_at) VALUES (?, ?)')
@@ -119,6 +125,7 @@ export class OperationalStore {
       const installation = this.db.prepare('SELECT id FROM installations WHERE id = ? AND secret_hash = ?')
         .get(installationId, hashToken(installationSecret)) as { id: string } | undefined
       if (!installation) return undefined
+      this.touchInstallation(installationId, now)
       const sessions = this.db.prepare('SELECT COUNT(*) AS count FROM sessions WHERE installation_id = ? AND expires_at > ?')
         .get(installationId, now) as { count: number }
       if (Number(sessions.count) >= 20) {
@@ -148,8 +155,8 @@ export class OperationalStore {
       if (row.installation_id) {
         this.db.prepare('UPDATE installations SET secret_hash = ? WHERE id = ?').run(hashToken(installationSecret), installationId)
       } else {
-        this.db.prepare('INSERT INTO installations(id, secret_hash, last_started_at) VALUES (?, ?, ?)')
-          .run(installationId, hashToken(installationSecret), row.last_started_at)
+        this.db.prepare('INSERT INTO installations(id, secret_hash, last_started_at, last_seen_at) VALUES (?, ?, ?, ?)')
+          .run(installationId, hashToken(installationSecret), row.last_started_at, now)
         this.db.prepare('UPDATE sessions SET installation_id = ? WHERE id = ?').run(installationId, row.id)
       }
       this.db.prepare('UPDATE operations SET installation_id = ? WHERE session_id = ?').run(installationId, row.id)
@@ -183,6 +190,7 @@ export class OperationalStore {
       if (!row || Number(row.expires_at) <= now) return undefined
       const expiresAt = now + GATEWAY_LIMITS.sessionTtlMs
       this.db.prepare('UPDATE sessions SET expires_at = ? WHERE id = ?').run(expiresAt, row.id)
+      this.touchInstallation(row.installation_id, now)
       return {
         id: row.id,
         expiresAt,
@@ -266,7 +274,7 @@ export class OperationalStore {
       ].join(' ')).run(session.installation_id, requestId, monthKey, GENERATION_RESERVE_NANO, now, expectedModel)
 
       this.db.prepare('UPDATE sessions SET last_started_at = ? WHERE id = ?').run(now, sessionId)
-      if (session.installation_id) this.db.prepare('UPDATE installations SET last_started_at = ? WHERE id = ?').run(now, session.installation_id)
+      if (session.installation_id) this.db.prepare('UPDATE installations SET last_started_at = ?, last_seen_at = ? WHERE id = ?').run(now, now, session.installation_id)
       this.db.prepare(
         "INSERT INTO operations(session_id, request_id, fingerprint, status, started_at, installation_id) VALUES (?, ?, ?, 'active', ?, ?)",
       ).run(sessionId, requestId, fingerprint, now, session.installation_id)
@@ -380,6 +388,19 @@ export class OperationalStore {
   }
 
   private prune(now: number): void {
+    // Inactive installations: keep any with an active operation or an unresolved
+    // (reserved/held) charge, which still needs reconciliation.
+    const stale = this.db.prepare([
+      'SELECT id FROM installations i WHERE COALESCE(i.last_seen_at, i.last_started_at, 0) <= ?',
+      "  AND NOT EXISTS (SELECT 1 FROM operations o WHERE o.installation_id = i.id AND o.status = 'active')",
+      "  AND NOT EXISTS (SELECT 1 FROM budget_charges c WHERE c.installation_id = i.id AND c.status IN ('reserved','held'))",
+    ].join('\n')).all(now - INSTALLATION_INACTIVITY_MS) as Array<{ id: string }>
+    for (const { id } of stale) {
+      for (const table of ['operations', 'sessions', 'budget_charges', 'monthly_budgets']) {
+        this.db.prepare('DELETE FROM ' + table + ' WHERE installation_id = ?').run(id)
+      }
+      this.db.prepare('DELETE FROM installations WHERE id = ?').run(id)
+    }
     this.db.prepare('DELETE FROM issuance_buckets WHERE issued_at <= ?').run(now - HOUR_MS)
     this.db.prepare(
       "DELETE FROM operations WHERE started_at <= ? AND status != 'active'",
@@ -395,9 +416,15 @@ export class OperationalStore {
     return createHmac('sha256', this.hmacSecret).update(hour + ':' + ip).digest('hex')
   }
 
-  private ensureColumn(table: string, column: string, definition: string): void {
+  private ensureColumn(table: string, column: string, definition: string): boolean {
     const columns = this.db.prepare('PRAGMA table_info(' + table + ')').all() as Array<{ name: string }>
-    if (!columns.some((item) => item.name === column)) this.db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
+    if (columns.some((item) => item.name === column)) return false
+    this.db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
+    return true
+  }
+
+  private touchInstallation(id: string | null, now: number): void {
+    if (id) this.db.prepare('UPDATE installations SET last_seen_at = MAX(COALESCE(last_seen_at, 0), ?) WHERE id = ?').run(now, id)
   }
 
   private installationLastStartedAt(id: string): number | null {

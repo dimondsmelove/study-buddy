@@ -352,6 +352,10 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
       'X-Accel-Buffering': 'no',
     })
     response.flushHeaders()
+    const heartbeat = setInterval(() => {
+      if (!response.destroyed && !response.writableEnded) response.write(': ping\n\n')
+    }, config.heartbeatMs ?? 20_000)
+    heartbeat.unref?.()
     writeEvent(response, 'context', {
       estimatedInputTokens: prepared.estimatedInputTokens,
       inputBudget: prepared.inputBudget,
@@ -415,6 +419,7 @@ export function createBackend(config: BackendConfig, dependencies: BackendDepend
       }
     } finally {
       clearTimeout(timeout)
+      clearInterval(heartbeat)
       response.removeListener('close', onClose)
       active.delete(operationKey)
       try {

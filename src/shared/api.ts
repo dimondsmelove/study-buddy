@@ -191,7 +191,8 @@ export async function chatCompletion(opts: ChatCompletionOpts): Promise<Completi
         messages,
         stream: true,
         stream_options: { include_usage: true },
-        provider: { max_price: { prompt: 0.25, completion: 0.75, request: 0, image: 0 } },
+        // data_collection 'deny': route only to providers that don't store/train on prompts.
+        provider: { data_collection: 'deny', max_price: { prompt: 0.25, completion: 0.75, request: 0, image: 0 } },
         ...(temperature !== undefined ? { temperature } : {}),
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         ...(reasoning ? { reasoning } : {}),

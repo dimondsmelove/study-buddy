@@ -48,7 +48,7 @@ export function estimateTextTokens(text: string): number {
 }
 
 const ANSWER_LANGUAGES: readonly AnswerLanguage[] = [
-  'auto', 'en', 'ru', 'uk', 'de', 'fr', 'es', 'it', 'pt', 'pl', 'tr', 'zh', 'ja',
+  'auto', 'en', 'de', 'fr', 'es', 'it', 'nl', 'sv', 'da', 'no', 'fi', 'ar', 'id', 'ru', 'pt', 'ja', 'fil', 'vi', 'tr', 'th', 'ko',
 ]
 const TASK_KINDS: readonly TurnKind[] = [
   'solve', 'quiz', 'explain', 'translate', 'summarize', 'hint', 'ask', 'simpler', 'check',

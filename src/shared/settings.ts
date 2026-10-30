@@ -9,17 +9,25 @@ export type UiLanguage = 'auto' | 'en' | 'ru'
 export type AnswerLanguage =
   | 'auto'
   | 'en'
-  | 'ru'
-  | 'uk'
   | 'de'
   | 'fr'
   | 'es'
   | 'it'
+  | 'nl'
+  | 'sv'
+  | 'da'
+  | 'no'
+  | 'fi'
+  | 'ar'
+  | 'id'
+  | 'ru'
   | 'pt'
-  | 'pl'
-  | 'tr'
-  | 'zh'
   | 'ja'
+  | 'fil'
+  | 'vi'
+  | 'tr'
+  | 'th'
+  | 'ko'
 
 export interface Settings {
   uiLanguage: UiLanguage
@@ -34,9 +42,21 @@ export const DEFAULT_SETTINGS: Settings = {
 }
 
 const UI_LANGUAGES: UiLanguage[] = ['auto', 'en', 'ru']
-const ANSWER_LANGUAGES: AnswerLanguage[] = [
-  'auto', 'en', 'ru', 'uk', 'de', 'fr', 'es', 'it', 'pt', 'pl', 'tr', 'zh', 'ja',
+export const ANSWER_LANGUAGES: readonly AnswerLanguage[] = [
+  'auto', 'en', 'de', 'fr', 'es', 'it', 'nl', 'sv', 'da', 'no', 'fi', 'ar', 'id', 'ru', 'pt', 'ja', 'fil', 'vi', 'tr', 'th', 'ko',
 ]
+
+/** Browser language (primary subtag) if supported, else English. */
+export function defaultAnswerLanguage(): AnswerLanguage {
+  let tag = ''
+  try { tag = (globalThis.navigator?.language ?? '').toLowerCase() } catch { tag = '' }
+  let code = tag.split(/[-_]/)[0] ?? ''
+  if (code === 'nb' || code === 'nn') code = 'no'
+  else if (code === 'tl') code = 'fil'
+  return code !== 'auto' && ANSWER_LANGUAGES.includes(code as AnswerLanguage)
+    ? (code as AnswerLanguage)
+    : DEFAULT_SETTINGS.answerLanguage
+}
 
 /** Read language settings and remove provider fields from legacy storage. */
 export async function getSettings(): Promise<Settings> {
@@ -54,7 +74,7 @@ export async function getSettings(): Promise<Settings> {
       : DEFAULT_SETTINGS.uiLanguage,
     answerLanguage: ANSWER_LANGUAGES.includes(stored.answerLanguage as AnswerLanguage)
       ? (stored.answerLanguage as AnswerLanguage)
-      : DEFAULT_SETTINGS.answerLanguage,
+      : defaultAnswerLanguage(),
   }
   const keys = Object.keys(stored)
   if (keys.length !== 2 || !keys.includes('uiLanguage') || !keys.includes('answerLanguage') ||

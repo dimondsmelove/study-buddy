@@ -14,11 +14,10 @@ const welcomeMatch = welcomeOriginMatch(process.env.STUDY_BUDDY_WELCOME_URL ?? D
 export default defineManifest({
   manifest_version: 3,
   // Chat layout uses :has() (Chrome 105+); chrome.storage.session needs 102+.
-  minimum_chrome_version: '105',
-  incognito: 'not_allowed',
+  minimum_chrome_version: '114',
   default_locale: 'en',
   name: '__MSG_appName__',
-  version: '0.1.0',
+  version: '0.1.1',
   description: '__MSG_shortDesc__',
   action: {
     default_title: 'Study Buddy — select a region (Ctrl+Shift+Y)',

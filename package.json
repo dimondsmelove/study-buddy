@@ -1,6 +1,6 @@
 {
   "name": "study-buddy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Select any region of the screen and ask an AI about it — solve, explain, translate. Built on OCR Buddy's battle-tested capture core.",
   "type": "module",
   "private": true,

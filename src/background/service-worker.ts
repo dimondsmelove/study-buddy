@@ -15,6 +15,7 @@ import { captureDialog, closeDialog, installConversationCoordinator, launcherSta
 installConversationCoordinator()
 
 const CHAT_URL = 'src/chat/chat.html'
+const FALLBACK_WINDOW_KEY = 'fallbackWindowId'
 const HISTORY_MENU_ID = 'study-buddy-show-history'
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
@@ -271,8 +272,9 @@ async function showCaptureFailure(tabId: number | undefined, message: string): P
     return
   }
   const tab = await chrome.tabs.get(tabId).catch(() => undefined)
-  const restricted = restrictedReason(tab?.url)
+  const restricted = restrictedReason(tab?.url) ?? (isRestrictedFailure(message) || (tab && !tab.url && !isMissingAccessFailure(message)) ? 'browser and extension pages' : null)
   if (restricted) {
+    pendingSelect = null
     await showChatWindow(tabId, { kind: 'restricted', reason: restricted })
     return
   }
@@ -286,6 +288,10 @@ async function showCaptureFailure(tabId: number | undefined, message: string): P
   } catch {
     await showChatWindow(tabId, { kind: 'error', message })
   }
+}
+
+function isRestrictedFailure(message: string): boolean {
+  return /cannot access a chrome|chrome-extension|cannot be scripted|extensions gallery/i.test(message)
 }
 
 function isMissingAccessFailure(message: string): boolean {
@@ -318,14 +324,32 @@ async function showChatWindow(tabId: number | undefined, state: ChatState): Prom
       // overlay absent — fall through to the detached window
     }
   }
-  const params = new URLSearchParams(stateUrlParams(state))
-  await chrome.windows.create({
-    url: `${chrome.runtime.getURL(CHAT_URL)}?${params}`,
-    type: 'popup',
-    width: 480,
-    height: 640,
-  })
+  const compact = state.kind === 'restricted' || state.kind === 'error'
+  const params = new URLSearchParams({ ...stateUrlParams(state), fallback: '1' })
+  const url = `${chrome.runtime.getURL(CHAT_URL)}?${params}`
+  const size = compact ? { width: 360, height: 220 } : { width: 480, height: 640 }
+  // Keep exactly one detached window: reuse it if it still exists.
+  const { [FALLBACK_WINDOW_KEY]: existingId } = await chrome.storage.session.get(FALLBACK_WINDOW_KEY)
+  if (typeof existingId === 'number') {
+    try {
+      const win = await chrome.windows.get(existingId, { populate: true })
+      const tabId = win.tabs?.[0]?.id
+      if (tabId !== undefined) {
+        await chrome.tabs.update(tabId, { url })
+        await chrome.windows.update(existingId, { ...size, focused: true })
+        return
+      }
+    } catch { /* window is gone — create a new one */ }
+  }
+  const win = await chrome.windows.create({ url, type: 'popup', ...size })
+  if (win?.id !== undefined) await chrome.storage.session.set({ [FALLBACK_WINDOW_KEY]: win.id })
 }
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  void chrome.storage.session.get(FALLBACK_WINDOW_KEY).then(({ [FALLBACK_WINDOW_KEY]: id }) => {
+    if (id === windowId) return chrome.storage.session.remove(FALLBACK_WINDOW_KEY)
+  })
+})
 
 function stateUrlParams(state: ChatState): Record<string, string> {
   switch (state.kind) {

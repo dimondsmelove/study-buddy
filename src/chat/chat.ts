@@ -24,6 +24,7 @@ import { CONTEXT_LIMITS, contextProjection, conversationActivityAt, conversation
 import { conversationAction, GenerationConnection } from './conversation-client'
 import type { AnswerLanguage, Settings, UiLanguage } from '../shared/settings'
 import { DEFAULT_SETTINGS, getSettings, setSettings } from '../shared/settings'
+import { flagSvg, SHORT_CODE } from './flags'
 import type { UiLang } from '../shared/i18n'
 import { ANSWER_LANGUAGE_LABELS, browserLang, resolveUiLang, t } from '../shared/i18n'
 import { createResponseTitleParser } from '../shared/title'
@@ -77,7 +78,7 @@ function applyI18n(): void {
     node.alt = t(uiLang, node.dataset.i18nAlt!)
   }
   for (const node of document.querySelectorAll<HTMLElement>('[data-i18n-placeholder]')) {
-    ;(node as HTMLInputElement).placeholder = t(uiLang, node.dataset.i18nPlaceholder!)
+    ;(node as HTMLTextAreaElement).placeholder = t(uiLang, node.dataset.i18nPlaceholder!)
   }
 }
 
@@ -115,6 +116,7 @@ async function loadSettings(): Promise<Settings> {
   uiLang = resolveUiLang(settingsCache.uiLanguage, browserLang())
   applyI18n()
   fillLanguageSelects()
+  renderLangButton()
   return settingsCache
 }
 
@@ -258,10 +260,99 @@ function restoreView(): void {
 
 ;(el('set-back') as HTMLButtonElement).onclick = () => restoreView()
 
-for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-goto-settings]')) {
-  btn.onclick = () => openSettings()
+/** Settings screen is hidden; answer language is picked from the toolbar language panel. */
+const SETTINGS_ENABLED = false
+/** Interface-language control is kept in code but hidden until the UI is translated. */
+const UI_LANGUAGE_SETTING_VISIBLE = false
+for (const id of ['set-ui-lang']) {
+  const sel = el(id) as HTMLSelectElement
+  sel.hidden = !UI_LANGUAGE_SETTING_VISIBLE
+  const label = document.querySelector<HTMLLabelElement>(`label[for="${id}"]`)
+  if (label) label.hidden = !UI_LANGUAGE_SETTING_VISIBLE
 }
-// Settings is intentionally unavailable in the current UI. Keep its handler disabled with the commented-out control.
+for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-goto-settings]')) {
+  btn.hidden = !SETTINGS_ENABLED
+  btn.onclick = () => { if (SETTINGS_ENABLED) openSettings() }
+}
+// ── answer-language picker ───────────────────────────────────────────────────
+
+const langBtn = el('lang-btn') as HTMLButtonElement
+const langPanel = el('lang-panel') as HTMLDivElement
+const langGrid = el('lang-grid') as HTMLDivElement
+const LANG_ORDER = Object.keys(ANSWER_LANGUAGE_LABELS) as AnswerLanguage[]
+
+function langName(code: AnswerLanguage): string {
+  return code === 'auto' ? 'Auto (match question)' : ANSWER_LANGUAGE_LABELS[code]
+}
+
+function renderLangButton(): void {
+  const langBtn = el('lang-btn') as HTMLButtonElement
+  const code = settingsCache.answerLanguage
+  langBtn.innerHTML = `${flagSvg(code)}<span class="tb-code">${code === 'auto' ? '' : SHORT_CODE(code)}</span><span class="tb-label"></span>`
+  langBtn.querySelector('.tb-label')!.textContent = code === 'auto' ? 'Auto' : ANSWER_LANGUAGE_LABELS[code]
+  langBtn.dataset.tip = code === 'auto' ? 'Auto' : ANSWER_LANGUAGE_LABELS[code]
+  langBtn.setAttribute('aria-label', `Answer language: ${langName(code)}`)
+}
+
+function renderLangGrid(): void {
+  langGrid.replaceChildren(...LANG_ORDER.map((code) => {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.className = 'lang-tile'
+    b.setAttribute('role', 'option')
+    b.dataset.lang = code
+    const selected = code === settingsCache.answerLanguage
+    b.setAttribute('aria-selected', String(selected))
+    b.innerHTML = flagSvg(code)
+    const name = document.createElement('span')
+    name.textContent = langName(code)
+    b.append(name)
+    b.onclick = () => void pickLang(code)
+    return b
+  }))
+}
+
+function openLangPanel(): void {
+  renderLangGrid()
+  langPanel.hidden = false
+  requestAnimationFrame(() => langPanel.classList.add('open'))
+  ;(langGrid.querySelector<HTMLButtonElement>('[aria-selected="true"]') ?? langGrid.querySelector('button'))?.focus()
+}
+
+function closeLangPanel(): void {
+  if (langPanel.hidden) return
+  langPanel.classList.remove('open')
+  const done = () => { if (!langPanel.classList.contains('open')) langPanel.hidden = true }
+  langPanel.addEventListener('transitionend', done, { once: true })
+  setTimeout(done, 400)
+  langBtn.focus()
+}
+
+async function pickLang(code: AnswerLanguage): Promise<void> {
+  try {
+    const existing = await getSettings()
+    await updateSettings({ ...existing, answerLanguage: code })
+  } catch {
+    // Keep the panel open so the user can retry; storage failures are rare.
+    return
+  }
+  renderLangButton()
+  closeLangPanel()
+}
+
+langBtn.onclick = () => openLangPanel()
+;(el('lang-close') as HTMLButtonElement).onclick = () => closeLangPanel()
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !langPanel.hidden) { e.preventDefault(); e.stopPropagation(); closeLangPanel() }
+}, true)
+renderLangButton()
+
+// Restricted/error rescue windows are transient: close when they lose focus.
+window.addEventListener('blur', () => {
+  if (current.kind !== 'restricted' && current.kind !== 'error') return
+  if (!new URLSearchParams(location.search).has('fallback')) return
+  window.close()
+})
 
 // ── capture actions ──────────────────────────────────────────────────────────
 
@@ -453,7 +544,7 @@ async function openConversation(id: string, select = true, revealAttachmentId?: 
   if (conversation && conversation.id !== id) {
     releaseImages()
     pendingRevealAttachmentId = undefined
-    ;(el('ask-input') as HTMLInputElement).value = ''
+    ;(el('ask-input') as HTMLTextAreaElement).value = ''; autoGrowAsk()
     previewKind = undefined
     setComposerError()
   }
@@ -684,7 +775,7 @@ function previewTurn(): Turn | undefined {
     text = ''
     display = t(uiLang, 'preset.' + kind)
   } else {
-    const ask = (el('ask-input') as HTMLInputElement).value
+    const ask = (el('ask-input') as HTMLTextAreaElement).value
     if (!ask.trim()) return undefined
     kind = 'ask'
     input = ask
@@ -905,7 +996,7 @@ function setBusy(busy: boolean, cooldownMs = 0): void {
   for (const b of document.querySelectorAll<HTMLButtonElement>('.preset')) b.disabled = busy || coolingDown
   for (const b of document.querySelectorAll<HTMLButtonElement>('[data-generation]')) b.disabled = busy || coolingDown
   ;(el('new-chat-btn') as HTMLButtonElement).disabled = busy
-  ;(el('ask-input') as HTMLInputElement).disabled = busy
+  ;(el('ask-input') as HTMLTextAreaElement).disabled = busy
   const askButton = el('ask-btn') as HTMLButtonElement
   const canStop = !!inflight || !!conversation && profileState.generation?.conversationId === conversation.id
   askButton.disabled = (busy || coolingDown) && !canStop
@@ -1148,7 +1239,17 @@ for (const btn of document.querySelectorAll<HTMLButtonElement>('.preset')) {
   })
 }
 
-;(el('ask-input') as HTMLInputElement).addEventListener('input', () => { setComposerError(); queueContextPreview() })
+;(el('ask-input') as HTMLTextAreaElement).addEventListener('input', () => { autoGrowAsk(); setComposerError(); queueContextPreview() })
+function autoGrowAsk(): void {
+  const input = el('ask-input') as HTMLTextAreaElement
+  input.style.height = 'auto'
+  input.style.height = `${Math.min(input.scrollHeight + 2, 160)}px`
+}
+;(el('ask-input') as HTMLTextAreaElement).addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return
+  event.preventDefault()
+  ;(el('ask-form') as HTMLFormElement).requestSubmit()
+})
 el('ask-form').addEventListener('submit', (event) => {
   event.preventDefault()
   if (inflight) {
@@ -1159,10 +1260,10 @@ el('ask-form').addEventListener('submit', (event) => {
     void conversationAction({ action: 'stop', conversationId: conversation.id }).catch(reportError)
     return
   }
-  const input = el('ask-input') as HTMLInputElement
+  const input = el('ask-input') as HTMLTextAreaElement
   const question = input.value
   if (question.trim()) void send(question, 'ask', question, undefined, () => {
-    if (input.value === question) { input.value = ''; queueContextPreview() }
+    if (input.value === question) { input.value = ''; autoGrowAsk(); queueContextPreview() }
   }).catch(reportError)
 })
 
@@ -1177,7 +1278,7 @@ el('new-chat-btn').onclick = () => {
   void conversationAction<Conversation>({ action: 'create', title: t(uiLang, 'dialog.new') }).then(async (value) => {
     if (closing) return
     releaseImages()
-    ;(el('ask-input') as HTMLInputElement).value = ''
+    ;(el('ask-input') as HTMLTextAreaElement).value = ''; autoGrowAsk()
     previewKind = undefined
     setComposerError()
     await openConversation(value.id)

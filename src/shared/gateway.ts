@@ -316,7 +316,7 @@ function readStoredSession(value: unknown): StoredSession | undefined {
   return { ...session, gatewayOrigin }
 }
 
-async function readGenerationStream(stream: ReadableStream<Uint8Array>, request: AskRequest): Promise<CompletionResult> {
+export async function readGenerationStream(stream: ReadableStream<Uint8Array>, request: AskRequest): Promise<CompletionResult> {
   const reader = stream.getReader()
   const decoder = new TextDecoder('utf-8', { fatal: true })
   let buffer = ''

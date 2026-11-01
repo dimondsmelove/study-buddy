@@ -1,5 +1,7 @@
 # Backend operation and release handoff
 
+> Historical operator ledger. Entries below describe the state observed on their dates; later records may supersede earlier ones. They are not a live availability report or portable setup instructions. For the current source contract and local setup, see [architecture](architecture.md) and [backend setup](../src/backend/README.md).
+
 ## Public backend: Stage 1 hosting record (2026-10-19)
 
 This is a verified design record for the approved public-backend direction. It is not a deployment record. Public domain, tunnel, deployment, and store release work is deferred to later sessions; users must not need Tailscale for the eventual public release. Only the Study Buddy backend is in scope for public reachability. The extension, its local chat/image history, and its independent UI/answer-language settings retain their current architecture. Current implementation update (2026-10-21): the primary is anthropic/claude-haiku-5.5 through OpenRouter, with medium reasoning excluded from returned content and no fallback. Output is capped at 8,192 tokens; nominal input budget is 100,000 with 20,000 held back for estimator variance. This supersedes the earlier model/output description; the approved prompt package remains unchanged.

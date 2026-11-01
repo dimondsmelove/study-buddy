@@ -26,5 +26,12 @@ docs/superpowers/
 .backend-dist/
 data/
 
-# Backend runtime secrets
-.env.backend
+# Runtime secrets; keep distributable configuration examples
+.env
+.env.*
+!.env*.example
+
+# Local extension packages and editor backups
+study-buddy-*.zip
+dist.zip
+*.bak

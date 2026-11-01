@@ -1,203 +1,126 @@
 # Study Buddy
 
-Select a question on your screen, then choose a task or type a question. Approved task instructions are assembled into the canonical backend request. Ask remains free-form, and the selected task, answer language, and saved conversation history stay separate from interface labels.
+A Chromium extension that turns a selected region of a web page into a study conversation. Capture a question, ask for a hint or explanation, and read a streamed answer beside the source material.
 
-Select a region (`Ctrl+Shift+Y`) → the chat window appears next to your
-selection → pick a task or ask your own question. The answer streams in beside
-the page in the answer language selected in Settings. The toolbar icon also starts
-region selection; chat
-opens after a successful crop and continues the shared active conversation across tabs.
-A floating Study Buddy icon is available on ordinary web pages. It restores the
-shared active chat, or starts region selection when no chat is active. Switching
-tabs keeps an existing answer running; Stop works from any view of that chat.
-Right-click the toolbar icon → **Show history** to return to a saved chat without
-selecting another region. Opening History creates no chat and makes no model request.
-Inside a chat, **New chat** opens an empty conversation with text input;
-**New selection** adds another image message to the current conversation. All six
-study actions are visible as labeled icons, with explanations on hover/focus.
-Markdown and complete formulas render while the reply streams; unfinished math
-waits for its closing delimiter. Each
-capture is saved immediately, without starting an answer. Images remain in the
-thread and open at full size; there is no permanent upper preview.
+**Fullstack TypeScript:** Manifest V3 extension · Node.js HTTP service · SQLite · Server-Sent Events · IndexedDB · Playwright.
 
-**Status: private laptop integration test.** Capture, streaming, Markdown/LaTeX, local History, image messages and visible context exclusions use the Study Buddy backend; only the backend holds the OpenRouter credential and owns the model and limits. Approved task and title instructions are assembled server-side. Ask remains free-form and transcript text remains immutable. The private backend runs on homelab-laptop; public hosting and store publication remain deferred. See the [private backend handoff](docs/backend-deployment.md#private-laptop-integration-test-2026-10-20) for the endpoint, service commands, update steps and acceptance evidence. No provider key or local tokenizer is needed in the browser.
+[Try the demo](docs/demo.md) · [Architecture and engineering decisions](docs/architecture.md) · [Backend setup and API](src/backend/README.md)
 
-The backend uses Node 22.22.2 and built-in SQLite for operational state, without
-cloud chat history. Requests go through the backend using anthropic/claude-haiku-5.5 via OpenRouter, with medium reasoning excluded from returned content; provider errors are surfaced without switching models.
-Implementation and acceptance evidence for this slice are recorded in `ToDo.md`
-and the local loop ledger; earlier UI acceptance records remain historical.
-Store copy and privacy disclosures in `store/` are drafts until actual hosting,
-contact and audience decisions are complete.
+![Study Buddy displaying a captured equation and a saved hint beside a study page](docs/images/demo.png)
 
-Manual use:
+*Real extension and HTTP backend, with a deterministic mock response. This screenshot demonstrates the application flow, not model quality.*
 
-```
-Ctrl+Shift+Y or left-click toolbar icon  →  drag a box around a question  →  Solve / Hint / Check  →  read
-Right-click toolbar icon  →  Show history  →  choose a saved chat  →  continue
-New selection inside a chat  →  add another image message  →  ask about both
-New chat  →  empty conversation  →  type a question or select an image
-```
+## What it does
 
-## Roadmap
+- Capture a region with the toolbar icon or `Ctrl+Shift+Y` (`Command+Shift+Y` on macOS).
+- Choose Solve, Hint, Check, Explain, Translate or Summarize, or ask a free-form question.
+- Read streamed Markdown and LaTeX without leaving the page; select the answer language from the chat toolbar.
+- Add more captures to a conversation, open images at full size, and return to the last 20 saved chats.
+- Share an active conversation between tabs. Minimize preserves the running answer; Stop and Close cancel it explicitly.
 
-Ближайшие задачи и открытые продуктовые решения описаны в [`ToDo.md`](ToDo.md). [`BACKLOG.md`](BACKLOG.md) хранит историю реализации, заметки исследований и отложенные идеи.
+The backend owns provider credentials, request preparation, admission limits and usage accounting. Transcripts and image attachments remain in extension-origin IndexedDB; the server stores operational state rather than chat history.
 
-## Architecture at a glance
+## Try it without an API key
 
-```
-content overlay (drag-select a region)
-      │  rect + devicePixelRatio
-      ▼
-service worker  (coordinator only — no DOM, no model)
-      │  captureVisibleTab → crop on an OffscreenCanvas → chrome.storage.session
-      ▼
-chat window  (extension-page iframe in a closed shadow root, near the selection,
-              draggable — or a detached popup window when no host access)
-```
-
-- The service worker only coordinates (MV3 workers are ephemeral and have no DOM).
-- Capture uses `chrome.tabs.captureVisibleTab` — clean composited pixels, taint-free
-  even over cross-origin `<video>` (e.g. code shown in a paused video).
-- A declared content script supports a minimized-chat launcher on HTTP/HTTPS pages.
-  The launcher appears only after Minimize; idle pages have no icon. Restoring
-  the panel or closing the chat hides the launchers across tabs.
-  Persistent site access is declared at installation; there is no separate
-  in-app all-sites permission prompt. Capture and model requests still require
-  explicit user actions. Already-open web tabs are bootstrapped on install/update.
-- The chat window lives in a **closed shadow root**, so page styles can't leak in
-  and ours can't leak out.
-- Language/panel settings and the anonymous backend access session live in
-  `chrome.storage.local`; the OpenRouter key stays on the backend. The last
-  eight transient crops live in `chrome.storage.session`; saved transcripts and
-  image Blobs live in extension-origin IndexedDB. History keeps at most 20 chats,
-  ordered by their latest non-capture message (creation for empty chats);
-  viewing or capturing alone does not promote recency. Older chats are
-  automatically deleted, including existing history when the worker starts.
-- After Close, the icon’s **Show history** menu opens the saved list; choose a
-  chat to restore its transcript and images. A new capture after Close starts a
-  fresh chat. History reuses an open or minimized panel and falls back to a
-  detached window on privileged pages, without asking for capture permission.
-- History shows a topic title and a short date/time, with a delete icon in the
-  same row and an in-app confirmation dialog. Shared images remain while any
-  retained conversation references them. Copy unsaved text before leaving.
-- New-topic title generation from model responses is currently disabled. Existing saved titles and transcript content remain unchanged.
-- The active conversation is shared across tabs for the current browser session.
-  New chat and History selection update existing panels. Minimize keeps the
-  iframe/stream alive; switching tabs does not move or duplicate its request.
-  Close saves and cancels the shared chat and removes all its panels and launchers. A new capture after Close starts a fresh chat.
-  Navigation/reload/closure of the writer's page retains the latest committed
-  partial as interrupted, without automatic paid resume. One local generation
-  is admitted across windows.
-- Context selection estimates one text token per four UTF-8 bytes under a nominal
-  100,000 estimated input-token budget with 20,000 held in reserve. It includes
-  selected transcript text, canonical task instructions and a 1,024-token estimate per image.
-  The current request and source image stay included, then newest complete exchanges are added
-  while the token and 32 MiB request limits allow; the transcript stays saved locally.
-  Excluded messages remain muted with a reuse action. Only the selected context is
-  transmitted. The backend independently validates its canonical request with
-  the same estimator; there is no model tokenizer or provider-exact guarantee.
-- Each image is limited to 4 MiB decoded; the HTTP payload limit is 32 MiB.
-  Server validation accepts inline PNG/JPEG/WebP with bounded dimensions, without
-  downloading arbitrary image URLs. Only an oversized current request or essential image is
-  refused; older context is trimmed while the draft stays available.
-- Provider-reported usage is saved on the local assistant turn when available.
-  A lost final usage chunk means unknown usage. The server does not keep detailed
-  per-chat usage or conversation text/images/responses.
-- The backend admits one start per installation per ten seconds, one in flight
-  per installation, and four globally; issuance of new installations is limited
-  per network. It owns a shared 8,192-token response cap and timeout. Provider
-  availability errors surface without switching models. Duplicate request IDs
-  do not restart a generation within the 24-hour idempotency window.
-  Each installation has a $5 monthly budget and this backend has a $100 monthly
-  aggregate cap; each new generation reserves $0.275. These limits cover this
-  service only and do not cap other OpenRouter account usage.
-- Incognito is disabled. There is no cloud sync, telemetry or student profiling.
-
-## Develop and run
-
-Use Node **22.22.2** (`.nvmrc`), including for the built-in experimental
-`node:sqlite` backend API. Its startup warning is expected.
+Prerequisites: **Node.js 22.22.2** (pinned in `.nvmrc`), npm and a Chromium-compatible desktop environment. On Linux, Playwright also needs browser system libraries; see the [demo guide](docs/demo.md).
 
 ```sh
 npm ci
-npm run typecheck
-npm run typecheck:backend
-npm run contracts
-npm run contracts:storage
-npm run contracts:prompts
-npm run contracts:context
-npm run contracts:backend       # real HTTP/SQLite boundary, fake upstream only
-npm run backend:build
-npm run build                  # public client; no provider key build variable
-npm run verify                 # isolated Chromium -> backend -> fake provider
+npx playwright install chromium
+npm run preview:local
 ```
 
-For a real backend, copy `.env.backend.example` to ignored `.env.backend`, fill
-runtime secrets and the exact extension-origin allowlist, then:
+A separate Chromium profile opens a synthetic study page and captures its equation. Click **Hint** to exercise the complete client → backend → mock-provider → client flow. The terminal prints the local demo URL. The backend uses a separate SQLite database for this preview.
+
+For an automated run without a desktop display:
 
 ```sh
-node --env-file=.env.backend .backend-dist/server.js
+npm run preview:local -- start --headless --smoke
 ```
 
-Backend configuration, stop/health, single-instance hosting, proxy requirements,
-backup and rollback are documented in [backend operation](docs/backend-deployment.md)
-and [the backend README](src/backend/README.md). The default bind is loopback;
-this does not publish a service. Never place `OPENROUTER_API_KEY` in client/Vite
-variables or the extension bundle.
+It checks capture, an intermediate streamed answer, completion and restoration after reload without another provider request. Screenshots and a JSON result are saved under `review/preview/run-*/`.
 
-The client defaults to `http://127.0.0.1:8787`. Choose another backend at build time:
+[Demo walkthrough, evidence and test coverage →](docs/demo.md)
+
+## Architecture
+
+```text
+Web page
+  └─ content overlay: region selection + panel host in a closed shadow root
+       │ rectangle + devicePixelRatio
+       ▼
+MV3 service worker: capture guard → viewport screenshot → OffscreenCanvas crop
+       │ capture + conversation coordination
+       ▼
+Extension chat iframe ──────────────────────── IndexedDB
+  │ task + selected context                    transcripts, images, writer state
+  │ anonymous session bearer
+  ▼
+Node.js backend ───────────────────────────── SQLite
+  │ validate → prepare request → admit         sessions, operations, budgets
+  │ provider request                           no transcript/image persistence
+  ▼
+OpenRouter
+  └─ streamed response → backend SSE → chat rendering + local persistence
+```
+
+The chat document owns the network stream. The service worker serializes transcript mutations and coordinates the shared conversation across tabs. The server independently validates the submitted context and reconstructs model instructions.
+
+## Review the frontend and backend
+
+| Area | Engineering problem | Start reading |
+| --- | --- | --- |
+| Capture and browser lifecycle | Avoid capturing a different tab or a page that navigated during an asynchronous screenshot | [Capture guard](src/background/capture.ts), [service worker](src/background/service-worker.ts) |
+| Embedded interface | Isolate page styles, host the extension iframe, minimize and restore it across tabs | [Content overlay](src/content/overlay.ts), [chat](src/chat/chat.ts) |
+| Client persistence | Serialize writers, retain partial replies, recover interrupted work and garbage-collect attachments | [Conversation coordinator](src/background/conversations.ts), [IndexedDB store](src/shared/conversation-store.ts) |
+| Context and protocol | Keep the saved transcript separate from the bounded context sent to the model | [Context projection](src/shared/conversations.ts), [shared protocol](src/shared/gateway-protocol.ts) |
+| HTTP and streaming | Validate requests, manage anonymous sessions, forward deltas and abort disconnected work | [Backend application](src/backend/app.ts), [gateway client](src/shared/gateway.ts) |
+| Admission and accounting | Reserve budget atomically, reject duplicate starts and reconcile uncertain provider charges | [SQLite store](src/backend/store.ts), [backend contracts](scripts/backend-contracts.mjs) |
+
+[Tradeoffs, storage model, API and failure handling →](docs/architecture.md)
+
+## Build and connect a real backend
+
+```sh
+npm run build
+npm run backend:build
+```
+
+Load the generated `dist/` directory through **Load unpacked** at `chrome://extensions`. The client defaults to `http://127.0.0.1:8787`. To compile another gateway origin:
 
 ```sh
 STUDY_BUDDY_GATEWAY_URL=https://api.example.invalid npm run build
 ```
 
-Use the actual HTTPS service URL for public distribution. The generated manifest
-grants access to that gateway host; the backend allowlist must use the actual
-extension ID. The ordinary settings form retains language choices, with no
-provider key entry.
-
-For a safe local demonstration with a real backend and fake upstream:
+Copy `.env.backend.example` to `.env.backend`, configure the provider key, session secret and exact extension origin, then start the service:
 
 ```sh
-npm run preview:local
-npm run preview:local -- health
-npm run preview:local -- stop
+node --env-file=.env.backend .backend-dist/server.js
 ```
 
-The preview owns a separate Chromium profile and database, uses synthetic page
-content and makes no external model calls. `-- start --headless` is available
-for background checks. Closing or stopping it does not touch Vivaldi.
-Verification builds to `review/verify-dist/`; each preview builds under its own
-`review/preview/run-*/dist/`. Both leave the normal `dist/` build intact.
+The API key is a server runtime variable. The extension has no provider-key form. See [backend setup](src/backend/README.md) for the installation order, environment variables, Docker and service boundaries.
 
-Older real-provider quality/compare/review scripts are historical tools. They
-are not part of this gateway acceptance and their reports are not fresh evidence.
-Store screenshots are historical until regenerated for the final release.
+## Verification
 
-To load a build manually in a separate browser: open `chrome://extensions`,
-enable Developer mode, choose Load unpacked and select `dist/`. Work on this
-candidate does not change the user's existing Vivaldi installation.
+[CI](.github/workflows/ci.yml) runs two jobs using the pinned Node version:
 
-## Store
+- TypeScript checks, client/provider and prompt contracts, context estimation, HTTP/SQLite backend contracts, and both production builds.
+- Real Chromium IndexedDB contracts, welcome-page messaging checks, and the capture → streamed answer → reload smoke scenario.
 
-Submission copy, permission justifications, and the privacy policy are in
-`store/` (`listing.md`, `privacy.md`); screenshots in `store/screenshots/`.
-The working name "Study Buddy" is likely taken — alternatives and a checklist
-are in `store/listing.md`.
+All provider responses in these checks are local fixtures. The [validation guide](docs/demo.md#verification) lists the commands and the older browser suites that currently need maintenance. CI execution on GitHub requires publishing this repository; local results do not imply a hosted CI run.
 
-## Provenance
+## Scope and tradeoffs
 
-Forked from [OCR Buddy](https://github.com/Fanfulla/OCR-buddy) (MIT) — its
-battle-tested capture core (selection overlay, `captureVisibleTab` guard, MV3
-service-worker coordination, per-site permission flow) is retained nearly
-verbatim; its fully-local OCR engine was removed in favour of vision LLMs.
-See `LICENSE` and OCR Buddy's repository for the upstream work.
+- Chromium Manifest V3; incognito is disabled. Page access supports the embedded panel, while capture and generation require user actions.
+- One backend instance with SQLite. In-memory stream controllers and startup recovery assume a single owner of the operational database.
+- Anonymous installation identity supports continuity and limits; it is not an account system or a strong per-person quota.
+- Context size is an estimate, not an exact model tokenizer. Older exchanges can be omitted from a request while remaining in local history.
+- Public-store copy and privacy text in `store/` are drafts. Deployment notes record earlier operator sessions and are not a live service-status claim.
 
+## Provenance and license
 
-## First-install welcome page
+Study Buddy is derived from [OCR Buddy](https://github.com/Fanfulla/OCR-buddy). The viewport-capture guard and the original extension capture workflow come from that project; the Study Buddy tutoring interface, local conversation lifecycle, backend gateway and operational accounting extend that foundation. Local OCR is no longer part of the application flow.
 
-The extension opens https://studybuddyai.one/welcome/ once after a fresh install. The static page source is in welcome/; serve those files at /welcome/ on that HTTPS origin. The domain is not configured yet.
+The upstream MIT notice is retained in [LICENSE](LICENSE). Runtime libraries retain their own licenses: [DOMPurify](https://github.com/cure53/DOMPurify), [KaTeX](https://github.com/KaTeX/KaTeX) and [Marked](https://github.com/markedjs/marked).
 
-The install URL includes the extension runtime id as id=. When toolbar pin state is available, it also includes pinned=1 or pinned=0 as the initial display hint; unknown state omits that hint. A valid #pin or #usage choice from the page links or URL takes priority over automatic state and stops pin polling for that page. Without a valid choice, live extension state takes priority over the URL hint.
-
-For a local review build, serve welcome/ at http://127.0.0.1:4179/welcome/ (for example, python3 -m http.server 4179 --bind 127.0.0.1) and build with STUDY_BUDDY_WELCOME_URL=http://127.0.0.1:4179/welcome/ npm run build -- --outDir review/welcome-dist. Production URLs must use HTTPS and end in /welcome/; HTTP is accepted for localhost, 127.0.0.1 or ::1. The extension allows external messaging only from that origin and checks the exact configured path in its handler. Run the welcome contract checks with node --experimental-strip-types scripts/welcome-contracts.mjs.
+Product decisions and implementation history remain in [PRODUCT.md](PRODUCT.md), [ToDo.md](ToDo.md) and [BACKLOG.md](BACKLOG.md). They provide historical context; the architecture and setup guides above describe the current source.

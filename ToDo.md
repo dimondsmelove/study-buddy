@@ -1,5 +1,7 @@
 # Study Buddy — активный план работ
 
+> **HISTORICAL CONTEXT.** Dated decisions, status claims and task order below describe earlier slices. For current implementation, validated artifacts and remaining work, read [CURRENT-STATE.md](CURRENT-STATE.md). Do not restore old tokenizer, provider-key UI or retired model settings from this document.
+
 Версия плана: **1.18** · обновлено **2026-10-20**. Это единственный активный план ближайших задач проекта. Исторические решения, выполненные срезы, исследовательские заметки и отложенные идеи остаются в [`BACKLOG.md`](BACKLOG.md); его старые списки приоритета не конкурируют с этим планом.
 
 
@@ -105,7 +107,7 @@
 
 - Проверенная база: `999591e`, ветка `main`; на 2026-10-16 до этой фиксации tracked worktree чистый. `origin` = `https://github.com/Fanfulla/OCR-buddy.git`; это upstream, а не подтверждённый приватный remote для доставки нашего loop.
 - `src/shared/gateway.ts` пока вызывает direct-provider `askWithFallback`; запросы, prompts, параметры и выбор моделей находятся в клиенте. Реализация backend в этом срезе не выполнена.
-- `src/shared/context-tokenizer.ts` по-прежнему импортирует `@huggingface/tokenizers` и локальный словарь. Решение об удалении ещё НЕ реализовано. Прежняя ошибка build была вызвана отсутствием установленной зависимости, а не доказанной несовместимостью токенизатора с браузером.
+- В исходном срезе `src/shared/context-tokenizer.ts` импортировал `@huggingface/tokenizers` и локальный словарь. Этот факт устарел: tokenizer и зависимость удалены из текущей реализации. Прежняя ошибка build была вызвана отсутствием установленной зависимости, а не доказанной несовместимостью токенизатора с браузером.
 - `src/shared/conversations.ts`: `inputTokens: 200_000`, `estimateHeadroom: 20_000`, image reserve 1 024 токена, app-side image limit 4 МиБ; context projection исключает старые группы целиком, исходная история остаётся локальной.
 - `Turn.usage` содержит `model`, `promptTokens`, `completionTokens`, `cost`; `src/shared/api.ts` читает usage, `chat.ts` передаёт его в запись ответа, `conversation-store.ts` сохраняет. При отмене/обрыве финальный usage может не попасть в клиент. Не считать отсутствующие значения нулевым расходом.
 - Backend baseline на 2026-10-16: primary route deepseek/deepseek-v4-flash-vision-exp; fallback: google/gemini-3.1-flash-lite, openai/gpt-5-nano. Эти маршруты исторические и заменены решением этапа 1 выше.

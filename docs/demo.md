@@ -51,7 +51,7 @@ STUDY_BUDDY_PREVIEW_PORT=4188 npm run preview:local
 ## Automated fullstack smoke run
 
 ```sh
-npm run preview:local -- start --headless --smoke
+npm run verify
 ```
 
 This run performs a real toolbar action, selects a 310 × 70 CSS-pixel region of the synthetic page, waits for the captured image, clicks Hint, observes partial output, waits for completion and reloads the chat document. It requires the saved answer to reappear without a second upstream request, then closes its browser and service.
@@ -65,7 +65,7 @@ Each run creates a separate `review/preview/run-*/` directory with:
 | `gateway.sqlite` | Preview-only operational database |
 | `dist/` and `profile/` | Isolated extension build and browser profile |
 
-The [README screenshot](images/demo.png) was captured by this scenario on 2026-11-01 with Chromium at 1200 × 800. Its study page is synthetic and its answer is a mock. It is not a capture of a student's data or a live model evaluation.
+The [README screenshot](images/demo.png) was captured from the actual reference dist by this scenario on 2026-11-01 with Chromium at 1200 × 800; [narrow view](images/narrow.png) uses 320 × 568. See [current state](../CURRENT-STATE.md) for source/artifact equivalence. Its study page is synthetic and its answer is a mock. It is not a capture of a student's data or a live model evaluation.
 
 ## Verification
 
@@ -89,14 +89,22 @@ The browser job installs Chromium and runs:
 ```sh
 npm run contracts:storage
 node --experimental-strip-types scripts/welcome-contracts.mjs
-npm run preview:local -- start --headless --smoke
+npm run verify
 ```
 
 The backend suite crosses real HTTP and SQLite boundaries with a local fake provider. The storage suite crosses real IndexedDB transactions. Welcome contracts include an actual isolated extension messaging exchange. The smoke scenario connects capture, backend admission, SSE rendering and local reply restoration.
 
-### Older suites outside CI
+### Verify an existing build unchanged
 
-`npm run verify` is an extensive historical regression harness. On 2026-11-01 it stopped while attempting to open the old Settings screen, which is hidden in the current UI. It also contains a screenshot path tied to an old local session. Its complete result is not claimed as passing by this CI workflow.
+```sh
+npm run verify -- --extension-dir /absolute/path/to/dist
+```
+
+This bypasses the build step and hashes the supplied artifact before and after acceptance. Its compiled gateway is redirected only inside the isolated test browser to the local backend. HTTPS artifacts use a temporary loopback TLS relay to preserve incremental streaming; this mode requires `openssl`. No requests reach the compiled production gateway. Evidence includes the original gateway URL, all file hashes and the aggregate digest.
+
+### Archived and separate checks
+
+The old Settings/context-counter harness and direct-provider tools are preserved as non-runnable `.txt` files in [scripts/archive](../scripts/archive/README.md). They are excluded from the active npm surface. `npm run verify` now runs the maintained composed scenario; it does not claim the full coverage of the archived broad regression harness.
 
 `npm run verify:overlay-click` checks native tab visibility using a separately launched headed browser. It requires `SB_HEADED=1` and an isolated graphical display. On Linux with Xvfb installed, its invocation is:
 

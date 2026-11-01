@@ -1,5 +1,7 @@
 # Study Buddy — UI direction
 
+> **HISTORICAL CONTEXT.** Dated decisions, status claims and task order below describe earlier slices. For current implementation, validated artifacts and remaining work, read [CURRENT-STATE.md](../CURRENT-STATE.md). Do not restore old tokenizer, provider-key UI or retired model settings from this document.
+
 Дата: 2026-10-09; уточнено 2026-10-11. Поверхность: extension chat iframe и его floating host. База: 7803ed3, branch loop/study-buddy-ui-luna-2026-10-09.
 
 ## Основание и границы

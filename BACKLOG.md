@@ -1,5 +1,7 @@
 # Study Buddy — история, выполненные срезы и отложенные идеи
 
+> **HISTORICAL CONTEXT.** Dated decisions, status claims and task order below describe earlier slices. For current implementation, validated artifacts and remaining work, read [CURRENT-STATE.md](CURRENT-STATE.md). Do not restore old tokenizer, provider-key UI or retired model settings from this document.
+
 Это архив выполненных срезов, прежних решений, заметок исследования и предложенных идей. **Единственный активный план ближайших задач — [`ToDo.md`](ToDo.md)**. Старый порядок работ в §6 и чек-листы этого документа не задают текущий приоритет.
 
 Легенда: ✅ сделано (по реализации) · 🟡 частично · ⬜ отложено/не выбрано · ❌ отклонено решением · ↗ перенесено в активный план. Перенос не означает, что реализация началась или закончена.

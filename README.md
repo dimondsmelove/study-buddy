@@ -4,7 +4,7 @@ A Chromium extension that turns a selected region of a web page into a study con
 
 **Fullstack TypeScript:** Manifest V3 extension · Node.js HTTP service · SQLite · Server-Sent Events · IndexedDB · Playwright.
 
-[Try the demo](docs/demo.md) · [Architecture and engineering decisions](docs/architecture.md) · [Backend setup and API](src/backend/README.md)
+[Validated current state](CURRENT-STATE.md) · [Try the demo](docs/demo.md) · [Architecture and engineering decisions](docs/architecture.md) · [Backend setup and API](src/backend/README.md)
 
 ![Study Buddy displaying a captured equation and a saved hint beside a study page](docs/images/demo.png)
 
@@ -35,10 +35,10 @@ A separate Chromium profile opens a synthetic study page and captures its equati
 For an automated run without a desktop display:
 
 ```sh
-npm run preview:local -- start --headless --smoke
+npm run verify
 ```
 
-It checks capture, an intermediate streamed answer, completion and restoration after reload without another provider request. Screenshots and a JSON result are saved under `review/preview/run-*/`.
+It checks capture, an intermediate streamed answer, completion, restoration after reload, language selection, history, minimize/restore, Close and narrow layout without another provider request. Screenshots and a JSON result are saved under `review/preview/run-*/`.
 
 [Demo walkthrough, evidence and test coverage →](docs/demo.md)
 
@@ -107,7 +107,7 @@ The API key is a server runtime variable. The extension has no provider-key form
 - TypeScript checks, client/provider and prompt contracts, context estimation, HTTP/SQLite backend contracts, and both production builds.
 - Real Chromium IndexedDB contracts, welcome-page messaging checks, and the capture → streamed answer → reload smoke scenario.
 
-All provider responses in these checks are local fixtures. The [validation guide](docs/demo.md#verification) lists the commands and the older browser suites that currently need maintenance. CI execution on GitHub requires publishing this repository; local results do not imply a hosted CI run.
+All provider responses in these checks are local fixtures. The [validation guide](docs/demo.md#verification) lists the commands and the archived suites whose full historical coverage is not claimed. CI execution on GitHub requires publishing this repository; local results do not imply a hosted CI run.
 
 ## Scope and tradeoffs
 

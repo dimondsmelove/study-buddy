@@ -6,7 +6,7 @@ A Chromium extension that turns a selected region of a web page into a study con
 
 [Validated current state](CURRENT-STATE.md) · [Try the demo](docs/demo.md) · [Architecture and engineering decisions](docs/architecture.md) · [Backend setup and API](src/backend/README.md)
 
-![Study Buddy displaying a captured equation and a saved hint beside a study page](docs/images/demo.png)
+![Study Buddy displaying an English parameter-dependent improper integral and calculus hint](docs/images/demo.png)
 
 *Real extension and HTTP backend, with a deterministic mock response. This screenshot demonstrates the application flow, not model quality.*
 

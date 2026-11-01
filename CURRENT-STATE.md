@@ -16,7 +16,7 @@ Read this file before using dated task, release or deployment notes. `FACT` desc
 
 The actual reference `dist` was loaded unchanged in an isolated Chromium 148.0.7778.96 profile. Its compiled HTTPS gateway was redirected only inside that test browser to a loopback TLS relay, real local backend and deterministic upstream fixture. No production generation was requested.
 
-Passed: toolbar-triggered region capture; visible incremental answer; completion; reload restoration without another upstream request; answer-language picker; history; minimize/restore; Close preserving the saved conversation; six task controls and visible composer at 320 × 568 without horizontal overflow. Page errors: **0**. The full-page screenshot uses 1200 × 800.
+Passed: toolbar-triggered region capture; visible incremental answer; completion; reload restoration without another upstream request; answer-language picker; history; minimize/restore; Close preserving the saved conversation; six task controls and visible composer at 320 × 568 without horizontal overflow. Page errors: **0**. The English calculus screenshot shows differentiation under the integral sign for a parameter-dependent improper integral. The full-page screenshot uses 1200 × 800.
 
 Evidence: [record and artifact hashes](docs/validation/runtime-2026-11-01.json), [full view](docs/images/demo.png), [narrow view](docs/images/narrow.png).
 

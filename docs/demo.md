@@ -25,12 +25,12 @@ The interactive preview needs a graphical desktop. The automated smoke run uses 
 npm run preview:local
 ```
 
-The script builds an isolated copy of the extension, starts the fixture and gateway, opens Chromium and captures the equation on the demo page. Wait for `READY` in the terminal; by default the page is served at `http://127.0.0.1:4187/demo`.
+The script builds an isolated copy of the extension, starts the fixture and gateway, opens Chromium and captures the full parameter-dependent improper integral exercise on the demo page. Wait for `READY` in the terminal; by default the page is served at `http://127.0.0.1:4187/demo`.
 
 1. Inspect the captured image in the chat. Capture alone does not generate an answer.
 2. Click **Hint**. Watch the fixed response arrive in chunks and finish with a saved status. This verifies transport and UI behavior rather than tutoring quality.
 3. Minimize and restore the panel. Use the toolbar icon or shortcut to select another region, then continue in the same conversation.
-4. Change the answer language using the language button in the chat toolbar. The mock has fixed English and Russian fixture replies; it does not translate arbitrary content.
+4. Change the answer language using the language button in the chat toolbar. The mock response is fixed in English; changing the answer-language setting does not translate this deterministic fixture.
 5. Close the panel. Right-click the extension icon and choose **Show history** to reopen the saved conversation.
 
 The fixture recognizes the canonical Hint and Check instructions. Other tasks and free-form questions receive a generic demonstration answer. Between generation starts, the real backend cooldown applies.
@@ -54,7 +54,7 @@ STUDY_BUDDY_PREVIEW_PORT=4188 npm run preview:local
 npm run verify
 ```
 
-This run performs a real toolbar action, selects a 310 × 70 CSS-pixel region of the synthetic page, waits for the captured image, clicks Hint, observes partial output, waits for completion and reloads the chat document. It requires the saved answer to reappear without a second upstream request, then closes its browser and service.
+This run performs a real toolbar action, selects the 544 × 340 CSS-pixel exercise card on the synthetic page, waits for the captured image, clicks Hint, observes partial output, waits for completion and reloads the chat document. It requires the saved answer to reappear without a second upstream request, then closes its browser and service.
 
 Each run creates a separate `review/preview/run-*/` directory with:
 
@@ -65,7 +65,7 @@ Each run creates a separate `review/preview/run-*/` directory with:
 | `gateway.sqlite` | Preview-only operational database |
 | `dist/` and `profile/` | Isolated extension build and browser profile |
 
-The [README screenshot](images/demo.png) was captured from the actual reference dist by this scenario on 2026-11-01 with Chromium at 1200 × 800; [narrow view](images/narrow.png) uses 320 × 568. See [current state](../CURRENT-STATE.md) for source/artifact equivalence. Its study page is synthetic and its answer is a mock. It is not a capture of a student's data or a live model evaluation.
+The [README screenshot](images/demo.png) was captured from the actual reference dist by this scenario on 2026-11-01 with Chromium at 1200 × 800; [narrow view](images/narrow.png) uses 320 × 568. See [current state](../CURRENT-STATE.md) for source/artifact equivalence. The page presents an English university calculus exercise on a parameter-dependent improper integral. Its study page is synthetic and its answer is a mock. It is not a capture of a student's data or a live model evaluation.
 
 ## Verification
 

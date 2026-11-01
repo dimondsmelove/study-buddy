@@ -136,8 +136,8 @@
   },
   "compiledGatewayUrl": "https://api.studybuddyai.one",
   "captured": {
-    "width": 310,
-    "height": 70
+    "width": 544,
+    "height": 340
   },
   "upstreamRequests": 1,
   "observedPartialAnswer": true,

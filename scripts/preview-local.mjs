@@ -84,12 +84,29 @@ const stop = async () => {
   if (gatewayProxy?.listening) await new Promise(resolve => gatewayProxy.close(resolve))
   if (server.listening) server.close()
 }
-const demo = `<!doctype html><meta charset="utf-8"><title>Study Buddy · локальная приёмка</title>
-<style>body{font:18px/1.6 system-ui;background:#eef1f5;color:#18181b;margin:0}header{padding:18px;background:#111827;color:white}main{padding:28px}article{background:white;border:1px solid #ddd;border-radius:10px;padding:20px;width:340px}small{font-size:13px}</style>
-<header>Study Buddy · изолированный mock, без реального AI и оплаты</header>
-<main><article><b>Задача</b><p>2x + 6 = 10</p><b>Попытка ученика</b><p>2(x + 3) = 10<br>2x + 3 = 10</p></article>
-<p>Ctrl+Shift+Y или значок расширения: выделить область. Диалог открывается после успешного захвата.</p>
-<small>Hint/Check отвечают фиксированной демонстрацией. Это проверка интерфейса, не качества модели. Свернуть: ответ продолжается. Закрыть: ответ сохраняется и останавливается.</small></main>`
+const demo = `<!doctype html><html lang="en"><meta charset="utf-8"><title>Calculus II · Parameter integrals</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:16px/1.65 system-ui;background:#f3f5f8;color:#1e293b}
+header{height:72px;padding:20px 32px;background:white;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:16px}
+header strong{font-size:18px}header span{color:#64748b;font-size:13px}main{padding:30px 32px;width:612px}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:#64748b;margin:0 0 8px}
+h1{font-size:28px;line-height:1.25;letter-spacing:-.025em;margin:0 0 24px}article{background:white;border:1px solid #dce3ec;border-radius:14px;padding:24px;box-shadow:0 3px 12px #1e293b04}
+.number{font-size:11px;font-weight:700;letter-spacing:.1em;color:#2563eb;text-transform:uppercase}h2{font-size:19px;line-height:1.4;margin:8px 0 16px}p{margin:12px 0}
+math{font-size:25px;margin:24px 0}ol{padding-left:20px;color:#475569;font-size:14px}.note{font-size:12px;color:#64748b;margin-top:22px}
+</style>
+<header><strong>Calculus II</strong><span>Practice set 04 / Improper integrals</span></header>
+<main><p class="eyebrow">University mathematics</p><h1>Differentiation under<br>the integral sign</h1>
+<article data-demo-problem><span class="number">Exercise 07</span><h2>A parameter-dependent integral</h2><p>For <i>a</i> &gt; 0, evaluate</p>
+<math display="block"><mrow><mi>I</mi><mo>(</mo><mi>a</mi><mo>)</mo><mo>=</mo><msubsup><mo>∫</mo><mn>0</mn><mi>∞</mi></msubsup><mfrac><mrow><mi>ln</mi><mo>(</mo><mn>1</mn><mo>+</mo><msup><mi>a</mi><mn>2</mn></msup><msup><mi>x</mi><mn>2</mn></msup><mo>)</mo></mrow><mrow><mn>1</mn><mo>+</mo><msup><mi>x</mi><mn>2</mn></msup></mrow></mfrac><mspace width=".2em"/><mi>d</mi><mi>x</mi><mo>.</mo></mrow></math>
+<ol><li>Establish convergence of the improper integral.</li><li>Justify differentiation with respect to the parameter.</li><li>Find a closed form for <i>I(a)</i>.</li></ol></article>
+<p class="note">Select the exercise to explore a hint with Study Buddy.<br>Synthetic exercise · Simulated response · No live model request.</p></main></html>`
+const hintAnswer = String.raw`### Differentiate under the integral sign
+
+Differentiating removes the logarithm:
+
+$$I'(a)=2a\int_0^\infty\frac{x^2}{(1+x^2)(1+a^2x^2)}\,dx.$$
+
+Use **partial fractions** and $$\int_0^\infty\frac{dx}{1+b^2x^2}=\frac{\pi}{2b}$$ to show that $I'(a)=\frac{\pi}{1+a}$. Then integrate, using $I(0)=0$.`
 const screenshots = ['dialog', 'check', 'history', 'minimized', 'narrow']
 const server = createServer((req, res) => {
   if (req.url === '/healthz') {
@@ -110,18 +127,17 @@ const server = createServer((req, res) => {
       let request
       try { request = JSON.parse(body) } catch { res.writeHead(400); res.end(); return }
       requests++
-      const ru = request.messages?.[0]?.content?.includes('Respond in Russian')
       const kind = previewPrompts.classifyPreviewTask(request.messages, previewPrompts)
-      const text = ru
-        ? kind === 'hint' ? 'Начни с вычитания 6 из обеих частей равенства. Какое равенство получится?' : kind === 'check' ? 'Первый неверный переход — раскрытие скобок: множитель 2 относится к обоим слагаемым. Проверь произведение 2 · 3.' : 'Демонстрационный ответ локального mock. Реальная модель не вызывается.'
-        : kind === 'hint' ? 'Start by subtracting 6 from both sides. What equation do you get?' : kind === 'check' ? 'The first incorrect step is distributing the brackets: 2 multiplies both terms. Check 2 × 3.' : 'Local mock demonstration. No real model is called.'
+      const text = kind === 'hint' ? hintAnswer
+        : kind === 'check' ? 'Before differentiating, justify convergence near zero and infinity. Then bound the parameter derivative on a compact interval of positive values of a.'
+        : 'Local mock demonstration. No real model is called.'
       res.writeHead(200, { 'content-type': 'text/event-stream' })
-      const chunks = text.match(/.{1,12}/gu) ?? []
+      const chunks = text.match(/[\s\S]{1,24}/gu) ?? []
       const timer = setInterval(() => {
         const chunk = chunks.shift()
         if (chunk !== undefined) res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`)
         else { clearInterval(timer); res.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":2,"cost":0.0001}}\n\ndata: [DONE]\n\n') }
-      }, 200)
+      }, 70)
       res.on('close', () => clearInterval(timer))
     })
     return
@@ -133,7 +149,7 @@ const server = createServer((req, res) => {
     return
   }
   res.setHeader('content-type', 'text/html; charset=utf-8')
-  res.end(req.url === '/demo' ? demo : `<!doctype html><meta charset="utf-8"><title>Study Buddy · приёмка</title><style>body{font:16px system-ui;margin:30px;background:#eef1f5}a{color:#1457ad}main{display:flex;gap:20px;flex-wrap:wrap}figure{margin:0}img{width:300px;max-height:470px;object-fit:contain;object-position:top;background:white}figcaption{padding:10px}</style><h1>Study Buddy · локальный loop</h1><p>Runtime-скриншоты реального расширения с локальным mock. <a href="/demo">Демо-страница</a> · <a href="/healthz">Health</a></p><p>Живой тест — в отдельном Chromium. Локальный backend применяет cooldown и лимиты допуска; ответы идут от HTTP mock, запросов к настоящей модели нет.</p><main>${screenshots.map(name => `<figure><a href="/${name}.png"><img src="/${name}.png" alt="${name}"></a><figcaption>${name}</figcaption></figure>`).join('')}</main>`)
+  res.end(req.url === '/demo' ? demo : `<!doctype html><meta charset="utf-8"><title>Study Buddy · Local preview</title><style>body{font:16px system-ui;margin:30px;background:#eef1f5}a{color:#1457ad}main{display:flex;gap:20px;flex-wrap:wrap}figure{margin:0}img{width:300px;max-height:470px;object-fit:contain;object-position:top;background:white}figcaption{padding:10px}</style><h1>Study Buddy · Local preview</h1><p>Screenshots of the real extension with a local mock provider. <a href="/demo">Demo page</a> · <a href="/healthz">Health</a></p><p>The demo runs in isolated Chromium with the real backend and a local mock provider. No live model requests are made.</p><main>${screenshots.map(name => `<figure><a href="/${name}.png"><img src="/${name}.png" alt="${name}"></a><figcaption>${name}</figcaption></figure>`).join('')}</main>`)
 })
 try {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(Number(process.env.STUDY_BUDDY_PREVIEW_PORT ?? 4187), '127.0.0.1', resolve) })
@@ -202,7 +218,17 @@ try {
       resolve()
     })
   })
-  await sw.evaluate(settings => chrome.storage.local.set({ settings }), { uiLanguage: smoke ? 'en' : 'ru', answerLanguage: smoke ? 'en' : 'auto' })
+  await sw.evaluate(settings => chrome.storage.local.set({ settings }), { uiLanguage: 'en', answerLanguage: 'en' })
+  // Fresh installation opens its welcome tab after a one-second delay.
+  // Let that tab settle before capture so it cannot steal the active tab.
+  await sw.evaluate(async () => {
+    const deadline = Date.now() + 5_000
+    while (Date.now() < deadline) {
+      if ((await chrome.tabs.query({})).some(tab => (tab.pendingUrl || tab.url || '').includes('/welcome/'))) return
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    throw new Error('The fresh-install welcome tab did not appear before capture.')
+  })
   const page = await ctx.newPage()
   await page.goto(`${origin}/demo`)
   await page.bringToFront()
@@ -216,9 +242,11 @@ try {
   if (!target) throw new Error(`Preview could not find the browser tab for ${page.url()}`)
   await browserCdp.send('Extensions.triggerAction', { id: extensionId, targetId: target.targetId })
   await page.waitForSelector('[data-study-buddy="overlay"]')
-  await page.mouse.move(50, 130)
+  const problem = await page.locator('[data-demo-problem]').boundingBox()
+  if (!problem) throw new Error('The demonstration exercise is not visible.')
+  await page.mouse.move(problem.x + 2, problem.y + 2)
   await page.mouse.down()
-  await page.mouse.move(360, 200, { steps: 8 })
+  await page.mouse.move(problem.x + problem.width - 2, problem.y + problem.height - 2, { steps: 8 })
   await page.mouse.up()
   await page.waitForSelector('[data-study-buddy="chat"]', { state: 'attached' })
   let chatFrame = page.frames().find(frame => frame.url().startsWith(extensionPrefix))
@@ -259,12 +287,12 @@ try {
   if (smoke) {
     await chatFrame.click('[data-preset="hint"]')
     await chatFrame.waitForFunction(() =>
-      document.querySelector('.msg.assistant')?.textContent.includes('Start') &&
+      document.querySelector('.msg.assistant')?.textContent.includes('Differentiate') &&
       ![...document.querySelectorAll('.reply-status')].some(node => node.textContent.includes('Complete')),
     )
     const waitForAnswer = () => chatFrame.waitForFunction(() =>
       [...document.querySelectorAll('.reply-status')].some(node => node.textContent.includes('Complete')) &&
-      document.querySelector('.msg.assistant')?.textContent.includes('Start by subtracting 6 from both sides.'),
+      document.querySelector('.msg.assistant')?.textContent.includes('partial fractions'),
     )
     await waitForAnswer()
     if (requests !== 1) throw new Error(`Preview expected one upstream request; received ${requests}.`)
@@ -308,6 +336,9 @@ try {
     await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'minimized')
     await clickHostButton('Restore Study Buddy')
     await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
+    const screenshotText = await page.locator('body').innerText() + await chatFrame.locator('body').innerText()
+    if (/[\u0400-\u04ff]/u.test(screenshotText)) throw new Error('The portfolio screenshot contains Cyrillic text.')
+    if (await chatFrame.locator('.katex').count() < 2) throw new Error('The demonstration answer must render its mathematical formulas.')
     await page.screenshot({ path: join(runDir, 'demo.png') })
 
     const narrow = await ctx.newPage()
@@ -329,7 +360,7 @@ try {
     await saved.goto(`${extensionPrefix}src/chat/chat.html?kind=history`)
     await saved.waitForSelector('.history-open')
     await saved.click('.history-open')
-    await saved.waitForFunction(() => document.querySelector('.msg.assistant')?.textContent.includes('Start by subtracting 6'))
+    await saved.waitForFunction(() => document.querySelector('.msg.assistant')?.textContent.includes('partial fractions'))
     await saved.close()
     await cdp.detach()
     if (requests !== 1) throw new Error('UI-only actions unexpectedly started another provider request.')

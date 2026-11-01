@@ -1,18 +1,37 @@
 // Isolated local acceptance browser + mock provider. Never reads credentials.
 import { chromium } from 'playwright'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
+import { createServer as createHttpsServer } from 'node:https'
 import { createServer as createNetServer } from 'node:net'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 const root = resolve(fileURLToPath(import.meta.url), '..', '..')
 const stateDir = join(root, 'review', 'preview')
 const stateFile = join(stateDir, 'state.json')
 const command = process.argv[2] ?? 'start'
 const smoke = process.argv.includes('--smoke')
+const extensionFlag = process.argv.indexOf('--extension-dir')
+if (extensionFlag >= 0 && (!process.argv[extensionFlag + 1] || process.argv[extensionFlag + 1].startsWith('--'))) {
+  throw new Error('--extension-dir requires the path to an existing extension build')
+}
+const suppliedDist = extensionFlag < 0 ? undefined : resolve(process.argv[extensionFlag + 1])
+
+function inventory(directory) {
+  const entries = []
+  const visit = (folder, prefix = '') => {
+    for (const entry of readdirSync(folder, { withFileTypes: true })) {
+      const name = prefix + entry.name
+      if (entry.isDirectory()) visit(join(folder, entry.name), name + '/')
+      else if (entry.isFile()) entries.push([name, createHash('sha256').update(readFileSync(join(folder, entry.name))).digest('hex')])
+    }
+  }
+  visit(directory)
+  return Object.fromEntries(entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
+}
 if (command === 'stop' || command === 'health') {
   const state = JSON.parse(readFileSync(stateFile, 'utf8'))
   const response = await fetch(`${state.origin}/${command === 'stop' ? 'stop' : 'healthz'}`, {
@@ -26,7 +45,7 @@ if (command === 'stop' || command === 'health') {
 if (command !== 'start') throw new Error('Use start, health or stop')
 mkdirSync(stateDir, { recursive: true })
 const runDir = mkdtempSync(join(stateDir, 'run-'))
-const dist = join(runDir, 'dist')
+const dist = suppliedDist ?? join(runDir, 'dist')
 const portProbe = createNetServer()
 await new Promise((resolve, reject) => portProbe.listen(0, '127.0.0.1', resolve).once('error', reject))
 const gatewayPort = portProbe.address().port
@@ -35,11 +54,16 @@ const gatewayUrl = `http://127.0.0.1:${gatewayPort}`
 const buildEnv = { ...process.env, STUDY_BUDDY_GATEWAY_URL: gatewayUrl }
 delete buildEnv.OPENROUTER_API_KEY
 delete buildEnv.OPENAI_API_KEY
-execFileSync('npm', ['run', 'build', '--', '--outDir', dist], { cwd: root, env: buildEnv, stdio: 'inherit' })
+if (!suppliedDist) execFileSync('npm', ['run', 'build', '--', '--outDir', dist], { cwd: root, env: buildEnv, stdio: 'inherit' })
 const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'))
-if (manifest.host_permissions?.length !== 2 || !manifest.host_permissions.includes(`${gatewayUrl}/*`) || !manifest.host_permissions.includes('<all_urls>')) {
-  throw new Error('Preview build must use the configured gateway and the production all-sites launcher permissions.')
+const gatewayMatches = manifest.host_permissions?.filter(value => value !== '<all_urls>') ?? []
+if (manifest.host_permissions?.length !== 2 || gatewayMatches.length !== 1 || !manifest.host_permissions.includes('<all_urls>')) {
+  throw new Error('Preview requires one gateway host and the production all-sites launcher permission.')
 }
+const compiledGatewayUrl = new URL(gatewayMatches[0]).origin
+if (!suppliedDist && compiledGatewayUrl !== gatewayUrl) throw new Error('Preview build has an unexpected gateway.')
+const extensionFiles = inventory(dist)
+const extensionSha256 = createHash('sha256').update(JSON.stringify(extensionFiles)).digest('hex')
 const token = randomUUID()
 let ctx
 let stopping = false
@@ -49,12 +73,15 @@ let origin
 let captureReady = false
 let backend
 let vite
+let gatewayProxy
+const pageErrors = []
 const stop = async () => {
   if (stopping) return
   stopping = true
   await ctx?.close()
   await backend?.close()
   await vite?.close()
+  if (gatewayProxy?.listening) await new Promise(resolve => gatewayProxy.close(resolve))
   if (server.listening) server.close()
 }
 const demo = `<!doctype html><meta charset="utf-8"><title>Study Buddy · локальная приёмка</title>
@@ -111,12 +138,40 @@ const server = createServer((req, res) => {
 try {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(Number(process.env.STUDY_BUDDY_PREVIEW_PORT ?? 4187), '127.0.0.1', resolve) })
   origin = `http://127.0.0.1:${server.address().port}`
+  let redirectedGatewayUrl = gatewayUrl
+  if (suppliedDist && compiledGatewayUrl.startsWith('https:')) {
+    // Keep the supplied artifact byte-for-byte intact. A loopback TLS relay
+    // preserves streaming while the browser redirects its compiled HTTPS gateway.
+    const keyPath = join(runDir, 'fixture.key')
+    const certPath = join(runDir, 'fixture.crt')
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+      '-subj', '/CN=127.0.0.1', '-keyout', keyPath, '-out', certPath], { stdio: 'ignore' })
+    gatewayProxy = createHttpsServer({ key: readFileSync(keyPath), cert: readFileSync(certPath) }, (request, response) => {
+      const upstream = httpRequest(gatewayUrl + request.url, { method: request.method, headers: request.headers }, incoming => {
+        response.writeHead(incoming.statusCode, incoming.headers)
+        incoming.pipe(response)
+      })
+      upstream.on('error', () => { if (!response.headersSent) response.writeHead(502); response.end() })
+      response.once('close', () => upstream.destroy())
+      request.pipe(upstream)
+    })
+    await new Promise((resolve, reject) => {
+      gatewayProxy.once('error', reject)
+      gatewayProxy.listen(0, '127.0.0.1', resolve)
+    })
+    redirectedGatewayUrl = `https://127.0.0.1:${gatewayProxy.address().port}`
+  }
   ctx = await chromium.launchPersistentContext(join(runDir, 'profile'), {
     channel: 'chromium', headless: process.argv.includes('--headless'), viewport: { width: 1200, height: 800 },
+    ignoreHTTPSErrors: !!gatewayProxy,
     args: ['--enable-unsafe-extension-debugging', `--disable-extensions-except=${dist}`, `--load-extension=${dist}`],
   })
+  ctx.on('page', page => page.on('pageerror', error => pageErrors.push(String(error))))
   await ctx.route('**/*', route => {
     const url = new URL(route.request().url())
+    if (suppliedDist && url.origin === compiledGatewayUrl) {
+      return route.continue({ url: redirectedGatewayUrl + url.pathname + url.search })
+    }
     return ['http:', 'https:'].includes(url.protocol) && ![origin, gatewayUrl].includes(url.origin) ? route.abort() : route.continue()
   })
   let [sw] = ctx.serviceWorkers()
@@ -200,7 +255,7 @@ try {
   console.log(`READY ${origin} · demo ${origin}/demo · captured crop ${cropSize.width}×${cropSize.height}px · isolated profile ${runDir}/profile`)
   process.once('SIGINT', () => void stop())
   process.once('SIGTERM', () => void stop())
-  ctx.once('close', () => { if (stopping) return; stopping = true; void backend?.close(); void vite?.close(); if (server.listening) server.close() })
+  ctx.once('close', () => { if (stopping) return; stopping = true; void backend?.close(); void vite?.close(); gatewayProxy?.close(); if (server.listening) server.close() })
   if (smoke) {
     await chatFrame.click('[data-preset="hint"]')
     await chatFrame.waitForFunction(() =>
@@ -217,10 +272,74 @@ try {
     await chatFrame.goto(chatFrame.url())
     await waitForAnswer()
     if (requests !== 1) throw new Error('Reload unexpectedly started another upstream request.')
+    await chatFrame.click('#lang-btn')
+    await chatFrame.click('[data-lang="de"]')
+    await chatFrame.waitForFunction(() => document.querySelector('#lang-btn .tb-code')?.textContent === 'DE')
+    await chatFrame.click('#lang-btn')
+    await chatFrame.click('[data-lang="en"]')
+    await chatFrame.waitForFunction(() => document.querySelector('#lang-btn .tb-code')?.textContent === 'EN')
+    await chatFrame.click('#history-btn')
+    await chatFrame.waitForSelector('.history-open')
+    if (await chatFrame.locator('.history-open').count() !== 1) throw new Error('Preview history must contain exactly one conversation.')
+    await chatFrame.click('.history-open')
+    await waitForAnswer()
+
+    // Reuse the existing regression harness technique for closed-shadow controls.
+    const cdp = await ctx.newCDPSession(page)
+    const clickHostButton = async label => {
+      const { root: documentNode } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true })
+      const find = node => {
+        const attrs = node.attributes ?? []
+        if (node.nodeName === 'BUTTON' && ['aria-label', 'title'].some(name => {
+          const index = attrs.indexOf(name)
+          return index >= 0 && attrs[index + 1].startsWith(label)
+        })) return node
+        for (const child of [...node.children ?? [], ...node.shadowRoots ?? []]) {
+          const found = find(child)
+          if (found) return found
+        }
+      }
+      const node = find(documentNode)
+      if (!node) throw new Error(`Missing rendered host control: ${label}`)
+      const { model } = await cdp.send('DOM.getBoxModel', { nodeId: node.nodeId })
+      await page.mouse.click((model.border[0] + model.border[4]) / 2, (model.border[1] + model.border[5]) / 2)
+    }
+    await clickHostButton('Minimize')
+    await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'minimized')
+    await clickHostButton('Restore Study Buddy')
+    await page.waitForFunction(() => document.querySelector('[data-study-buddy="chat"]')?.getAttribute('data-state') === 'open')
     await page.screenshot({ path: join(runDir, 'demo.png') })
+
+    const narrow = await ctx.newPage()
+    await narrow.setViewportSize({ width: 320, height: 568 })
+    await narrow.goto(chatFrame.url())
+    await narrow.waitForSelector('.msg.assistant')
+    const layout = await narrow.evaluate(() => {
+      const composer = document.querySelector('#composer').getBoundingClientRect()
+      return { overflow: document.documentElement.scrollWidth > innerWidth,
+        composerVisible: composer.width > 0 && composer.bottom <= innerHeight,
+        taskCount: document.querySelectorAll('.preset').length }
+    })
+    if (layout.overflow || !layout.composerVisible || layout.taskCount !== 6) throw new Error(`Narrow layout failed: ${JSON.stringify(layout)}`)
+    await narrow.screenshot({ path: join(runDir, 'narrow.png') })
+    await narrow.close()
+    await clickHostButton('Close and save')
+    await page.waitForSelector('[data-study-buddy="chat"]', { state: 'detached' })
+    const saved = await ctx.newPage()
+    await saved.goto(`${extensionPrefix}src/chat/chat.html?kind=history`)
+    await saved.waitForSelector('.history-open')
+    await saved.click('.history-open')
+    await saved.waitForFunction(() => document.querySelector('.msg.assistant')?.textContent.includes('Start by subtracting 6'))
+    await saved.close()
+    await cdp.detach()
+    if (requests !== 1) throw new Error('UI-only actions unexpectedly started another provider request.')
+    if (pageErrors.length) throw new Error(`Browser errors: ${pageErrors.join('; ')}`)
+    if (JSON.stringify(inventory(dist)) !== JSON.stringify(extensionFiles)) throw new Error('The supplied extension artifact changed during verification.')
     writeFileSync(join(runDir, 'smoke.json'), JSON.stringify({
-      browser: 'isolated Chromium', viewport: page.viewportSize(), mockOnly: true,
+      browser: 'isolated Chromium', chromiumVersion: ctx.browser().version(), viewport: page.viewportSize(), mockOnly: true,
+      suppliedBuild: !!suppliedDist, extensionDirectory: dist, extensionSha256, extensionFiles, compiledGatewayUrl,
       captured: cropSize, upstreamRequests: requests, observedPartialAnswer: true, restoredAfterReload: true,
+      languagePicker: true, history: true, minimizeRestore: true, closePreservesHistory: true, narrowLayout: layout, pageErrors,
     }, null, 2))
     console.log(`SMOKE OK: capture → backend → streamed Hint → reload; evidence ${runDir}`)
     await stop()
@@ -228,6 +347,8 @@ try {
     await new Promise(resolve => server.once('close', resolve))
   }
 } catch (err) {
+  const fixturePage = ctx?.pages().find(page => page.url() === `${origin}/demo`)
+  await fixturePage?.screenshot({ path: join(runDir, 'failure.png') }).catch(() => {})
   await stop()
   throw err
 }

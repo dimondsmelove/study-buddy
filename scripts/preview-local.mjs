@@ -12,6 +12,7 @@ const root = resolve(fileURLToPath(import.meta.url), '..', '..')
 const stateDir = join(root, 'review', 'preview')
 const stateFile = join(stateDir, 'state.json')
 const command = process.argv[2] ?? 'start'
+const smoke = process.argv.includes('--smoke')
 if (command === 'stop' || command === 'health') {
   const state = JSON.parse(readFileSync(stateFile, 'utf8'))
   const response = await fetch(`${state.origin}/${command === 'stop' ? 'stop' : 'healthz'}`, {
@@ -82,7 +83,7 @@ const server = createServer((req, res) => {
       let request
       try { request = JSON.parse(body) } catch { res.writeHead(400); res.end(); return }
       requests++
-      const ru = request.messages?.[0]?.content?.includes('# Опора на изображение')
+      const ru = request.messages?.[0]?.content?.includes('Respond in Russian')
       const kind = previewPrompts.classifyPreviewTask(request.messages, previewPrompts)
       const text = ru
         ? kind === 'hint' ? 'Начни с вычитания 6 из обеих частей равенства. Какое равенство получится?' : kind === 'check' ? 'Первый неверный переход — раскрытие скобок: множитель 2 относится к обоим слагаемым. Проверь произведение 2 · 3.' : 'Демонстрационный ответ локального mock. Реальная модель не вызывается.'
@@ -146,7 +147,7 @@ try {
       resolve()
     })
   })
-  await sw.evaluate(settings => chrome.storage.local.set({ settings }), { uiLanguage: 'ru', answerLanguage: 'auto' })
+  await sw.evaluate(settings => chrome.storage.local.set({ settings }), { uiLanguage: smoke ? 'en' : 'ru', answerLanguage: smoke ? 'en' : 'auto' })
   const page = await ctx.newPage()
   await page.goto(`${origin}/demo`)
   await page.bringToFront()
@@ -200,7 +201,32 @@ try {
   process.once('SIGINT', () => void stop())
   process.once('SIGTERM', () => void stop())
   ctx.once('close', () => { if (stopping) return; stopping = true; void backend?.close(); void vite?.close(); if (server.listening) server.close() })
-  await new Promise(resolve => server.once('close', resolve))
+  if (smoke) {
+    await chatFrame.click('[data-preset="hint"]')
+    await chatFrame.waitForFunction(() =>
+      document.querySelector('.msg.assistant')?.textContent.includes('Start') &&
+      ![...document.querySelectorAll('.reply-status')].some(node => node.textContent.includes('Complete')),
+    )
+    const waitForAnswer = () => chatFrame.waitForFunction(() =>
+      [...document.querySelectorAll('.reply-status')].some(node => node.textContent.includes('Complete')) &&
+      document.querySelector('.msg.assistant')?.textContent.includes('Start by subtracting 6 from both sides.'),
+    )
+    await waitForAnswer()
+    if (requests !== 1) throw new Error(`Preview expected one upstream request; received ${requests}.`)
+    // A fresh document must restore the completed answer from local storage.
+    await chatFrame.goto(chatFrame.url())
+    await waitForAnswer()
+    if (requests !== 1) throw new Error('Reload unexpectedly started another upstream request.')
+    await page.screenshot({ path: join(runDir, 'demo.png') })
+    writeFileSync(join(runDir, 'smoke.json'), JSON.stringify({
+      browser: 'isolated Chromium', viewport: page.viewportSize(), mockOnly: true,
+      captured: cropSize, upstreamRequests: requests, observedPartialAnswer: true, restoredAfterReload: true,
+    }, null, 2))
+    console.log(`SMOKE OK: capture → backend → streamed Hint → reload; evidence ${runDir}`)
+    await stop()
+  } else {
+    await new Promise(resolve => server.once('close', resolve))
+  }
 } catch (err) {
   await stop()
   throw err
